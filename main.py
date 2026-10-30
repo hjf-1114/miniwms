@@ -1,4 +1,4 @@
-"""StockPilot -- 轻量进销存系统入口。
+"""MiniWMS -- 轻量仓库管理系统（WMS）入口。
 
 职责：
 - Flask 应用创建与配置
@@ -14,8 +14,8 @@ import sqlite3
 from flask import Flask, g, request
 
 DB_PATH = os.environ.get(
-    "STOCKPILOT_DB",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "stockpilot.db"),
+    "MINIWMS_DB",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "miniwms.db"),
 )
 
 app = Flask(__name__)

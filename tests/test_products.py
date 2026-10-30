@@ -1,6 +1,6 @@
-"""商品档案接口测试。
+"""物料主数据接口测试。
 
-测试隔离：每个测试类用独立的临时 SQLite 文件（通过 STOCKPILOT_DB 环境变量注入），
+测试隔离：每个测试类用独立的临时 SQLite 文件（通过 MINIWMS_DB 环境变量注入），
 在 import main 之前设置，避免共享物理库造成串扰。
 """
 import os
@@ -8,8 +8,8 @@ import sys
 import tempfile
 import unittest
 
-_TMP = tempfile.mkdtemp(prefix="stockpilot_test_")
-os.environ["STOCKPILOT_DB"] = os.path.join(_TMP, "test.db")
+_TMP = tempfile.mkdtemp(prefix="miniwms_test_")
+os.environ["MINIWMS_DB"] = os.path.join(_TMP, "test.db")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,7 +25,7 @@ class ProductApiTest(unittest.TestCase):
     def setUp(self):
         # 每个用例独立数据：清空 product 表，避免共享物理库造成的串扰
         import sqlite3
-        conn = sqlite3.connect(os.environ["STOCKPILOT_DB"])
+        conn = sqlite3.connect(os.environ["MINIWMS_DB"])
         try:
             conn.execute("DELETE FROM product")
             conn.commit()
