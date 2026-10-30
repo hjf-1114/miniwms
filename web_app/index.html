@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniWMS — 轻量仓库管理系统</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav class="navbar">
+  <a class="brand" href="/">MiniWMS</a>
+  <a class="link" href="/owners.html">货主</a>
+  <a class="link" href="/products.html">物料</a>
+  <a class="link" href="/locations.html">库位</a>
+</nav>
+
+<div class="container">
+  <div class="card">
+    <h2>欢迎使用 MiniWMS</h2>
+    <p class="muted" style="line-height:1.9">
+      轻量多货主 WMS（Flask + SQLite）。本页为前后端一体的本地 demo：
+      通过上方导航管理<b>货主 → 物料 → 库位</b>三类主数据，
+      后续里程碑将逐步提供收货上架、拣货发货、库存流水、移库与盘点等操作页面。
+    </p>
+    <p class="muted" style="margin-top:10px">
+      服务地址：<code>http://localhost:5100</code> ·
+      启动方式：<code>python main.py</code> ·
+      API 文档见仓库 <code>README.md</code>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>里程碑进度</h2>
+    <table>
+      <tr><th>里程碑</th><th>内容</th><th>状态</th></tr>
+      <tr><td>M1</td><td>物料主数据</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M2</td><td>货主主数据与多货主模型</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M3</td><td>库位主数据 + Web demo 骨架</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M4</td><td>收货单与上架</td><td><span class="tag off">开发中</span></td></tr>
+      <tr><td>M5+</td><td>拣货发货 / 库存账 / 移库 / 盘点 / 报表</td><td><span class="tag off">规划中</span></td></tr>
+    </table>
+  </div>
+</div>
+</body>
+</html>

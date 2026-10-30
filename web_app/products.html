@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>物料管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav class="navbar">
+  <a class="brand" href="/">MiniWMS</a>
+  <a class="link" href="/owners.html">货主</a>
+  <a class="link" href="/products.html">物料</a>
+  <a class="link" href="/locations.html">库位</a>
+</nav>
+
+<div class="container">
+  <div id="msg" class="msg"></div>
+
+  <div class="card">
+    <h2>新建物料</h2>
+    <form id="createForm" class="grid-form">
+      <div><label>SKU *</label><input name="sku" required maxlength="64"></div>
+      <div><label>名称 *</label><input name="name" required maxlength="128"></div>
+      <div><label>分类</label><input name="category" placeholder="默认: 未分类"></div>
+      <div><label>单位</label><input name="unit" placeholder="默认: 件"></div>
+      <div><label>采购价</label><input name="purchase_price" type="number" step="0.01" min="0"></div>
+      <div><label>销售价</label><input name="sale_price" type="number" step="0.01" min="0"></div>
+      <div><label>货主（可空=自营）</label><select id="ownerSelect" name="owner_id"><option value="">自营</option></select></div>
+      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>物料列表</h2>
+    <div class="toolbar">
+      <input id="kw" placeholder="SKU/名称搜索">
+      <select id="ownerFilter"><option value="">全部货主</option></select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>分类</th><th>货主</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="pager">
+      <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+      <span id="pageInfo"></span>
+      <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+let page = 1, pageSize = 20;
+
+async function loadOwners() {
+  const data = await api("GET", "/api/owners?page_size=100");
+  const options = data.owners.map(
+    (o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`
+  ).join("");
+  document.getElementById("ownerSelect").insertAdjacentHTML("beforeend", options);
+  document.getElementById("ownerFilter").insertAdjacentHTML("beforeend", options);
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const oid = document.getElementById("ownerFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (oid) qs.set("owner_id", oid);
+  try {
+    const data = await api("GET", "/api/products?" + qs);
+    const tb = document.getElementById("tbody");
+    tb.innerHTML = data.products.map((p) =>
+      `<tr>
+        <td>${p.id}</td><td>${esc(p.sku)}</td><td>${esc(p.name)}</td>
+        <td>${esc(p.category)}</td>
+        <td>${p.owner_code ? esc(p.owner_code + " · " + p.owner_name) : '<span class="muted">自营</span>'}</td>
+        <td>${p.purchase_price}</td><td>${p.sale_price}</td>
+        <td><b>${p.stock_qty}</b></td>
+        <td>${statusTag(p.status)}</td>
+        <td><button class="btn danger" onclick="del(${p.id})">删除</button></td>
+      </tr>`).join("");
+    document.getElementById("pageInfo").textContent =
+      `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+
+document.getElementById("createForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const fd = new FormData(ev.target);
+  const payload = Object.fromEntries(fd.entries());
+  if (!payload.owner_id) delete payload.owner_id;
+  try {
+    await api("POST", "/api/products", payload);
+    showMsg(document.getElementById("msg"), "创建成功", "success");
+    ev.target.reset();
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
+  }
+});
+
+async function del(id) {
+  if (!confirm("确认删除该物料？（库存非 0 时会被拒绝）")) return;
+  try {
+    await api("DELETE", "/api/products/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+loadOwners().then(load);
+</script>
+</body>
+</html>

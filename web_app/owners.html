@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>货主管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav class="navbar">
+  <a class="brand" href="/">MiniWMS</a>
+  <a class="link" href="/owners.html">货主</a>
+  <a class="link" href="/products.html">物料</a>
+  <a class="link" href="/locations.html">库位</a>
+</nav>
+
+<div class="container">
+  <div id="msg" class="msg"></div>
+
+  <div class="card">
+    <h2>新建货主</h2>
+    <form id="createForm" class="grid-form">
+      <div><label>编码 *</label><input name="code" required maxlength="32"></div>
+      <div><label>名称 *</label><input name="name" required maxlength="128"></div>
+      <div><label>联系人</label><input name="contact"></div>
+      <div><label>电话</label><input name="phone"></div>
+      <div><label>备注</label><input name="note"></div>
+      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>货主列表</h2>
+    <div class="toolbar">
+      <input id="kw" placeholder="编码/名称搜索">
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="active">启用</option>
+        <option value="inactive">停用</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>联系人</th><th>电话</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="pager">
+      <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+      <span id="pageInfo"></span>
+      <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+let page = 1, pageSize = 20;
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  try {
+    const data = await api("GET", "/api/owners?" + qs);
+    const tb = document.getElementById("tbody");
+    tb.innerHTML = data.owners.map((o) =>
+      `<tr>
+        <td>${o.id}</td><td>${esc(o.code)}</td><td>${esc(o.name)}</td>
+        <td>${esc(o.contact)}</td><td>${esc(o.phone)}</td>
+        <td>${statusTag(o.status)}</td>
+        <td>
+          <button class="btn secondary" onclick="toggle(${o.id},'${o.status}')">${o.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger" onclick="del(${o.id})">删除</button>
+        </td>
+      </tr>`).join("");
+    document.getElementById("pageInfo").textContent =
+      `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+
+document.getElementById("createForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const fd = new FormData(ev.target);
+  const payload = Object.fromEntries(fd.entries());
+  try {
+    await api("POST", "/api/owners", payload);
+    showMsg(document.getElementById("msg"), "创建成功", "success");
+    ev.target.reset();
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
+  }
+});
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/owners/" + id, { status: status === "active" ? "inactive" : "active" });
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "操作失败：" + e.message, "error");
+  }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该货主？（名下有物料时会被拒绝）")) return;
+  try {
+    await api("DELETE", "/api/owners/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+load();
+</script>
+</body>
+</html>
