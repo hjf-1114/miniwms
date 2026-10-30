@@ -8,8 +8,10 @@ import sys
 import tempfile
 import unittest
 
-_TMP = tempfile.mkdtemp(prefix="miniwms_test_")
-os.environ["MINIWMS_DB"] = os.path.join(_TMP, "test.db")
+_TMP = os.path.join(tempfile.gettempdir(), "miniwms_unittest")
+os.makedirs(_TMP, exist_ok=True)
+# 注意：main.DB_PATH 在首次 import main 时冻结，所有测试模块必须共享同一物理库路径。
+os.environ.setdefault("MINIWMS_DB", os.path.join(_TMP, "test.db"))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -23,11 +25,13 @@ class ProductApiTest(unittest.TestCase):
         cls.client = main.app.test_client()
 
     def setUp(self):
-        # 每个用例独立数据：清空 product 表，避免共享物理库造成的串扰
+        # 每个用例独立数据：清空相关表，避免共享物理库造成的串扰
         import sqlite3
         conn = sqlite3.connect(os.environ["MINIWMS_DB"])
         try:
+            # 先清子表再清主表，避免外键约束
             conn.execute("DELETE FROM product")
+            conn.execute("DELETE FROM owner")
             conn.commit()
         finally:
             conn.close()
@@ -133,6 +137,60 @@ class ProductApiTest(unittest.TestCase):
         resp = self.client.delete(f"/api/products/{pid}")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.client.get(f"/api/products/{pid}").status_code, 404)
+
+    # ---------- 多货主（M2） ----------
+    def _make_owner(self, code="OW001"):
+        return self.client.post(
+            "/api/owners", json={"code": code, "name": f"货主{code}"}
+        ).get_json()["owner"]["id"]
+
+    def test_product_with_owner(self):
+        oid = self._make_owner()
+        resp = self._create(sku="OWN-1", owner_id=oid)
+        self.assertEqual(resp.status_code, 201)
+        p = resp.get_json()["product"]
+        self.assertEqual(p["owner_id"], oid)
+        self.assertEqual(p["owner_code"], "OW001")
+        self.assertEqual(p["owner_name"], "货主OW001")
+
+    def test_product_owner_not_exist(self):
+        resp = self._create(sku="OWN-2", owner_id=9999)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("货主不存在", str(resp.get_json()["errors"]))
+
+    def test_product_owner_inactive(self):
+        oid = self._make_owner()
+        self.client.put(f"/api/owners/{oid}", json={"status": "inactive"})
+        resp = self._create(sku="OWN-3", owner_id=oid)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("停用", str(resp.get_json()["errors"]))
+
+    def test_product_list_filter_by_owner(self):
+        oid1 = self._make_owner("OW-A")
+        oid2 = self._make_owner("OW-B")
+        self._create(sku="F-1", owner_id=oid1)
+        self._create(sku="F-2", owner_id=oid2)
+        self._create(sku="F-3")  # 无货主
+        self.assertEqual(
+            self.client.get(f"/api/products?owner_id={oid1}").get_json()["total"], 1
+        )
+        self.assertEqual(
+            self.client.get("/api/products?owner_id=none").get_json()["total"], 1
+        )
+        self.assertEqual(self.client.get("/api/products").get_json()["total"], 3)
+
+    def test_product_transfer_owner_and_clear(self):
+        oid = self._make_owner()
+        pid = self._create(sku="T-1", owner_id=oid).get_json()["product"]["id"]
+        # 转给另一货主
+        oid2 = self._make_owner("OW-C")
+        p = self.client.put(f"/api/products/{pid}", json={"owner_id": oid2}).get_json()["product"]
+        self.assertEqual(p["owner_id"], oid2)
+        self.assertEqual(p["owner_code"], "OW-C")
+        # 显式清空 → 自营
+        p = self.client.put(f"/api/products/{pid}", json={"owner_id": None}).get_json()["product"]
+        self.assertIsNone(p["owner_id"])
+        self.assertNotIn("owner_code", p)
 
 
 if __name__ == "__main__":

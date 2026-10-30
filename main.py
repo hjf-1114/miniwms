@@ -49,6 +49,18 @@ def init_db():
     try:
         conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS owner (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                name        TEXT    NOT NULL,
+                contact     TEXT    NOT NULL DEFAULT '',
+                phone       TEXT    NOT NULL DEFAULT '',
+                status      TEXT    NOT NULL DEFAULT 'active',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_owner_status ON owner(status);
             CREATE TABLE IF NOT EXISTS product (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 sku             TEXT    NOT NULL UNIQUE,
@@ -68,14 +80,24 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_product_status   ON product(status);
             """
         )
+        # 列迁移：product.owner_id（M2 多货主；NULL 表示自营/未指定货主）
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(product)")}
+        if "owner_id" not in cols:
+            conn.execute(
+                "ALTER TABLE product ADD COLUMN owner_id INTEGER"
+                " REFERENCES owner(id)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_product_owner ON product(owner_id)")
         conn.commit()
     finally:
         conn.close()
 
 
 # ── 业务模块注册（须在 app/get_db 定义之后导入，供蓝图反向引用）──
+from routes_owner import owner_bp  # noqa: E402
 from routes_product import product_bp  # noqa: E402
 
+app.register_blueprint(owner_bp)
 app.register_blueprint(product_bp)
 
 

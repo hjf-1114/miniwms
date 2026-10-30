@@ -76,6 +76,16 @@ def _validate_product_payload(payload, *, partial=False):
             else:
                 cleaned[key] = val
 
+    if has("owner_id"):
+        raw = payload.get("owner_id")
+        if raw in (None, ""):
+            cleaned["owner_id"] = None  # 显式置空 = 转为自营/无货主
+        else:
+            try:
+                cleaned["owner_id"] = int(raw)
+            except (TypeError, ValueError):
+                errors.append("owner_id 必须为整数")
+
     if has("status"):
         status = str(payload.get("status") or "").strip()
         if status not in VALID_STATUS:
@@ -89,8 +99,28 @@ def _validate_product_payload(payload, *, partial=False):
     return errors, cleaned
 
 
-def _row_to_dict(row):
-    return dict(row)
+def _check_owner(db, owner_id):
+    """校验 owner_id：None 合法；否则必须存在且启用。返回错误信息或 None。"""
+    if owner_id is None:
+        return None
+    row = db.execute("SELECT status FROM owner WHERE id = ?", (owner_id,)).fetchone()
+    if row is None:
+        return f"货主不存在: id={owner_id}"
+    if row["status"] != "active":
+        return f"货主已停用: id={owner_id}"
+    return None
+
+
+def _row_to_dict(row, db=None):
+    d = dict(row)
+    if db is not None and d.get("owner_id"):
+        o = db.execute(
+            "SELECT code, name FROM owner WHERE id = ?", (d["owner_id"],)
+        ).fetchone()
+        if o is not None:
+            d["owner_code"] = o["code"]
+            d["owner_name"] = o["name"]
+    return d
 
 
 def _product_exists(db, sku, exclude_id=None):
@@ -112,6 +142,9 @@ def create_product():
     db = get_db()
     if _product_exists(db, cleaned["sku"]):
         return jsonify({"ok": False, "errors": [f"SKU 已存在: {cleaned['sku']}"]}), 409
+    owner_err = _check_owner(db, cleaned.get("owner_id"))
+    if owner_err:
+        return jsonify({"ok": False, "errors": [owner_err]}), 400
 
     # 未显式提供的字段落默认值（与建表 DDL 一致）
     params = {
@@ -125,19 +158,20 @@ def create_product():
         "min_stock": cleaned.get("min_stock", 0),
         "status": cleaned.get("status", "active"),
         "note": cleaned.get("note", ""),
+        "owner_id": cleaned.get("owner_id"),
     }
     cur = db.execute(
         """
         INSERT INTO product (sku, name, category, unit, purchase_price, sale_price,
-                             stock_qty, min_stock, status, note)
+                             stock_qty, min_stock, status, note, owner_id)
         VALUES (:sku, :name, :category, :unit, :purchase_price, :sale_price,
-                :stock_qty, :min_stock, :status, :note)
+                :stock_qty, :min_stock, :status, :note, :owner_id)
         """,
         params,
     )
     db.commit()
     row = db.execute("SELECT * FROM product WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return jsonify({"ok": True, "product": _row_to_dict(row)}), 201
+    return jsonify({"ok": True, "product": _row_to_dict(row, db)}), 201
 
 
 @product_bp.route("", methods=["GET"])
@@ -147,6 +181,7 @@ def list_products():
     keyword = (args.get("keyword") or "").strip()
     category = (args.get("category") or "").strip()
     status = (args.get("status") or "").strip()
+    owner_id = (args.get("owner_id") or "").strip()
 
     try:
         page = max(1, int(args.get("page", 1)))
@@ -164,6 +199,12 @@ def list_products():
     if status:
         where.append("status = ?")
         params.append(status)
+    if owner_id:
+        if owner_id == "none":
+            where.append("owner_id IS NULL")
+        else:
+            where.append("owner_id = ?")
+            params.append(owner_id)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
@@ -180,17 +221,18 @@ def list_products():
             "total": total,
             "page": page,
             "page_size": page_size,
-            "products": [_row_to_dict(r) for r in rows],
+            "products": [_row_to_dict(r, db) for r in rows],
         }
     )
 
 
 @product_bp.route("/<int:product_id>", methods=["GET"])
 def get_product(product_id):
-    row = get_db().execute("SELECT * FROM product WHERE id = ?", (product_id,)).fetchone()
+    db = get_db()
+    row = db.execute("SELECT * FROM product WHERE id = ?", (product_id,)).fetchone()
     if row is None:
         return jsonify({"ok": False, "error": "商品不存在"}), 404
-    return jsonify({"ok": True, "product": _row_to_dict(row)})
+    return jsonify({"ok": True, "product": _row_to_dict(row, db)})
 
 
 @product_bp.route("/<int:product_id>", methods=["PUT"])
@@ -208,6 +250,10 @@ def update_product(product_id):
         return jsonify({"ok": False, "error": "商品不存在"}), 404
     if "sku" in cleaned and _product_exists(db, cleaned["sku"], exclude_id=product_id):
         return jsonify({"ok": False, "errors": [f"SKU 已存在: {cleaned['sku']}"]}), 409
+    if "owner_id" in cleaned:
+        owner_err = _check_owner(db, cleaned["owner_id"])
+        if owner_err:
+            return jsonify({"ok": False, "errors": [owner_err]}), 400
 
     set_sql = ", ".join(f"{k} = :{k}" for k in cleaned)
     cleaned["id"] = product_id
@@ -217,7 +263,7 @@ def update_product(product_id):
     )
     db.commit()
     row = db.execute("SELECT * FROM product WHERE id = ?", (product_id,)).fetchone()
-    return jsonify({"ok": True, "product": _row_to_dict(row)})
+    return jsonify({"ok": True, "product": _row_to_dict(row, db)})
 
 
 @product_bp.route("/<int:product_id>", methods=["DELETE"])
