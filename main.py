@@ -18,7 +18,13 @@ DB_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "miniwms.db"),
 )
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="web_app", static_url_path="")
+
+
+@app.route("/")
+def index():
+    """首页：前端 demo 导航页（web_app/index.html）。"""
+    return app.send_static_file("index.html")
 
 
 def get_db():
@@ -78,6 +84,33 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_product_category ON product(category);
             CREATE INDEX IF NOT EXISTS idx_product_status   ON product(status);
+            CREATE TABLE IF NOT EXISTS location (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                name        TEXT    NOT NULL,
+                zone        TEXT    NOT NULL DEFAULT '默认区',
+                loc_type    TEXT    NOT NULL DEFAULT 'storage',
+                capacity    REAL    NOT NULL DEFAULT 0,
+                status      TEXT    NOT NULL DEFAULT 'active',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_location_zone  ON location(zone);
+            CREATE INDEX IF NOT EXISTS idx_location_type  ON location(loc_type);
+            CREATE INDEX IF NOT EXISTS idx_location_status ON location(status);
+            -- 库存账（按 货主×物料×库位 唯一）：M3 建表供库位删除保护使用，
+            -- M4 收货上架开始写入，M6 提供库存账查询
+            CREATE TABLE IF NOT EXISTS stock (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id      INTEGER NOT NULL REFERENCES owner(id),
+                product_id    INTEGER NOT NULL REFERENCES product(id),
+                location_id   INTEGER NOT NULL REFERENCES location(id),
+                qty           REAL    NOT NULL DEFAULT 0,
+                updated_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                UNIQUE(owner_id, product_id, location_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_stock_location ON stock(location_id);
             """
         )
         # 列迁移：product.owner_id（M2 多货主；NULL 表示自营/未指定货主）
@@ -94,13 +127,19 @@ def init_db():
 
 
 # ── 业务模块注册（须在 app/get_db 定义之后导入，供蓝图反向引用）──
-from routes_owner import owner_bp  # noqa: E402
-from routes_product import product_bp  # noqa: E402
-
-app.register_blueprint(owner_bp)
-app.register_blueprint(product_bp)
-
-
+# 仅在被 import 时注册蓝图；若以 `python main.py` 直接运行，__main__ 与 main
+# 会形成双实例循环导入（routes_* → from main import ... → 再次执行本文件的
+# 蓝图导入），因此入口模式下改为以 main 模块身份重新导入自身。
 if __name__ == "__main__":
-    init_db()
-    app.run(host="0.0.0.0", port=5100, debug=False)
+    from main import app as _app, init_db as _init_db  # noqa: E402
+
+    _init_db()
+    _app.run(host="0.0.0.0", port=5100, debug=False)
+else:
+    from routes_location import location_bp  # noqa: E402
+    from routes_owner import owner_bp  # noqa: E402
+    from routes_product import product_bp  # noqa: E402
+
+    app.register_blueprint(owner_bp)
+    app.register_blueprint(product_bp)
+    app.register_blueprint(location_bp)
