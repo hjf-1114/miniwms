@@ -28,6 +28,9 @@ python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/8 库位/4 客户
 python main.py                      # 浏览器打开 http://localhost:5100 即可操作
 ```
 
+> 用户与角色管理（M9）已内置：默认管理员账号 **admin / admin123**（首次使用请到「系统管理 → 用户」修改密码）。
+> 受保护页面（角色/用户）需先访问 `http://localhost:5100/login.html` 登录，令牌存于浏览器 localStorage。
+
 运行测试：
 
 ```bash
@@ -80,14 +83,21 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - 校验层接受新字段、创建写入、详情/列表经 `dict(row)` 自动带出；Web 表单与表格同步展示新字段
   - 一键演示数据：`python tools/seed_demo.py`（默认写入 `./miniwms.db`，支持 `--reset` 重置、`--check` 仅查看），
     预置 3 货主 / 8 物料 / 8 库位 / 4 客户并跑通「收货上架 → 拣货发货」全链路，便于本地模拟测试
+- **M9 用户与角色管理**（`auth.py` / `routes_user.py`，RBAC 基础）
+  - 角色：权限清单（JSON，形如 `资源:动作`，`*`/资源`*` 通配），内置 管理员/操作员/只读 三角色
+  - 用户：归属角色、可绑定货主（空=全局）、密码 salt+sha256 哈希存储、启用/停用
+  - 登录：`POST /api/auth/login` 签发 HMAC-SHA256 无状态 token（7 天有效）；后续任何接口想做权限控制，
+    只需加 `@require_permission("xxx")`（见 `auth.py`），即与用户/角色联动（**用户明确要求后续功能必须联动**）
+  - 角色/用户 CRUD（角色/用户列表、创建、编辑、删除）全部要求 `user:manage` 权限
+  - 前端：登录页 + 角色/用户管理页（弹窗式 CRUD）+ 侧边栏「系统管理」分组与退出入口
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/收货/出库/库存六个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/客户/收货/出库/库存/角色/用户 八个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 移库、盘点、补货预警、报表统计
-- **外部对接（M13）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
-- CSV 导入导出
+- 移库（M10）、盘点（M11）、补货预警（M12）、报表统计（M13）
+- **外部对接（M14）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
+- CSV 导入导出（M15）
 
 ## API 概览
 
@@ -118,11 +128,17 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/products/<id>` | 详情/更新/删除（库存非 0 时拒绝） |
+| POST | `/api/auth/login` | 登录（用户名+密码），返回无状态 token |
+| GET/POST | `/api/roles` | 角色列表 / 创建（需 `user:manage`） |
+| GET/PUT/DELETE | `/api/roles/<id>` | 角色详情/更新/删除（被用户引用时拒绝） |
+| GET/POST | `/api/users` | 用户列表 / 创建（需 `user:manage`） |
+| GET/PUT/DELETE | `/api/users/<id>` | 用户详情/更新（含改密）/删除 |
 
 ## 项目结构
 
 ```
 main.py               Flask 入口、数据库初始化与连接管理、静态托管 web_app
+auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器）
 constants.py          状态机与流水类型枚举（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
 routes_owner.py       货主主数据 Blueprint
@@ -132,7 +148,8 @@ routes_asn.py         收货单与上架 Blueprint
 routes_dn.py          出库单（拣货/发货）Blueprint
 routes_stock.py       库存账/流水/余额核对只读 Blueprint
 routes_customer.py   客户主数据 Blueprint（出库收货方维度）
-web_app/              Web demo（index/owners/products/locations/asns/dns/stock/customers + css/js）
+routes_user.py        用户与角色（登录/权限）Blueprint
+web_app/              Web demo（index/owners/products/locations/customers/asns/dns/stock/roles/users/login + css/js）
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland）
 tests/                单元测试（unittest，共享临时库+每用例清表）
@@ -142,5 +159,5 @@ DEVELOPMENT.md        里程碑开发记录
 ## 设计约定
 
 - 所有接口返回 JSON：成功 `{"ok": true, ...}`，失败 `{"ok": false, "errors": [...]}` + 对应 4xx 状态码
-- 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M9/M10），全部经 inventory_service 落流水
+- 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M10/M11），全部经 inventory_service 落流水
 - 时间戳由 SQLite `datetime('now','localtime')` 生成
