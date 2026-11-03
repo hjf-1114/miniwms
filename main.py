@@ -107,6 +107,7 @@ def init_db():
                 product_id    INTEGER NOT NULL REFERENCES product(id),
                 location_id   INTEGER NOT NULL REFERENCES location(id),
                 qty           REAL    NOT NULL DEFAULT 0,
+                allocated_qty REAL    NOT NULL DEFAULT 0,
                 updated_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
                 UNIQUE(owner_id, product_id, location_id)
             );
@@ -121,6 +122,56 @@ def init_db():
                 " REFERENCES owner(id)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_product_owner ON product(owner_id)")
+        # 列迁移：stock.allocated_qty（M4，参考 Sentry WMS 三数量字段设计；
+        # 旧库的 stock 表无此列，新库 DDL 已自带则跳过）
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        if "stock" in tables:
+            stock_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock)")}
+            if "allocated_qty" not in stock_cols:
+                conn.execute(
+                    "ALTER TABLE stock ADD COLUMN allocated_qty REAL NOT NULL DEFAULT 0"
+                )
+        # M4 收货单：ASN 主表 + 行表 + 库存动作流水
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS asn (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                status      TEXT    NOT NULL DEFAULT 'open',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_asn_owner  ON asn(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_asn_status ON asn(status);
+            CREATE TABLE IF NOT EXISTS asn_line (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                asn_id       INTEGER NOT NULL REFERENCES asn(id),
+                product_id   INTEGER NOT NULL REFERENCES product(id),
+                expected_qty REAL    NOT NULL,
+                received_qty REAL    NOT NULL DEFAULT 0,
+                putaway_qty  REAL    NOT NULL DEFAULT 0,
+                UNIQUE(asn_id, product_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_asn_line_asn ON asn_line(asn_id);
+            CREATE TABLE IF NOT EXISTS stock_movement (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                product_id  INTEGER NOT NULL REFERENCES product(id),
+                location_id INTEGER NOT NULL REFERENCES location(id),
+                qty_delta   REAL    NOT NULL,
+                ref_type    TEXT    NOT NULL,
+                ref_id      INTEGER,
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_movement_owner ON stock_movement(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_movement_ref   ON stock_movement(ref_type, ref_id);
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -139,7 +190,9 @@ else:
     from routes_location import location_bp  # noqa: E402
     from routes_owner import owner_bp  # noqa: E402
     from routes_product import product_bp  # noqa: E402
+    from routes_asn import asn_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
     app.register_blueprint(location_bp)
+    app.register_blueprint(asn_bp)
