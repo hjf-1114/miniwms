@@ -24,6 +24,7 @@
       <div><label>单号 *</label><input name="code" required placeholder="如 DN-20261103-01" maxlength="32"></div>
       <div><label>货主 *</label><select id="ownerSelect" required></select></div>
       <div><label>物料 *</label><select id="productSelect" required></select></div>
+      <div><label>客户 *</label><select id="customerSelect" required></select></div>
       <div><label>订购数量 *</label><input name="qty" type="number" min="0.01" step="0.01" required></div>
       <div><label>备注</label><input name="note"></div>
       <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
@@ -81,6 +82,19 @@ async function loadOwnersAndProducts() {
     (o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join("");
   document.getElementById("productSelect").innerHTML = pr.products.map(
     (p) => `<option value="${p.id}" data-owner="${p.owner_id || ""}">${esc(p.sku)} · ${esc(p.name)}</option>`).join("");
+  await loadCustomers();
+  document.getElementById("ownerSelect").onchange = loadCustomers;
+}
+
+async function loadCustomers() {
+  const ownerId = document.getElementById("ownerSelect").value;
+  if (!ownerId) {
+    document.getElementById("customerSelect").innerHTML = "";
+    return;
+  }
+  const data = await api("GET", `/api/customers?owner_id=${ownerId}&page_size=100`);
+  document.getElementById("customerSelect").innerHTML = data.customers.map(
+    (c) => `<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join("");
 }
 
 async function loadLocs() {
@@ -126,7 +140,7 @@ async function showDetail(id) {
   currentDn = data;
   document.getElementById("detailCard").style.display = "";
   document.getElementById("detailTitle").textContent =
-    `出库单明细：${data.dn.code}（${data.dn.status}）`;
+    `出库单明细：${data.dn.code}（${data.dn.status}） → 客户 ${data.dn.customer_code || "-"} · ${data.dn.customer_name || "-"}`;
   await loadLocs();
   renderLines();
 }
@@ -193,10 +207,11 @@ document.getElementById("createForm").addEventListener("submit", async (ev) => {
   const code = ev.target.code.value.trim();
   const ownerId = parseInt(document.getElementById("ownerSelect").value, 10);
   const pid = parseInt(document.getElementById("productSelect").value, 10);
+  const customerId = parseInt(document.getElementById("customerSelect").value, 10);
   const qty = parseFloat(ev.target.qty.value);
   try {
     await api("POST", "/api/dns", {
-      code, owner_id: ownerId, note: ev.target.note.value,
+      code, owner_id: ownerId, customer_id: customerId, note: ev.target.note.value,
       lines: [{ product_id: pid, ordered_qty: qty }],
     });
     showMsg(document.getElementById("msg"), "创建成功", "success");

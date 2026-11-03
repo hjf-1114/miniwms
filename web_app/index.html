@@ -15,6 +15,7 @@
   <a class="link" href="/asns.html">收货</a>
   <a class="link" href="/dns.html">出库</a>
   <a class="link" href="/stock.html">库存</a>
+  <a class="link" href="/customers.html">客户</a>
 </nav>
 
 <div class="container">
@@ -22,8 +23,8 @@
     <h2>欢迎使用 MiniWMS</h2>
       <p class="muted" style="line-height:1.9">
       轻量多货主 WMS（Flask + SQLite）。本页为前后端一体的本地 demo：
-      通过上方导航管理<b>货主 → 物料 → 库位</b>三类主数据，
-      完成<b>收货上架</b>与<b>拣货发货</b>的完整出入库流程，
+      通过上方导航管理<b>货主 → 物料 → 库位 → 客户</b>四类主数据，
+      完成<b>收货上架</b>与<b>拣货发货</b>的完整出入库流程（出库单关联客户），
       并在<b>库存</b>页查询余额、流水与账实核对。
       后续里程碑将逐步提供移库与盘点等操作页面。
     </p>
@@ -44,7 +45,8 @@
       <tr><td>M4</td><td>收货单与上架（ASN + 暂存位流转）</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M5</td><td>出库单（拣货分配 / 发货 / 超卖拦截）</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M6</td><td>库存账查询 / 动作流水 / 余额核对</td><td><span class="tag ok">已完成</span></td></tr>
-      <tr><td>M7+</td><td>移库 / 盘点 / 报表</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>M7</td><td>客户主数据 + 出库单关联客户（多货主隔离）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M8+</td><td>移库 / 盘点 / 报表</td><td><span class="tag off">规划中</span></td></tr>
     </table>
   </div>
 </div>
