@@ -2,24 +2,21 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>库存账 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-<nav class="navbar">
-  <a class="brand" href="/">MiniWMS</a>
-  <a class="link" href="/owners.html">货主</a>
-  <a class="link" href="/products.html">物料</a>
-  <a class="link" href="/locations.html">库位</a>
-  <a class="link" href="/asns.html">收货</a>
-  <a class="link" href="/dns.html">出库</a>
-  <a class="link active" href="/stock.html">库存</a>
-</nav>
-
-<div class="container">
-  <div id="msg" class="msg"></div>
-
-  <div class="card">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>库存账</h1><div class="crumb">MiniWMS / 出入库作业</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+<div class="card">
     <h2>库存余额</h2>
     <div class="toolbar">
       <select id="ownerFilter"></select>
@@ -30,10 +27,12 @@
       </label>
       <button class="btn secondary" onclick="loadStock()">查询</button>
     </div>
-    <table>
+    <div class="table-wrap">
+      <table>
       <thead><tr><th>货主</th><th>SKU</th><th>物料</th><th>库位</th><th>在手</th><th>已分配</th><th>可用</th><th>更新时间</th></tr></thead>
       <tbody id="stockBody"></tbody>
     </table>
+    </div>
     <p class="muted" style="margin-top:8px">共 <span id="stockTotal">0</span> 行 · 可用 = 在手 - 已分配</p>
   </div>
 
@@ -50,10 +49,12 @@
       </select>
       <button class="btn secondary" onclick="loadMovements()">查询</button>
     </div>
-    <table>
+    <div class="table-wrap">
+      <table>
       <thead><tr><th>时间</th><th>货主</th><th>SKU</th><th>库位</th><th>变动</th><th>类型</th><th>单据ID</th><th>备注</th></tr></thead>
       <tbody id="mvBody"></tbody>
     </table>
+    </div>
     <p class="muted" style="margin-top:8px">共 <span id="mvTotal">0</span> 条 · 每个货主×物料×库位的余额 = 其流水累加</p>
   </div>
 
@@ -64,8 +65,11 @@
     <div id="reconcileResult" style="margin-top:12px"></div>
   </div>
 </div>
+      </div>
+    </div>
 
-<script src="/js/api.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/layout.js"></script>
 <script>
 async function loadFilters() {
   const [ow, pr, loc] = await Promise.all([

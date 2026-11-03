@@ -2,23 +2,21 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>出库管理 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-<nav class="navbar">
-  <a class="brand" href="/">MiniWMS</a>
-  <a class="link" href="/owners.html">货主</a>
-  <a class="link" href="/products.html">物料</a>
-  <a class="link" href="/locations.html">库位</a>
-  <a class="link" href="/asns.html">收货</a>
-  <a class="link active" href="/dns.html">出库</a>
-</nav>
-
-<div class="container">
-  <div id="msg" class="msg"></div>
-
-  <div class="card">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>出库作业</h1><div class="crumb">MiniWMS / 出入库作业</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+<div class="card">
     <h2>新建出库单（DN）</h2>
     <form id="createForm" class="grid-form">
       <div><label>单号 *</label><input name="code" required placeholder="如 DN-20261103-01" maxlength="32"></div>
@@ -44,10 +42,12 @@
       </select>
       <button class="btn secondary" onclick="load()">查询</button>
     </div>
-    <table>
+    <div class="table-wrap">
+      <table>
       <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
+    </div>
   </div>
 
   <div class="card" id="detailCard" style="display:none">
@@ -57,19 +57,26 @@
       <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
       <button class="btn" onclick="doShip()">发货（要求全部拣满）</button>
     </div>
-    <table>
+    <div class="table-wrap">
+      <table>
       <thead><tr><th>行</th><th>SKU</th><th>物料</th><th>订购</th><th>已拣</th><th>待拣</th><th>拣货</th></tr></thead>
       <tbody id="lineBody"></tbody>
     </table>
+    </div>
     <h3 style="margin-top:14px">拣货明细</h3>
-    <table>
+    <div class="table-wrap">
+      <table>
       <thead><tr><th>明细</th><th>行</th><th>库位</th><th>数量</th></tr></thead>
       <tbody id="pickBody"></tbody>
     </table>
+    </div>
   </div>
 </div>
+      </div>
+    </div>
 
-<script src="/js/api.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/layout.js"></script>
 <script>
 let currentDn = null;
 

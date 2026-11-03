@@ -7,23 +7,20 @@
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-<nav class="navbar">
-  <a class="brand" href="/">MiniWMS</a>
-  <a class="link" href="/owners.html">货主</a>
-  <a class="link" href="/products.html">物料</a>
-  <a class="link" href="/locations.html">库位</a>
-  <a class="link" href="/asns.html">收货</a>
-  <a class="link" href="/dns.html">出库</a>
-  <a class="link" href="/stock.html">库存</a>
-  <a class="link" href="/customers.html">客户</a>
-</nav>
-
-<div class="container">
-  <div class="card">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>系统概览</h1><div class="crumb">MiniWMS / 概览</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+<div class="card">
     <h2>欢迎使用 MiniWMS</h2>
       <p class="muted" style="line-height:1.9">
       轻量多货主 WMS（Flask + SQLite）。本页为前后端一体的本地 demo：
-      通过上方导航管理<b>货主 → 物料 → 库位 → 客户</b>四类主数据，
+      通过左侧导航管理<b>货主 → 物料 → 库位 → 客户</b>四类主数据，
       完成<b>收货上架</b>与<b>拣货发货</b>的完整出入库流程（出库单关联客户），
       并在<b>库存</b>页查询余额、流水与账实核对。
       后续里程碑将逐步提供移库与盘点等操作页面。
@@ -37,7 +34,8 @@
 
   <div class="card">
     <h2>里程碑进度</h2>
-    <table>
+    <div class="table-wrap">
+      <table>
       <tr><th>里程碑</th><th>内容</th><th>状态</th></tr>
       <tr><td>M1</td><td>物料主数据</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M2</td><td>货主主数据与多货主模型</td><td><span class="tag ok">已完成</span></td></tr>
@@ -48,7 +46,11 @@
       <tr><td>M7</td><td>客户主数据 + 出库单关联客户（多货主隔离）</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M8+</td><td>移库 / 盘点 / 报表</td><td><span class="tag off">规划中</span></td></tr>
     </table>
+    </div>
   </div>
 </div>
+      </div>
+    </div>
+    <script src="/js/layout.js"></script>
 </body>
 </html>

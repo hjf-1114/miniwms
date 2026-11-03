@@ -2,21 +2,21 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>物料管理 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-<nav class="navbar">
-  <a class="brand" href="/">MiniWMS</a>
-  <a class="link" href="/owners.html">货主</a>
-  <a class="link" href="/products.html">物料</a>
-  <a class="link" href="/locations.html">库位</a>
-</nav>
-
-<div class="container">
-  <div id="msg" class="msg"></div>
-
-  <div class="card">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>物料管理</h1><div class="crumb">MiniWMS / 基础主数据</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+<div class="card">
     <h2>新建物料</h2>
     <form id="createForm" class="grid-form">
       <div><label>SKU *</label><input name="sku" required maxlength="64"></div>
@@ -37,10 +37,12 @@
       <select id="ownerFilter"><option value="">全部货主</option></select>
       <button class="btn secondary" onclick="load()">查询</button>
     </div>
-    <table>
+    <div class="table-wrap">
+      <table>
       <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>分类</th><th>货主</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
+    </div>
     <div class="pager">
       <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
       <span id="pageInfo"></span>
@@ -48,8 +50,11 @@
     </div>
   </div>
 </div>
+      </div>
+    </div>
 
-<script src="/js/api.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/layout.js"></script>
 <script>
 let page = 1, pageSize = 20;
 
