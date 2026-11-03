@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>库存账 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav class="navbar">
+  <a class="brand" href="/">MiniWMS</a>
+  <a class="link" href="/owners.html">货主</a>
+  <a class="link" href="/products.html">物料</a>
+  <a class="link" href="/locations.html">库位</a>
+  <a class="link" href="/asns.html">收货</a>
+  <a class="link" href="/dns.html">出库</a>
+  <a class="link active" href="/stock.html">库存</a>
+</nav>
+
+<div class="container">
+  <div id="msg" class="msg"></div>
+
+  <div class="card">
+    <h2>库存余额</h2>
+    <div class="toolbar">
+      <select id="ownerFilter"></select>
+      <select id="productFilter"></select>
+      <select id="locationFilter"></select>
+      <label style="display:flex;align-items:center;gap:4px">
+        <input type="checkbox" id="hasStock" checked>仅看有货行
+      </label>
+      <button class="btn secondary" onclick="loadStock()">查询</button>
+    </div>
+    <table>
+      <thead><tr><th>货主</th><th>SKU</th><th>物料</th><th>库位</th><th>在手</th><th>已分配</th><th>可用</th><th>更新时间</th></tr></thead>
+      <tbody id="stockBody"></tbody>
+    </table>
+    <p class="muted" style="margin-top:8px">共 <span id="stockTotal">0</span> 行 · 可用 = 在手 - 已分配</p>
+  </div>
+
+  <div class="card">
+    <h2>库存动作流水</h2>
+    <div class="toolbar">
+      <select id="mvType">
+        <option value="">全部类型</option>
+        <option value="asn_receive">收货入库</option>
+        <option value="asn_putaway_out">上架-出暂存</option>
+        <option value="asn_putaway_in">上架-入目标位</option>
+        <option value="dn_pick">拣货分配</option>
+        <option value="dn_ship">发货出库</option>
+      </select>
+      <button class="btn secondary" onclick="loadMovements()">查询</button>
+    </div>
+    <table>
+      <thead><tr><th>时间</th><th>货主</th><th>SKU</th><th>库位</th><th>变动</th><th>类型</th><th>单据ID</th><th>备注</th></tr></thead>
+      <tbody id="mvBody"></tbody>
+    </table>
+    <p class="muted" style="margin-top:8px">共 <span id="mvTotal">0</span> 条 · 每个货主×物料×库位的余额 = 其流水累加</p>
+  </div>
+
+  <div class="card">
+    <h2>余额核对</h2>
+    <p class="muted">独立事后核对：逐 货主×物料×库位 校验「账面余额 = 流水累加」。</p>
+    <button class="btn" onclick="doReconcile()">立即核对</button>
+    <div id="reconcileResult" style="margin-top:12px"></div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+async function loadFilters() {
+  const [ow, pr, loc] = await Promise.all([
+    api("GET", "/api/owners?page_size=100"),
+    api("GET", "/api/products?page_size=100"),
+    api("GET", "/api/locations?page_size=100"),
+  ]);
+  const opts = (list, label) =>
+    `<option value="">全部${label}</option>` + list.map(
+      (x) => `<option value="${x.id}">${esc(x.code)}</option>`).join("");
+  document.getElementById("ownerFilter").innerHTML = opts(ow.owners, "货主");
+  document.getElementById("productFilter").innerHTML = opts(pr.products, "物料");
+  document.getElementById("locationFilter").innerHTML = opts(loc.locations, "库位");
+}
+
+function commonQs() {
+  const qs = new URLSearchParams();
+  const o = document.getElementById("ownerFilter").value;
+  const p = document.getElementById("productFilter").value;
+  const l = document.getElementById("locationFilter").value;
+  if (o) qs.set("owner_id", o);
+  if (p) qs.set("product_id", p);
+  if (l) qs.set("location_id", l);
+  return qs;
+}
+
+const MV_LABEL = {
+  asn_receive: "收货入库", asn_putaway_out: "上架-出暂存", asn_putaway_in: "上架-入目标位",
+  dn_pick: "拣货分配", dn_ship: "发货出库", move_out: "移库出", move_in: "移库入",
+  adjustment: "盘点调整",
+};
+
+function mvTag(t) {
+  const cls = t === "dn_pick" ? "off" : "ok";
+  return `<span class="tag ${cls}">${MV_LABEL[t] || t}</span>`;
+}
+
+async function loadStock() {
+  const qs = commonQs();
+  if (document.getElementById("hasStock").checked) qs.set("has_stock", "1");
+  try {
+    const data = await api("GET", "/api/stock?" + qs);
+    document.getElementById("stockTotal").textContent = data.total;
+    document.getElementById("stockBody").innerHTML = data.stocks.length
+      ? data.stocks.map((s) =>
+        `<tr>
+          <td>${esc(s.owner_code)}</td><td>${esc(s.sku)}</td><td>${esc(s.product_name)}</td>
+          <td>${esc(s.location_code)}</td>
+          <td><b>${s.qty}</b></td><td>${s.allocated_qty}</td><td>${s.available_qty}</td>
+          <td class="muted">${esc(s.updated_at)}</td>
+        </tr>`).join("")
+      : `<tr><td colspan="8" class="muted">暂无库存记录（先走收货→上架）</td></tr>`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "库存加载失败：" + e.message, "error");
+  }
+}
+
+async function loadMovements() {
+  const qs = commonQs();
+  const t = document.getElementById("mvType").value;
+  if (t) qs.set("ref_type", t);
+  try {
+    const data = await api("GET", "/api/movements?" + qs);
+    document.getElementById("mvTotal").textContent = data.total;
+    document.getElementById("mvBody").innerHTML = data.movements.length
+      ? data.movements.map((m) =>
+        `<tr>
+          <td class="muted">${esc(m.created_at)}</td>
+          <td>${esc(m.owner_code)}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>
+          <td style="color:${m.qty_delta < 0 ? "#c0392b" : "#1e8e3e"}"><b>${m.qty_delta > 0 ? "+" : ""}${m.qty_delta}</b></td>
+          <td>${mvTag(m.ref_type)}</td>
+          <td>${m.ref_id === null ? "-" : m.ref_id}</td>
+          <td class="muted">${esc(m.note)}</td>
+        </tr>`).join("")
+      : `<tr><td colspan="8" class="muted">暂无流水</td></tr>`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "流水加载失败：" + e.message, "error");
+  }
+}
+
+async function doReconcile() {
+  const box = document.getElementById("reconcileResult");
+  try {
+    const r = await api("GET", "/api/stock/reconcile");
+    if (r.consistent) {
+      box.innerHTML = `<span class="tag ok">账实一致</span> 已核对 ${r.checked} 个货主×物料×库位组合，全部余额等于流水累加。`;
+    } else {
+      box.innerHTML = `<span class="tag off">发现 ${r.mismatches.length} 处不一致</span>` +
+        `<table style="margin-top:8px"><thead><tr><th>货主</th><th>SKU</th><th>库位</th><th>账面余额</th><th>流水累加</th><th>问题</th></tr></thead><tbody>` +
+        r.mismatches.map((m) =>
+          `<tr><td>${esc(m.owner_code)}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>` +
+          `<td>${m.book_qty}</td><td>${m.movement_sum}</td><td>${esc(m.issue)}</td></tr>`).join("") +
+        `</tbody></table>`;
+    }
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "核对失败：" + e.message, "error");
+  }
+}
+
+loadFilters().then(() => { loadStock(); loadMovements(); });
+</script>
+</body>
+</html>
