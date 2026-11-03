@@ -34,6 +34,11 @@ function modalFieldHtml(f, val) {
     control = `<textarea name="${f.name}" ${ph} ${req}>${esc(val)}</textarea>`;
   } else if (f.type === "lines") {
     control = `<div class="lines-editor" data-name="${f.name}"></div>`;
+  } else if (f.type === "region") {
+    control = `<div class="region-field" data-name="${f.name}">` +
+      `<select name="province"><option value="">省/直辖市</option></select>` +
+      `<select name="city"><option value="">市</option></select>` +
+      `<input name="district" placeholder="区/县" value=""></div>`;
   } else {
     const typ = f.type === "number" ? "number" : (f.type === "email" ? "email" : "text");
     const extra = f.type === "number" ? 'step="0.01"' : "";
@@ -124,6 +129,21 @@ function openForm(cfg) {
       const c = form.querySelector(`.lines-editor[data-name="${f.name}"]`);
       renderLinesEditor(c, f.lineFields, cfg.values ? cfg.values[f.name] : null);
     }
+    if (f.type === "region" && typeof bindRegionSelects === "function") {
+      const c = form.querySelector(`.region-field[data-name="${f.name}"]`);
+      const pSel = c.querySelector('[name="province"]');
+      const citySel = c.querySelector('[name="city"]');
+      const rb = bindRegionSelects(pSel, citySel);
+      if (cfg.values) {
+        const pv = cfg.values.province || "";
+        const cv = cfg.values.city || "";
+        const dv = cfg.values.district || "";
+        pSel.value = pv;
+        rb.fillCities(pv);
+        citySel.value = cv;
+        c.querySelector('[name="district"]').value = dv;
+      }
+    }
   });
 
   form.addEventListener("submit", async (ev) => {
@@ -138,6 +158,12 @@ function openForm(cfg) {
       }
       let v = fd.get(f.name);
       if (v === null) continue;
+      if (f.type === "region") {
+        payload["province"] = (fd.get("province") || "").trim();
+        payload["city"] = (fd.get("city") || "").trim();
+        payload["district"] = (fd.get("district") || "").trim();
+        continue;
+      }
       if (f.type === "number" || f.coerce === "int") {
         v = v === "" ? (f.nullable ? null : (f.type === "number" ? 0 : v)) : Number(v);
       }
