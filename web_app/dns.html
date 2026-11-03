@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>出库管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav class="navbar">
+  <a class="brand" href="/">MiniWMS</a>
+  <a class="link" href="/owners.html">货主</a>
+  <a class="link" href="/products.html">物料</a>
+  <a class="link" href="/locations.html">库位</a>
+  <a class="link" href="/asns.html">收货</a>
+  <a class="link active" href="/dns.html">出库</a>
+</nav>
+
+<div class="container">
+  <div id="msg" class="msg"></div>
+
+  <div class="card">
+    <h2>新建出库单（DN）</h2>
+    <form id="createForm" class="grid-form">
+      <div><label>单号 *</label><input name="code" required placeholder="如 DN-20261103-01" maxlength="32"></div>
+      <div><label>货主 *</label><select id="ownerSelect" required></select></div>
+      <div><label>物料 *</label><select id="productSelect" required></select></div>
+      <div><label>订购数量 *</label><input name="qty" type="number" min="0.01" step="0.01" required></div>
+      <div><label>备注</label><input name="note"></div>
+      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>出库单列表</h2>
+    <div class="toolbar">
+      <input id="kw" placeholder="单号搜索">
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="open">待拣货</option>
+        <option value="picking">拣货中</option>
+        <option value="shipped">已发货</option>
+        <option value="cancelled">已取消</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none">
+    <h2 id="detailTitle">出库单明细</h2>
+    <div class="toolbar">
+      <select id="pickLocSel"></select><span class="muted">← 拣货来源位（存储/拣货区）</span>
+      <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
+      <button class="btn" onclick="doShip()">发货（要求全部拣满）</button>
+    </div>
+    <table>
+      <thead><tr><th>行</th><th>SKU</th><th>物料</th><th>订购</th><th>已拣</th><th>待拣</th><th>拣货</th></tr></thead>
+      <tbody id="lineBody"></tbody>
+    </table>
+    <h3 style="margin-top:14px">拣货明细</h3>
+    <table>
+      <thead><tr><th>明细</th><th>行</th><th>库位</th><th>数量</th></tr></thead>
+      <tbody id="pickBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+let currentDn = null;
+
+async function loadOwnersAndProducts() {
+  const [ow, pr] = await Promise.all([
+    api("GET", "/api/owners?page_size=100"),
+    api("GET", "/api/products?page_size=100"),
+  ]);
+  document.getElementById("ownerSelect").innerHTML = ow.owners.map(
+    (o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join("");
+  document.getElementById("productSelect").innerHTML = pr.products.map(
+    (p) => `<option value="${p.id}" data-owner="${p.owner_id || ""}">${esc(p.sku)} · ${esc(p.name)}</option>`).join("");
+}
+
+async function loadLocs() {
+  const data = await api("GET", "/api/locations?status=active&page_size=100");
+  const opts = data.locations.filter(
+    (l) => l.loc_type === "storage" || l.loc_type === "picking").map(
+    (l) => `<option value="${l.id}">${esc(l.code)}（${esc(l.loc_type_label)}）</option>`).join("");
+  document.getElementById("pickLocSel").innerHTML = opts;
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page_size: 50 });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  try {
+    const data = await api("GET", "/api/dns?" + qs);
+    document.getElementById("tbody").innerHTML = data.dns.map((d) =>
+      `<tr>
+        <td>${d.id}</td><td>${esc(d.code)}</td>
+        <td>${esc(d.owner_code || "")} · ${esc(d.owner_name || "")}</td>
+        <td>${dnStatusTag(d.status)}</td>
+        <td class="muted">${esc(d.created_at)}</td>
+        <td>
+          <button class="btn secondary" onclick="showDetail(${d.id})">明细</button>
+          ${d.status === "open" ? `<button class="btn danger" onclick="cancelDn(${d.id})">取消</button>` : ""}
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function dnStatusTag(s) {
+  const map = { open: "待拣货", picking: "拣货中", shipped: "已发货", cancelled: "已取消" };
+  const cls = s === "shipped" ? "ok" : "off";
+  return `<span class="tag ${cls}">${map[s] || s}</span>`;
+}
+
+async function showDetail(id) {
+  const data = await api("GET", "/api/dns/" + id);
+  currentDn = data;
+  document.getElementById("detailCard").style.display = "";
+  document.getElementById("detailTitle").textContent =
+    `出库单明细：${data.dn.code}（${data.dn.status}）`;
+  await loadLocs();
+  renderLines();
+}
+
+function renderLines() {
+  const d = currentDn;
+  const lineNo = {};
+  d.lines.forEach((l) => { lineNo[l.id] = l.id; });
+  document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
+    `<tr>
+      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.product_name)}</td>
+      <td>${l.ordered_qty}</td><td><b>${l.picked_qty}</b></td><td>${l.remaining_pick}</td>
+      <td>
+        <input id="pk-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
+        <button class="btn" onclick="doPick(${l.id})" ${d.dn.status === "shipped" || d.dn.status === "cancelled" ? "disabled" : ""}>拣货</button>
+      </td>
+    </tr>`).join("");
+  document.getElementById("pickBody").innerHTML = d.picks.length
+    ? d.picks.map((p) =>
+      `<tr><td>${p.id}</td><td>${p.line_id}</td><td>${esc(p.location_code)}</td><td>${p.qty}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">暂无拣货明细</td></tr>`;
+}
+
+async function doPick(lineId) {
+  const qty = parseFloat(document.getElementById("pk-" + lineId).value);
+  const locationId = parseInt(document.getElementById("pickLocSel").value, 10);
+  try {
+    const r = await api("POST", `/api/dns/${currentDn.dn.id}/pick`,
+      { line_id: lineId, location_id: locationId, qty });
+    showMsg(document.getElementById("msg"), `拣货成功，单据状态：${r.status}`, "success");
+    await showDetail(currentDn.dn.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "拣货失败：" + e.message, "error");
+  }
+}
+
+async function doShip() {
+  if (!currentDn) return;
+  if (!confirm("确认发货？将按拣货明细逐库位扣减库存。")) return;
+  try {
+    const r = await api("POST", `/api/dns/${currentDn.dn.id}/ship`);
+    showMsg(document.getElementById("msg"), `发货成功，单据状态：${r.status}`, "success");
+    await showDetail(currentDn.dn.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "发货失败：" + e.message, "error");
+  }
+}
+
+async function cancelDn(id) {
+  if (!confirm("确认取消该出库单？（仅未拣货可取消）")) return;
+  try {
+    await api("POST", `/api/dns/${id}/cancel`);
+    showMsg(document.getElementById("msg"), "已取消", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "取消失败：" + e.message, "error");
+  }
+}
+
+document.getElementById("createForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const code = ev.target.code.value.trim();
+  const ownerId = parseInt(document.getElementById("ownerSelect").value, 10);
+  const pid = parseInt(document.getElementById("productSelect").value, 10);
+  const qty = parseFloat(ev.target.qty.value);
+  try {
+    await api("POST", "/api/dns", {
+      code, owner_id: ownerId, note: ev.target.note.value,
+      lines: [{ product_id: pid, ordered_qty: qty }],
+    });
+    showMsg(document.getElementById("msg"), "创建成功", "success");
+    ev.target.reset();
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
+  }
+});
+
+loadOwnersAndProducts().then(load);
+</script>
+</body>
+</html>

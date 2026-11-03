@@ -13,15 +13,17 @@
   <a class="link" href="/products.html">物料</a>
   <a class="link" href="/locations.html">库位</a>
   <a class="link" href="/asns.html">收货</a>
+  <a class="link" href="/dns.html">出库</a>
 </nav>
 
 <div class="container">
   <div class="card">
     <h2>欢迎使用 MiniWMS</h2>
-    <p class="muted" style="line-height:1.9">
+      <p class="muted" style="line-height:1.9">
       轻量多货主 WMS（Flask + SQLite）。本页为前后端一体的本地 demo：
       通过上方导航管理<b>货主 → 物料 → 库位</b>三类主数据，
-      后续里程碑将逐步提供收货上架、拣货发货、库存流水、移库与盘点等操作页面。
+      并完成<b>收货上架</b>与<b>拣货发货</b>的完整出入库流程。
+      后续里程碑将逐步提供库存流水、移库与盘点等操作页面。
     </p>
     <p class="muted" style="margin-top:10px">
       服务地址：<code>http://localhost:5100</code> ·
@@ -38,7 +40,8 @@
       <tr><td>M2</td><td>货主主数据与多货主模型</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M3</td><td>库位主数据 + Web demo 骨架</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M4</td><td>收货单与上架（ASN + 暂存位流转）</td><td><span class="tag ok">已完成</span></td></tr>
-      <tr><td>M5+</td><td>拣货发货 / 库存账 / 移库 / 盘点 / 报表</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>M5</td><td>出库单（拣货分配 / 发货 / 超卖拦截）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M6+</td><td>库存账 / 移库 / 盘点 / 报表</td><td><span class="tag off">规划中</span></td></tr>
     </table>
   </div>
 </div>

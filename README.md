@@ -17,7 +17,8 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 ```
 
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
-货主/物料/库位三个管理页，创建、搜索、启停、删除均直接调用后端 API。
+货主/物料/库位/收货/出库五个管理页，创建、搜索、启停、删除与收货/上架/拣货/发货
+均直接调用后端 API。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
 运行测试：
@@ -55,7 +56,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - 超卖拦截：可用量不足即拒绝，全程 BEGIN IMMEDIATE 事务锁行防并发双扣
   - 单据状态机：open → picking → shipped（+cancelled），仅未拣货可取消
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/收货四个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/收货/出库五个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
