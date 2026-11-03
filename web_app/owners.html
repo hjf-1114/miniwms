@@ -48,6 +48,7 @@
 
     <script src="/js/api.js"></script>
     <script src="/js/modal.js"></script>
+    <script src="/js/region.js"></script>
     <script src="/js/layout.js"></script>
 <script>
 let page = 1, pageSize = 20;
@@ -58,7 +59,13 @@ const FIELDS = [
   { name: "contact", label: "联系人" },
   { name: "phone", label: "电话" },
   { name: "email", label: "邮箱", type: "email" },
-  { name: "address", label: "地址", full: true },
+  { name: "region", label: "所在地区（省/市/区）", type: "region", full: true },
+  { name: "address", label: "详细地址", full: true },
+  { name: "backup_address", label: "备用地址" },
+  { name: "authorized_warehouse", label: "授权仓库" },
+  { name: "business_scope", label: "经营范围", full: true },
+  { name: "extra1", label: "备用字段1" },
+  { name: "extra2", label: "备用字段2" },
   { name: "note", label: "备注", type: "textarea", full: true },
 ];
 
@@ -77,6 +84,7 @@ async function load() {
         <td>${statusTag(o.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${o.id})">编辑</button>
+          <button class="btn secondary sm" onclick="manageOwnerCerts(${o.id})">证照</button>
           <button class="btn secondary sm" onclick="toggle(${o.id},'${o.status}')">${o.status === "active" ? "停用" : "启用"}</button>
           <button class="btn danger sm" onclick="del(${o.id})">删除</button>
         </td>
@@ -93,7 +101,7 @@ function turn(d) { page += d; load(); }
 
 function openCreate() {
   openForm({
-    title: "新建货主", submitText: "创建", fields: FIELDS,
+    title: "新建货主", submitText: "创建", width: 760, fields: FIELDS,
     onSubmit: async (p) => {
       await api("POST", "/api/owners", p);
       showMsg(document.getElementById("msg"), "创建成功", "success");
@@ -105,13 +113,68 @@ function openCreate() {
 async function openEdit(id) {
   const data = await api("GET", "/api/owners/" + id);
   openForm({
-    title: "编辑货主", submitText: "保存", fields: FIELDS, values: data.owner,
+    title: "编辑货主", submitText: "保存", width: 760, fields: FIELDS, values: data.owner,
     onSubmit: async (p) => {
       await api("PUT", "/api/owners/" + id, p);
       showMsg(document.getElementById("msg"), "已保存", "success");
       load();
     },
   });
+}
+
+// 货主证照管理（营业执照/医疗器械经营许可等，可多证）
+async function manageOwnerCerts(id) {
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML = `
+    <div class="modal" style="width:min(640px,100%)">
+      <div class="modal-head"><h3>货主证照管理</h3><button class="modal-x" type="button" aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <div class="table-wrap"><table>
+          <thead><tr><th>类型</th><th>证号</th><th>发证机构</th><th>有效期</th><th>操作</th></tr></thead>
+          <tbody id="certBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <input id="cType" placeholder="证照类型" style="width:120px">
+          <input id="cNo" placeholder="证号" style="width:120px">
+          <input id="cIssuer" placeholder="发证机构" style="flex:1">
+          <input id="cFrom" placeholder="起始(YYYY-MM-DD)" style="width:120px">
+          <input id="cTo" placeholder="截止(YYYY-MM-DD)" style="width:120px">
+          <button class="btn sm" id="cAdd">+ 添加</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov || e.target.classList.contains("modal-x") || e.target.hasAttribute("data-close")) close();
+  });
+  ov.querySelector(".modal-x").addEventListener("click", close);
+  const body = ov.querySelector("#certBody");
+  async function refresh() {
+    const d = await api("GET", `/api/owners/${id}/certs`);
+    body.innerHTML = d.certs.map((c) =>
+      `<tr><td>${esc(c.cert_type)}</td><td>${esc(c.cert_no)}</td><td>${esc(c.issuer)}</td>` +
+      `<td>${esc(c.valid_from)} ~ ${esc(c.valid_to)}</td>` +
+      `<td><button class="btn danger sm" data-del="${c.id}">删</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">暂无证照</td></tr>`;
+    body.querySelectorAll("[data-del]").forEach((btn) => btn.addEventListener("click", async () => {
+      await api("DELETE", `/api/owners/${id}/certs/${btn.dataset.del}`); refresh();
+    }));
+  }
+  ov.querySelector("#cAdd").addEventListener("click", async () => {
+    const cert_type = ov.querySelector("#cType").value.trim();
+    if (!cert_type) return;
+    await api("POST", `/api/owners/${id}/certs`, {
+      cert_type,
+      cert_no: ov.querySelector("#cNo").value.trim(),
+      issuer: ov.querySelector("#cIssuer").value.trim(),
+      valid_from: ov.querySelector("#cFrom").value.trim(),
+      valid_to: ov.querySelector("#cTo").value.trim(),
+    });
+    ["#cType", "#cNo", "#cIssuer", "#cFrom", "#cTo"].forEach((s) => { ov.querySelector(s).value = ""; });
+    refresh();
+  });
+  await refresh();
 }
 
 async function toggle(id, status) {

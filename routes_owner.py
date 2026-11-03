@@ -61,6 +61,11 @@ def _validate_owner_payload(payload, *, partial=False):
     if "note" in payload:
         cleaned["note"] = str(payload.get("note") or "")
 
+    # M11 电商/3PL 级字段
+    for key in ("province", "city", "district", "backup_address", "authorized_warehouse", "business_scope", "extra1", "extra2"):
+        if key in payload:
+            cleaned[key] = str(payload.get(key) or "").strip()
+
     return errors, cleaned
 
 
@@ -84,8 +89,12 @@ def create_owner():
         return jsonify({"ok": False, "errors": [f"货主编码已存在: {cleaned['code']}"]}), 409
 
     cur = db.execute(
-        "INSERT INTO owner (code, name, contact, phone, email, address, status, note) "
-        "VALUES (:code, :name, :contact, :phone, :email, :address, :status, :note)",
+        """INSERT INTO owner (code, name, contact, phone, email, address, status, note,
+                              province, city, district, backup_address, authorized_warehouse,
+                              business_scope, extra1, extra2)
+           VALUES (:code, :name, :contact, :phone, :email, :address, :status, :note,
+                   :province, :city, :district, :backup_address, :authorized_warehouse,
+                   :business_scope, :extra1, :extra2)""",
         {
             **cleaned,
             "contact": cleaned.get("contact", ""),
@@ -94,6 +103,14 @@ def create_owner():
             "address": cleaned.get("address", ""),
             "status": cleaned.get("status", "active"),
             "note": cleaned.get("note", ""),
+            "province": cleaned.get("province", ""),
+            "city": cleaned.get("city", ""),
+            "district": cleaned.get("district", ""),
+            "backup_address": cleaned.get("backup_address", ""),
+            "authorized_warehouse": cleaned.get("authorized_warehouse", ""),
+            "business_scope": cleaned.get("business_scope", ""),
+            "extra1": cleaned.get("extra1", ""),
+            "extra2": cleaned.get("extra2", ""),
         },
     )
     db.commit()
@@ -185,5 +202,53 @@ def delete_owner(owner_id):
             {"ok": False, "error": f"该货主名下还有 {n} 个物料档案，禁止删除；请先转移或停用"}
         ), 409
     db.execute("DELETE FROM owner WHERE id = ?", (owner_id,))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+# ── M11 货主证照（营业执照/医疗器械经营许可等，可多证）──
+@owner_bp.route("/<int:owner_id>/certs", methods=["GET"])
+def list_owner_certs(owner_id):
+    db = get_db()
+    if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
+        return jsonify({"ok": False, "error": "货主不存在"}), 404
+    rows = db.execute(
+        "SELECT * FROM owner_cert WHERE owner_id = ? ORDER BY id", (owner_id,)
+    ).fetchall()
+    return jsonify({"ok": True, "certs": [dict(r) for r in rows]})
+
+
+@owner_bp.route("/<int:owner_id>/certs", methods=["POST"])
+def add_owner_cert(owner_id):
+    payload = request_payload()
+    cert_type = str(payload.get("cert_type") or "").strip()
+    if not cert_type:
+        return jsonify({"ok": False, "errors": ["cert_type 必填"]}), 400
+    cert_no = str(payload.get("cert_no") or "").strip()
+    issuer = str(payload.get("issuer") or "").strip()
+    valid_from = str(payload.get("valid_from") or "").strip()
+    valid_to = str(payload.get("valid_to") or "").strip()
+    note = str(payload.get("note") or "").strip()
+    db = get_db()
+    if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
+        return jsonify({"ok": False, "error": "货主不存在"}), 404
+    cur = db.execute(
+        """INSERT INTO owner_cert (owner_id, cert_type, cert_no, issuer, valid_from, valid_to, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (owner_id, cert_type, cert_no, issuer, valid_from, valid_to, note),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM owner_cert WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify({"ok": True, "cert": dict(row)}), 201
+
+
+@owner_bp.route("/<int:owner_id>/certs/<int:cert_id>", methods=["DELETE"])
+def delete_owner_cert(owner_id, cert_id):
+    db = get_db()
+    if db.execute(
+        "SELECT id FROM owner_cert WHERE id = ? AND owner_id = ?", (cert_id, owner_id)
+    ).fetchone() is None:
+        return jsonify({"ok": False, "error": "证照不存在"}), 404
+    db.execute("DELETE FROM owner_cert WHERE id = ?", (cert_id,))
     db.commit()
     return jsonify({"ok": True})

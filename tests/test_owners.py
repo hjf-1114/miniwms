@@ -126,6 +126,61 @@ class OwnerApiTest(unittest.TestCase):
         self.assertEqual(o["name"], "改名")
         self.assertEqual(o["email"], "a@b.com")  # 未动字段不变
 
+    # ---------- M11 电商/3PL 级字段（省市区/备用地址/授权仓库/经营范围/备用字段） ----------
+    def test_create_accepts_m11_fields(self):
+        resp = self._create(
+            province="广东省", city="深圳市", district="南山区",
+            backup_address="备用仓：东莞", authorized_warehouse="WH-SZ-01",
+            business_scope="一二三类医疗器械", extra1="VIP",
+        )
+        self.assertEqual(resp.status_code, 201)
+        o = resp.get_json()["owner"]
+        self.assertEqual(o["province"], "广东省")
+        self.assertEqual(o["city"], "深圳市")
+        self.assertEqual(o["district"], "南山区")
+        self.assertEqual(o["authorized_warehouse"], "WH-SZ-01")
+        self.assertEqual(o["business_scope"], "一二三类医疗器械")
+        self.assertEqual(o["extra1"], "VIP")
+
+    def test_update_m11_fields(self):
+        oid = self._create().get_json()["owner"]["id"]
+        resp = self.client.put(
+            f"/api/owners/{oid}",
+            json={"province": "浙江省", "city": "杭州市", "business_scope": "食品"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        o = resp.get_json()["owner"]
+        self.assertEqual(o["province"], "浙江省")
+        self.assertEqual(o["city"], "杭州市")
+        self.assertEqual(o["business_scope"], "食品")
+        self.assertEqual(o["name"], "测试货主")  # 未动字段不变
+
+    # ---------- M11 货主证照子表 ----------
+    def test_cert_crud(self):
+        oid = self._create().get_json()["owner"]["id"]
+        r = self.client.post(
+            f"/api/owners/{oid}/certs",
+            json={"cert_type": "营业执照", "cert_no": "91440300MA1", "issuer": "市监局", "valid_from": "2020-01-01", "valid_to": "2030-01-01"},
+        )
+        self.assertEqual(r.status_code, 201)
+        cert = r.get_json()["cert"]
+        self.assertEqual(cert["cert_type"], "营业执照")
+        lst = self.client.get(f"/api/owners/{oid}/certs").get_json()
+        self.assertEqual(len(lst["certs"]), 1)
+        # 删除
+        delr = self.client.delete(f"/api/owners/{oid}/certs/{cert['id']}")
+        self.assertEqual(delr.status_code, 200)
+        self.assertEqual(len(self.client.get(f"/api/owners/{oid}/certs").get_json()["certs"]), 0)
+
+    def test_cert_type_required(self):
+        oid = self._create().get_json()["owner"]["id"]
+        r = self.client.post(f"/api/owners/{oid}/certs", json={})
+        self.assertEqual(r.status_code, 400)
+
+    def test_cert_on_unknown_owner(self):
+        r = self.client.get("/api/owners/9999/certs")
+        self.assertEqual(r.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

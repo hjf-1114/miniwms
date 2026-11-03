@@ -301,6 +301,38 @@ def init_db():
             ):
                 if col not in owner_cols:
                     conn.execute(ddl)
+        # M11 货主主数据深化：省市区/备用地址/授权仓库/经营范围/备用字段 + 证照子表
+        if "owner" in tables:
+            owner_cols = {r[1] for r in conn.execute("PRAGMA table_info(owner)")}
+            for col, ddl in (
+                ("province", "ALTER TABLE owner ADD COLUMN province TEXT NOT NULL DEFAULT ''"),
+                ("city", "ALTER TABLE owner ADD COLUMN city TEXT NOT NULL DEFAULT ''"),
+                ("district", "ALTER TABLE owner ADD COLUMN district TEXT NOT NULL DEFAULT ''"),
+                ("backup_address", "ALTER TABLE owner ADD COLUMN backup_address TEXT NOT NULL DEFAULT ''"),
+                ("authorized_warehouse", "ALTER TABLE owner ADD COLUMN authorized_warehouse TEXT NOT NULL DEFAULT ''"),
+                ("business_scope", "ALTER TABLE owner ADD COLUMN business_scope TEXT NOT NULL DEFAULT ''"),
+                ("extra1", "ALTER TABLE owner ADD COLUMN extra1 TEXT NOT NULL DEFAULT ''"),
+                ("extra2", "ALTER TABLE owner ADD COLUMN extra2 TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in owner_cols:
+                    conn.execute(ddl)
+        # M11 货主证照子表（营业执照/医疗器械经营许可等，可多证）
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS owner_cert (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id      INTEGER NOT NULL REFERENCES owner(id),
+                cert_type     TEXT    NOT NULL DEFAULT '',
+                cert_no       TEXT    NOT NULL DEFAULT '',
+                issuer        TEXT    NOT NULL DEFAULT '',
+                valid_from    TEXT    NOT NULL DEFAULT '',
+                valid_to      TEXT    NOT NULL DEFAULT '',
+                note          TEXT    NOT NULL DEFAULT '',
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_owner_cert_owner ON owner_cert(owner_id);
+            """
+        )
         if "customer" in tables:
             cust_cols = {r[1] for r in conn.execute("PRAGMA table_info(customer)")}
             for col, ddl in (
