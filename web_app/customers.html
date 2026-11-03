@@ -68,8 +68,10 @@ function customerFields() {
       { value: "金牌", label: "金牌" },
       { value: "VIP", label: "VIP" },
     ] },
-    { name: "region", label: "地区", placeholder: "如 华东/华北" },
-    { name: "address", label: "地址", full: true },
+    { name: "region", label: "所在地区（省/市/区）", type: "region", full: true },
+    { name: "detail_address", label: "详细地址", full: true },
+    { name: "business_scope", label: "经营范围", full: true },
+    { name: "address", label: "备用地址(旧字段)", full: true },
   ];
 }
 
@@ -96,7 +98,7 @@ async function load() {
       `<tr>
         <td>${c.id}</td><td>${esc(c.code)}</td><td>${esc(c.name)}</td>
         <td>${esc(c.owner_code || "")} · ${esc(c.owner_name || "")}</td>
-        <td>${esc(c.contact)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.level)}</td><td>${esc(c.region)}</td>
+        <td>${esc(c.contact)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.level)}</td><td>${esc(c.province || "")} ${esc(c.city || "")}</td>
         <td>${statusTag(c.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${c.id})">编辑</button>
@@ -117,7 +119,7 @@ function turn(d) { page += d; load(); }
 
 function openCreate() {
   openForm({
-    title: "新建客户", submitText: "创建", fields: customerFields(),
+    title: "新建客户", submitText: "创建", width: 760, fields: customerFields(),
     onSubmit: async (p) => {
       await api("POST", "/api/customers", p);
       showMsg(document.getElementById("msg"), "创建成功", "success");
@@ -129,7 +131,7 @@ function openCreate() {
 async function openEdit(id) {
   const data = await api("GET", "/api/customers/" + id);
   openForm({
-    title: "编辑客户", submitText: "保存", fields: customerFields(), values: data.customer,
+    title: "编辑客户", submitText: "保存", width: 760, fields: customerFields(), values: data.customer,
     onSubmit: async (p) => {
       await api("PUT", "/api/customers/" + id, p);
       showMsg(document.getElementById("msg"), "已保存", "success");

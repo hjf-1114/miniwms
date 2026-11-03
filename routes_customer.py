@@ -66,6 +66,11 @@ def _validate_customer_payload(payload, *, partial=False):
     if "note" in payload:
         cleaned["note"] = str(payload.get("note") or "")
 
+    # M12 电商/3PL 级字段
+    for key in ("province", "city", "district", "detail_address", "business_scope"):
+        if key in payload:
+            cleaned[key] = str(payload.get(key) or "").strip()
+
     return errors, cleaned
 
 
@@ -91,8 +96,10 @@ def create_customer():
         return jsonify({"ok": False, "errors": [f"货主不存在: id={cleaned['owner_id']}"]}), 400
 
     cur = db.execute(
-        "INSERT INTO customer (code, name, owner_id, contact, phone, address, email, level, region, status, note) "
-        "VALUES (:code, :name, :owner_id, :contact, :phone, :address, :email, :level, :region, :status, :note)",
+        """INSERT INTO customer (code, name, owner_id, contact, phone, address, email, level,
+                               region, province, city, district, detail_address, business_scope, status, note)
+           VALUES (:code, :name, :owner_id, :contact, :phone, :address, :email, :level,
+                   :region, :province, :city, :district, :detail_address, :business_scope, :status, :note)""",
         {
             **cleaned,
             "contact": cleaned.get("contact", ""),
@@ -101,6 +108,11 @@ def create_customer():
             "email": cleaned.get("email", ""),
             "level": cleaned.get("level", "普通"),
             "region": cleaned.get("region", ""),
+            "province": cleaned.get("province", ""),
+            "city": cleaned.get("city", ""),
+            "district": cleaned.get("district", ""),
+            "detail_address": cleaned.get("detail_address", ""),
+            "business_scope": cleaned.get("business_scope", ""),
             "status": cleaned.get("status", "active"),
             "note": cleaned.get("note", ""),
         },

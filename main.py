@@ -342,6 +342,18 @@ def init_db():
             ):
                 if col not in cust_cols:
                     conn.execute(ddl)
+        # M12 客户主数据深化：省市区 + 详细地址 + 经营范围
+        if "customer" in tables:
+            cust_cols = {r[1] for r in conn.execute("PRAGMA table_info(customer)")}
+            for col, ddl in (
+                ("province", "ALTER TABLE customer ADD COLUMN province TEXT NOT NULL DEFAULT ''"),
+                ("city", "ALTER TABLE customer ADD COLUMN city TEXT NOT NULL DEFAULT ''"),
+                ("district", "ALTER TABLE customer ADD COLUMN district TEXT NOT NULL DEFAULT ''"),
+                ("detail_address", "ALTER TABLE customer ADD COLUMN detail_address TEXT NOT NULL DEFAULT ''"),
+                ("business_scope", "ALTER TABLE customer ADD COLUMN business_scope TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in cust_cols:
+                    conn.execute(ddl)
         if "product" in tables:
             prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(product)")}
             for col, ddl in (

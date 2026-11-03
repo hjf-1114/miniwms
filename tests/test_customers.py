@@ -152,6 +152,33 @@ class CustomerApiTest(unittest.TestCase):
         self.assertEqual(c["email"], "keep@x.com")  # 未动字段不变
         self.assertEqual(c["level"], "VIP")
 
+    # ---------- M12 省市区 + 详细地址 + 经营范围 ----------
+    def test_create_accepts_m12_fields(self):
+        oid = self._mk_owner()
+        c = self._mk_customer(
+            oid, code="C-M12", name="区域客户", province="广东省", city="深圳市",
+            district="南山区", detail_address="科技园 1 栋", business_scope="医疗器械销售",
+        )["customer"]
+        self.assertEqual(c["province"], "广东省")
+        self.assertEqual(c["city"], "深圳市")
+        self.assertEqual(c["district"], "南山区")
+        self.assertEqual(c["detail_address"], "科技园 1 栋")
+        self.assertEqual(c["business_scope"], "医疗器械销售")
+
+    def test_update_m12_fields(self):
+        oid = self._mk_owner()
+        cid = self._mk_customer(oid, code="C-M12B", name="客户B")["customer"]["id"]
+        resp = self.client.put(
+            f"/api/customers/{cid}",
+            json={"province": "浙江省", "city": "杭州市", "detail_address": "西湖区"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        c = resp.get_json()["customer"]
+        self.assertEqual(c["province"], "浙江省")
+        self.assertEqual(c["city"], "杭州市")
+        self.assertEqual(c["detail_address"], "西湖区")
+        self.assertEqual(c["name"], "客户B")  # 未动字段不变
+
 
 if __name__ == "__main__":
     unittest.main()
