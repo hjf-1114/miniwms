@@ -44,12 +44,17 @@
 - M7 客户主数据（客户归属货主，出库单关联客户，多货主隔离）✅
 - M8 基础资料字段增强（电商字段 + 一键演示数据播种）✅
 - M9 用户与角色管理（登录/权限基础，供后续功能联动）✅
-- M10 移库（库位间转移：同数量一减一增两条流水，原子事务）
-- M11 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
-- M12 补货预警（min_stock 对比 + 拣货位缺料提示）
-- M13 报表统计（按货主的收发汇总、周转率、库位利用率）
-- M14 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）
-- M15 CSV 导入导出
+- M10 物料主数据深化（电商/医药级字段 + 多条码 + 多层级包装）✅
+- M11 货主主数据深化（省市区 + 证照子表 + 经营范围）✅
+- M12 客户主数据深化（省市区 + 详细地址 + 经营范围）✅
+- M13 库位主数据深化（库位组 + 长宽高 + 体积库容）✅
+- M14 承运商模块（新增子系统，供发快递/零担/整车）✅
+- M15 移库（库位间转移：同数量一减一增两条流水，原子事务）
+- M16 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
+- M17 补货预警（min_stock 对比 + 拣货位缺料提示）
+- M18 报表统计（按货主的收发汇总、周转率、库位利用率）
+- M19 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）
+- M20 CSV 导入导出
 
 ## 外部对接设计（规划中，2026-11-03 用户提出）
 
@@ -161,6 +166,74 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
 - 登录签发 token；无 token 访问 `/api/roles` 返回 401；操作员 token 访问返回 403
 - 创建角色/用户 → 用新账号登录成功 → 改密后旧密失效；删除最后一个管理员被拒（409）
 - 前端 `/login.html` 登录后 localStorage 持 token，受保护页面自动带 `Authorization` 头
+
+## M10 物料主数据深化（2026-11-03）
+
+**目标**：补齐物料（商品）的电商/医药级主数据，支持多条码扫码与多层级包装规格，让物料档案达到「可当真产品用」的深度。
+
+**改动清单**：
+- `main.py`：`product` 表新增 article_no/category_l1~l4/product_type/origin/business_scope/reg_cert_no/registrant/
+  mfg_enterprise/mfg_license/external_code/main_category/temp_range/humidity_range/hazard_type/is_serial/
+  is_shelf_control(0/1)/extra1~3，迁移幂等；新增 `product_barcode`（多条码、可设主条码）、
+  `product_package`（多层级包装：pkg_level/长宽高/volume 自动计算/weight_kg/qty_per_package）子表
+- `routes_product.py`：校验与 INSERT 同步扩展；新增
+  `GET/POST /api/products/<id>/barcodes`、`DELETE /api/products/<id>/barcodes/<bid>`、
+  `GET/POST /api/products/<id>/packages`、`DELETE /api/products/<id>/packages/<pid>`
+- `web_app/products.html`：物料表单扩展全部新字段（弹窗加宽至 760）；新增「条码/包装」管理弹窗（多条码 + 多层级包装）
+- `tests/test_products.py`：+7（扩展字段落库、部分更新保留、条码增删、包装体积自动计算、负数拦截）
+
+**可验证结果**：全量 139 绿；创建返回含全部新字段；包装体积 = 长×宽×高 自动写入；条码列表主条码置顶。
+
+## M11 货主主数据深化（2026-11-03）
+
+**目标**：货主档案补充省市区、备用地址、授权仓库、经营范围与证照信息，贴近 3PL/医药 WMS 实务。
+
+**改动清单**：
+- `main.py`：`owner` 表新增 province/city/district/backup_address/authorized_warehouse/business_scope/extra1~2；
+  新增 `owner_cert`（cert_type/cert_no/issuer/valid_from/valid_to/note）证照子表，迁移幂等
+- `routes_owner.py`：校验与 INSERT 同步；新增 `GET/POST /api/owners/<id>/certs`、`DELETE /api/owners/<id>/certs/<cid>`
+- `web_app/js/region.js`（新增）：省→市级联静态数据（34 省级单位主要地级市）；`modal.js` 新增 `region` 复合字段类型（省/市联动 + 区/县文本）
+- `owners.html`：接入省市区下拉、新字段；新增「证照」管理弹窗
+- `tests/test_owners.py`：+6
+
+**可验证结果**：全量 139 绿；省市区下拉联动生效；证照增删可用。
+
+## M12 客户主数据深化（2026-11-03）
+
+**目标**：客户档案补充省市区、详细地址与经营范围（呼应「客户选择省市区和填写详细地址、客户也有经营范围」）。
+
+**改动清单**：
+- `main.py`：`customer` 表新增 province/city/district/detail_address/business_scope，迁移幂等
+- `routes_customer.py`：校验与 INSERT 同步扩展
+- `customers.html`：接入 `region` 复合字段、详细地址、经营范围；列表展示省/市
+
+**可验证结果**：全量 139 绿；创建/更新正确落库新字段，未动字段保持不变。
+
+## M13 库位主数据深化（2026-11-03）
+
+**目标**：库位补充库位组（可手工维护或按编码前缀自动生成）与长宽高，库容按体积计算。
+
+**改动清单**：
+- `main.py`：`location` 表新增 location_group/length_cm/width_cm/height_cm/capacity_volume，迁移幂等
+- `routes_location.py`：库位组建位时留空按编码前缀自动生成（含 `-` 取首段，否则取前两位）；
+  体积库容 = 长×宽×高 / 1e6（m³，保留 6 位），创建/更新均重算；列表新增 `location_group` 过滤；
+  新增 `GET /api/locations/groups` 库位组去重列表
+- `locations.html`：表单接入库位组/长宽高、（按组）筛选下拉；列表展示库位组与体积库容
+
+**可验证结果**：全量 139 绿；`A-01-02`→组 `A`、`STORE1`→组 `ST`；100×200×50cm → 1.0 m³；按组过滤正确。
+
+## M14 承运商模块（2026-11-03）
+
+**目标**：新增承运商子系统，作为后续发快递/零担/整车的物流履约资源目录（独立于多货主，全系统共享）。
+
+**改动清单**：
+- `main.py`：新增 `carrier` 表（code 唯一/name/carrier_type[快递·零担·整车·其他]/api_code/contact/phone/address/status）
+  + 注册 `carrier_bp`
+- `routes_carrier.py`（新增）：CRUD 全套 + 编码去重 409 + 关键词(编码/名称/外部编码)/类型/状态过滤 + 分页
+- `web_app/carriers.html`（新增）+ `layout.js` 侧边栏「承运商」入口
+- `tests/test_carrier.py`（新增）：12 例
+
+**可验证结果**：全量 139 绿；创建校验/重码 409/类型非法 400/分页搜索/部分更新/删除均通过。
 
 ## M6 库存账与流水查询（2026-11-03）
 
