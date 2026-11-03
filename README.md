@@ -85,7 +85,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 移库、盘点、补货预警、报表统计、CSV 导入导出
+- 移库、盘点、补货预警、报表统计
+- **外部对接（M13）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
+- CSV 导入导出
 
 ## API 概览
 

@@ -47,7 +47,45 @@
 - M10 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
 - M11 补货预警（min_stock 对比 + 拣货位缺料提示）
 - M12 报表统计（按货主的收发汇总、周转率、库位利用率）
-- M13 CSV 导入导出 + 简易鉴权 + API 文档收尾
+- M13 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）
+- M14 CSV 导入导出
+
+## 外部对接设计（规划中，2026-11-03 用户提出）
+
+**背景**：出入库单据（ASN/DN）后续要对外开放，供外部系统（如电商/OMS/ERP）写入数据，
+并需将单据状态变化**回传**给外部系统。核心诉求：外部写入必须做**身份验证**，不能裸接口直写。
+
+**设计要点（零依赖、复用现有服务层）**：
+
+1. **鉴权（X-API-Key，密钥绑定货主）**
+   - 新增 `api_key` 表：`key_prefix`(前8位展示/检索)、`key_hash`(sha256，不存明文)、
+     `owner_id`(绑定货主，多货主隔离)、`label`、`status`(active/disabled)、`created_at`、`last_used_at`。
+   - 密钥服务端随机生成，仅创建时返回一次明文。
+   - 中间件 `require_api_key`：校验 `X-API-Key` 头 → 查表比对 hash + status → 把
+     `owner_id` 注入 `g.api_owner_id`，后续写入**强制以该 owner 为准**，杜绝越权写别家货主。
+
+2. **外部写入端点（独立 blueprint，与内部 UI 路由分离、可审计）**
+   - 新建 `routes_external.py`，前缀 `/api/ext`，全部路由先过 `require_api_key`。
+   - `POST /api/ext/asns`、`POST /api/ext/dns`：创建收货/出库单，业务校验复用现有逻辑，
+     但 `owner_id` 取自密钥绑定值（请求体里的 owner_id 被忽略或强制一致）；行内物料/客户必须属该货主。
+   - `GET /api/ext/asns/<id>`、`GET /api/ext/dns/<id>`：外部只读自己 owner 的单据状态。
+   - MVP 范围：外部推「单」+ 查状态；收货/上架/拣货/发货由内部 WMS 作业，作业完成即回传（见下）。
+
+3. **数据回传（webhook 回调）**
+   - `callback_config` 表：`owner_id`、`event`(如 `asn.closed`/`dn.shipped`)、`url`、`secret`、`status`。
+   - `callback_log` 表：`callback_config_id`、`ref_type`、`ref_id`、`payload(json)`、`status`(pending/sent/failed)、
+     `attempts`、`last_error`、`next_retry_at`、`sent_at`，用于留痕与重试。
+   - 触发点：ASN 状态变 `closed`、DN 状态变 `shipped`（可扩展 putaway/receiving）时调用
+     `notify_callbacks(ref_type, ref_id, event, payload)`。
+   - 发送：零依赖用标准库 `urllib` POST 到配置 url，带 `X-Callback-Signature`(HMAC-SHA256(body, secret))；
+     结果落 `callback_log`，失败标记 failed 并保留供重试（MVP 不引入消息队列/后台 worker，先尽力发送+落日志+可重试）。
+   - 回传 payload 示例（DN 发货）：`{event:"dn.shipped", dn_code, owner_code, customer_code, lines:[{sku, shipped_qty}], shipped_at}`。
+
+4. **安全/隔离**：外部密钥绑定 owner、写入强制 owner 维度；回传加签供外部验签；`api_key.last_used_at` 与
+   `callback_log` 留审计痕迹；回传 secret 同样不存明文（hash 或加密）。
+
+**与现有 Roadmap 关系**：原 M13 的「简易鉴权(X-API-Key)」升级为完整的外部对接里程碑（鉴权+写入+回传），
+CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：路由层保持纯净、避免把 owner_id 直接从请求体信任给外部场景。
 
 ## M7 客户主数据与出库关联（2026-11-03）
 
