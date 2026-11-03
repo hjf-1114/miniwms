@@ -22,6 +22,10 @@
       <div><label>编码 *（如 A-01-01）</label><input name="code" required maxlength="32"></div>
       <div><label>名称 *</label><input name="name" required maxlength="128"></div>
       <div><label>库区</label><input name="zone" placeholder="默认: 默认区"></div>
+      <div><label>巷道</label><input name="aisle" placeholder="如 A"></div>
+      <div><label>列</label><input name="bay" placeholder="如 01"></div>
+      <div><label>层</label><input name="level" placeholder="如 01"></div>
+      <div><label>库位条码</label><input name="barcode"></div>
       <div><label>类型</label>
         <select name="loc_type">
           <option value="storage">存储区</option>
@@ -50,7 +54,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>库区</th><th>类型</th><th>容量</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>库区</th><th>巷道</th><th>层</th><th>类型</th><th>容量</th><th>条码</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -81,8 +85,9 @@ async function load() {
     tb.innerHTML = data.locations.map((l) =>
       `<tr>
         <td>${l.id}</td><td>${esc(l.code)}</td><td>${esc(l.name)}</td>
-        <td>${esc(l.zone)}</td><td>${esc(l.loc_type_label)}</td>
-        <td>${l.capacity === 0 ? "不限" : l.capacity}</td>
+        <td>${esc(l.zone)}</td><td>${esc(l.aisle)}</td><td>${esc(l.level)}</td>
+        <td>${esc(l.loc_type_label)}</td>
+        <td>${l.capacity === 0 ? "不限" : l.capacity}</td><td>${esc(l.barcode)}</td>
         <td>${statusTag(l.status)}</td>
         <td>
           <button class="btn secondary" onclick="toggle(${l.id},'${l.status}')">${l.status === "active" ? "停用" : "启用"}</button>

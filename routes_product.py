@@ -52,6 +52,33 @@ def _validate_product_payload(payload, *, partial=False):
     if has("unit"):
         cleaned["unit"] = str(payload.get("unit") or "").strip() or "件"
 
+    for key in ("barcode", "brand", "spec"):
+        if has(key):
+            cleaned[key] = str(payload.get(key) or "").strip()
+
+    for key in ("weight_kg", "length_cm", "width_cm", "height_cm"):
+        if has(key):
+            try:
+                val = float(payload.get(key))
+            except (TypeError, ValueError):
+                errors.append(f"{key} 必须为数字")
+                continue
+            if math.isnan(val) or val < 0:
+                errors.append(f"{key} 不能为负数")
+            else:
+                cleaned[key] = val
+
+    if has("shelf_life_days"):
+        try:
+            val = int(payload.get("shelf_life_days"))
+        except (TypeError, ValueError):
+            errors.append("shelf_life_days 必须为整数")
+        else:
+            if val < 0:
+                errors.append("shelf_life_days 不能为负数")
+            else:
+                cleaned["shelf_life_days"] = val
+
     for key in ("purchase_price", "sale_price"):
         if has(key):
             try:
@@ -152,6 +179,14 @@ def create_product():
         "name": cleaned["name"],
         "category": cleaned.get("category", "未分类"),
         "unit": cleaned.get("unit", "件"),
+        "barcode": cleaned.get("barcode", ""),
+        "brand": cleaned.get("brand", ""),
+        "spec": cleaned.get("spec", ""),
+        "weight_kg": cleaned.get("weight_kg", 0),
+        "length_cm": cleaned.get("length_cm", 0),
+        "width_cm": cleaned.get("width_cm", 0),
+        "height_cm": cleaned.get("height_cm", 0),
+        "shelf_life_days": cleaned.get("shelf_life_days", 0),
         "purchase_price": cleaned.get("purchase_price", 0),
         "sale_price": cleaned.get("sale_price", 0),
         "stock_qty": cleaned.get("stock_qty", 0),
@@ -162,10 +197,12 @@ def create_product():
     }
     cur = db.execute(
         """
-        INSERT INTO product (sku, name, category, unit, purchase_price, sale_price,
-                             stock_qty, min_stock, status, note, owner_id)
-        VALUES (:sku, :name, :category, :unit, :purchase_price, :sale_price,
-                :stock_qty, :min_stock, :status, :note, :owner_id)
+        INSERT INTO product (sku, name, category, unit, barcode, brand, spec,
+                             weight_kg, length_cm, width_cm, height_cm, shelf_life_days,
+                             purchase_price, sale_price, stock_qty, min_stock, status, note, owner_id)
+        VALUES (:sku, :name, :category, :unit, :barcode, :brand, :spec,
+                :weight_kg, :length_cm, :width_cm, :height_cm, :shelf_life_days,
+                :purchase_price, :sale_price, :stock_qty, :min_stock, :status, :note, :owner_id)
         """,
         params,
     )

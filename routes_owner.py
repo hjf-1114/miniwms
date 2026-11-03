@@ -45,6 +45,12 @@ def _validate_owner_payload(payload, *, partial=False):
     if "phone" in payload:
         cleaned["phone"] = str(payload.get("phone") or "").strip()
 
+    if "email" in payload:
+        cleaned["email"] = str(payload.get("email") or "").strip()
+
+    if "address" in payload:
+        cleaned["address"] = str(payload.get("address") or "").strip()
+
     if "status" in payload:
         status = str(payload.get("status") or "").strip()
         if status not in ("active", "inactive"):
@@ -78,12 +84,14 @@ def create_owner():
         return jsonify({"ok": False, "errors": [f"货主编码已存在: {cleaned['code']}"]}), 409
 
     cur = db.execute(
-        "INSERT INTO owner (code, name, contact, phone, status, note) "
-        "VALUES (:code, :name, :contact, :phone, :status, :note)",
+        "INSERT INTO owner (code, name, contact, phone, email, address, status, note) "
+        "VALUES (:code, :name, :contact, :phone, :email, :address, :status, :note)",
         {
             **cleaned,
             "contact": cleaned.get("contact", ""),
             "phone": cleaned.get("phone", ""),
+            "email": cleaned.get("email", ""),
+            "address": cleaned.get("address", ""),
             "status": cleaned.get("status", "active"),
             "note": cleaned.get("note", ""),
         },

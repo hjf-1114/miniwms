@@ -47,6 +47,15 @@ def _validate_location_payload(payload, *, partial=False):
     if "zone" in payload:
         cleaned["zone"] = str(payload.get("zone") or "").strip() or "默认区"
 
+    if "aisle" in payload:
+        cleaned["aisle"] = str(payload.get("aisle") or "").strip()
+    if "bay" in payload:
+        cleaned["bay"] = str(payload.get("bay") or "").strip()
+    if "level" in payload:
+        cleaned["level"] = str(payload.get("level") or "").strip()
+    if "barcode" in payload:
+        cleaned["barcode"] = str(payload.get("barcode") or "").strip()
+
     if "loc_type" in payload:
         lt = str(payload.get("loc_type") or "").strip()
         if lt not in VALID_LOC_TYPES:
@@ -109,12 +118,16 @@ def create_location():
         "zone": cleaned.get("zone", "默认区"),
         "loc_type": cleaned.get("loc_type", "storage"),
         "capacity": cleaned.get("capacity", 0),
+        "aisle": cleaned.get("aisle", ""),
+        "bay": cleaned.get("bay", ""),
+        "level": cleaned.get("level", ""),
+        "barcode": cleaned.get("barcode", ""),
         "status": cleaned.get("status", "active"),
         "note": cleaned.get("note", ""),
     }
     cur = db.execute(
-        "INSERT INTO location (code, name, zone, loc_type, capacity, status, note) "
-        "VALUES (:code, :name, :zone, :loc_type, :capacity, :status, :note)",
+        "INSERT INTO location (code, name, zone, loc_type, capacity, aisle, bay, level, barcode, status, note) "
+        "VALUES (:code, :name, :zone, :loc_type, :capacity, :aisle, :bay, :level, :barcode, :status, :note)",
         params,
     )
     db.commit()

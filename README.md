@@ -21,6 +21,13 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 收货/上架/拣货/发货/账目核对均直接调用后端 API。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
+想直接体验完整流程，可先灌一套演示数据再启动：
+
+```bash
+python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货全链路
+python main.py                      # 浏览器打开 http://localhost:5100 即可操作
+```
+
 运行测试：
 
 ```bash
@@ -67,6 +74,12 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - 出库单强制关联客户：创建必填 `customer_id`，且客户必须与单据货主一致（多货主隔离），
     列表/详情联表返回 `customer_code`/`customer_name`
   - 保护规则：客户被出库单引用时禁止删除
+- **M8 基础资料字段增强**（`routes_owner/customer/product/location.py` + `main.py`）
+  - 四类主数据补齐电商化字段：货主增 邮箱/地址；客户增 邮箱/等级（普通·银牌·金牌·VIP）/地区；
+    物料增 条码/品牌/规格/重量/长/宽/高/保质期（天）；库位增 巷道/列/层/库位条码
+  - 校验层接受新字段、创建写入、详情/列表经 `dict(row)` 自动带出；Web 表单与表格同步展示新字段
+  - 一键演示数据：`python tools/seed_demo.py`（默认写入 `./miniwms.db`，支持 `--reset` 重置、`--check` 仅查看），
+    预置 3 货主 / 8 物料 / 8 库位 / 4 客户并跑通「收货上架 → 拣货发货」全链路，便于本地模拟测试
 - **Web demo**（`web_app/`）
   - 首页导航 + 货主/物料/库位/收货/出库/库存六个管理页，零依赖原生 JS，直接调用后端 API
 
@@ -118,6 +131,7 @@ routes_dn.py          出库单（拣货/发货）Blueprint
 routes_stock.py       库存账/流水/余额核对只读 Blueprint
 routes_customer.py   客户主数据 Blueprint（出库收货方维度）
 web_app/              Web demo（index/owners/products/locations/asns/dns/stock/customers + css/js）
+tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录
@@ -126,5 +140,5 @@ DEVELOPMENT.md        里程碑开发记录
 ## 设计约定
 
 - 所有接口返回 JSON：成功 `{"ok": true, ...}`，失败 `{"ok": false, "errors": [...]}` + 对应 4xx 状态码
-- 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M7/M8），全部经 inventory_service 落流水
+- 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M9/M10），全部经 inventory_service 落流水
 - 时间戳由 SQLite `datetime('now','localtime')` 生成

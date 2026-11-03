@@ -49,10 +49,10 @@ class CustomerApiTest(unittest.TestCase):
             "/api/owners", json={"code": code, "name": f"货主{code}"}
         ).get_json()["owner"]["id"]
 
-    def _mk_customer(self, owner_id, code="C1", name="客户1"):
-        return self.client.post("/api/customers", json={
-            "code": code, "name": name, "owner_id": owner_id,
-        }).get_json()
+    def _mk_customer(self, owner_id, code="C1", name="客户1", **overrides):
+        payload = {"code": code, "name": name, "owner_id": owner_id}
+        payload.update(overrides)
+        return self.client.post("/api/customers", json=payload).get_json()
 
     # ---------- 创建 ----------
     def test_create_ok_and_defaults(self):
@@ -122,6 +122,35 @@ class CustomerApiTest(unittest.TestCase):
         resp = self.client.delete(f"/api/customers/{cid}")
         self.assertEqual(resp.status_code, 409)
         self.assertIn("出库单", resp.get_json()["error"])
+
+
+    # ---------- M8 扩展字段（email/level/region） ----------
+    def test_create_accepts_extended_fields(self):
+        oid = self._mk_owner()
+        body = self._mk_customer(
+            oid, code="C-EXT", name="扩展客户",
+            email="buyer@acme.com", level="金牌", region="华南",
+        )
+        self.assertEqual(body["customer"]["email"], "buyer@acme.com")
+        self.assertEqual(body["customer"]["level"], "金牌")
+        self.assertEqual(body["customer"]["region"], "华南")
+
+    def test_create_default_level_is_normal(self):
+        oid = self._mk_owner()
+        c = self._mk_customer(oid, code="C-DEF", name="默认等级")["customer"]
+        self.assertEqual(c["level"], "普通")
+
+    def test_update_keeps_extended_fields(self):
+        oid = self._mk_owner()
+        cid = self._mk_customer(
+            oid, code="C-KEEP", name="保留字段", email="keep@x.com", level="VIP"
+        )["customer"]["id"]
+        resp = self.client.put(f"/api/customers/{cid}", json={"name": "改名"})
+        self.assertEqual(resp.status_code, 200)
+        c = resp.get_json()["customer"]
+        self.assertEqual(c["name"], "改名")
+        self.assertEqual(c["email"], "keep@x.com")  # 未动字段不变
+        self.assertEqual(c["level"], "VIP")
 
 
 if __name__ == "__main__":

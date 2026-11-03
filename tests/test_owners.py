@@ -111,5 +111,21 @@ class OwnerApiTest(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/owners/{oid}").status_code, 200)
 
 
+    def test_create_accepts_email_and_address(self):
+        resp = self._create(email="ops@ruichi.com", address="深圳市南山区科技园")
+        self.assertEqual(resp.status_code, 201)
+        o = resp.get_json()["owner"]
+        self.assertEqual(o["email"], "ops@ruichi.com")
+        self.assertEqual(o["address"], "深圳市南山区科技园")
+
+    def test_update_keeps_new_fields(self):
+        oid = self._create(email="a@b.com").get_json()["owner"]["id"]
+        resp = self.client.put(f"/api/owners/{oid}", json={"name": "改名"})
+        self.assertEqual(resp.status_code, 200)
+        o = resp.get_json()["owner"]
+        self.assertEqual(o["name"], "改名")
+        self.assertEqual(o["email"], "a@b.com")  # 未动字段不变
+
+
 if __name__ == "__main__":
     unittest.main()

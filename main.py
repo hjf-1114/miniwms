@@ -61,6 +61,8 @@ def init_db():
                 name        TEXT    NOT NULL,
                 contact     TEXT    NOT NULL DEFAULT '',
                 phone       TEXT    NOT NULL DEFAULT '',
+                email       TEXT    NOT NULL DEFAULT '',
+                address     TEXT    NOT NULL DEFAULT '',
                 status      TEXT    NOT NULL DEFAULT 'active',
                 note        TEXT    NOT NULL DEFAULT '',
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -73,6 +75,14 @@ def init_db():
                 name            TEXT    NOT NULL,
                 category        TEXT    NOT NULL DEFAULT '未分类',
                 unit            TEXT    NOT NULL DEFAULT '件',
+                barcode         TEXT    NOT NULL DEFAULT '',
+                brand           TEXT    NOT NULL DEFAULT '',
+                spec            TEXT    NOT NULL DEFAULT '',
+                weight_kg       REAL    NOT NULL DEFAULT 0,
+                length_cm       REAL    NOT NULL DEFAULT 0,
+                width_cm        REAL    NOT NULL DEFAULT 0,
+                height_cm       REAL    NOT NULL DEFAULT 0,
+                shelf_life_days INTEGER NOT NULL DEFAULT 0,
                 purchase_price  REAL    NOT NULL DEFAULT 0,
                 sale_price      REAL    NOT NULL DEFAULT 0,
                 stock_qty       REAL    NOT NULL DEFAULT 0,
@@ -91,6 +101,10 @@ def init_db():
                 zone        TEXT    NOT NULL DEFAULT '默认区',
                 loc_type    TEXT    NOT NULL DEFAULT 'storage',
                 capacity    REAL    NOT NULL DEFAULT 0,
+                aisle       TEXT    NOT NULL DEFAULT '',
+                bay         TEXT    NOT NULL DEFAULT '',
+                level       TEXT    NOT NULL DEFAULT '',
+                barcode     TEXT    NOT NULL DEFAULT '',
                 status      TEXT    NOT NULL DEFAULT 'active',
                 note        TEXT    NOT NULL DEFAULT '',
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -179,6 +193,9 @@ def init_db():
                 contact     TEXT    NOT NULL DEFAULT '',
                 phone       TEXT    NOT NULL DEFAULT '',
                 address     TEXT    NOT NULL DEFAULT '',
+                email       TEXT    NOT NULL DEFAULT '',
+                level       TEXT    NOT NULL DEFAULT '普通',
+                region      TEXT    NOT NULL DEFAULT '',
                 status      TEXT    NOT NULL DEFAULT 'active',
                 note        TEXT    NOT NULL DEFAULT '',
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -221,7 +238,7 @@ def init_db():
         # M7 客户主数据：customer 表（新库 DDL 已带则跳过）+ dn.customer_id 列迁移
         if "customer" not in tables:
             conn.executescript(
-                """CREATE TABLE IF NOT EXISTS customer (
+                """                   CREATE TABLE IF NOT EXISTS customer (
                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
                        code        TEXT    NOT NULL UNIQUE,
                        name        TEXT    NOT NULL,
@@ -229,6 +246,9 @@ def init_db():
                        contact     TEXT    NOT NULL DEFAULT '',
                        phone       TEXT    NOT NULL DEFAULT '',
                        address     TEXT    NOT NULL DEFAULT '',
+                       email       TEXT    NOT NULL DEFAULT '',
+                       level       TEXT    NOT NULL DEFAULT '普通',
+                       region      TEXT    NOT NULL DEFAULT '',
                        status      TEXT    NOT NULL DEFAULT 'active',
                        note        TEXT    NOT NULL DEFAULT '',
                        created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -243,6 +263,48 @@ def init_db():
                 conn.execute(
                     "ALTER TABLE dn ADD COLUMN customer_id INTEGER REFERENCES customer(id)"
                 )
+        # M8 主数据字段增强：电商场景补充字段（旧库 ALTER 迁移；新库 DDL 已带则跳过）
+        if "owner" in tables:
+            owner_cols = {r[1] for r in conn.execute("PRAGMA table_info(owner)")}
+            for col, ddl in (
+                ("email", "ALTER TABLE owner ADD COLUMN email TEXT NOT NULL DEFAULT ''"),
+                ("address", "ALTER TABLE owner ADD COLUMN address TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in owner_cols:
+                    conn.execute(ddl)
+        if "customer" in tables:
+            cust_cols = {r[1] for r in conn.execute("PRAGMA table_info(customer)")}
+            for col, ddl in (
+                ("email", "ALTER TABLE customer ADD COLUMN email TEXT NOT NULL DEFAULT ''"),
+                ("level", "ALTER TABLE customer ADD COLUMN level TEXT NOT NULL DEFAULT '普通'"),
+                ("region", "ALTER TABLE customer ADD COLUMN region TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in cust_cols:
+                    conn.execute(ddl)
+        if "product" in tables:
+            prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(product)")}
+            for col, ddl in (
+                ("barcode", "ALTER TABLE product ADD COLUMN barcode TEXT NOT NULL DEFAULT ''"),
+                ("brand", "ALTER TABLE product ADD COLUMN brand TEXT NOT NULL DEFAULT ''"),
+                ("spec", "ALTER TABLE product ADD COLUMN spec TEXT NOT NULL DEFAULT ''"),
+                ("weight_kg", "ALTER TABLE product ADD COLUMN weight_kg REAL NOT NULL DEFAULT 0"),
+                ("length_cm", "ALTER TABLE product ADD COLUMN length_cm REAL NOT NULL DEFAULT 0"),
+                ("width_cm", "ALTER TABLE product ADD COLUMN width_cm REAL NOT NULL DEFAULT 0"),
+                ("height_cm", "ALTER TABLE product ADD COLUMN height_cm REAL NOT NULL DEFAULT 0"),
+                ("shelf_life_days", "ALTER TABLE product ADD COLUMN shelf_life_days INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if col not in prod_cols:
+                    conn.execute(ddl)
+        if "location" in tables:
+            loc_cols = {r[1] for r in conn.execute("PRAGMA table_info(location)")}
+            for col, ddl in (
+                ("aisle", "ALTER TABLE location ADD COLUMN aisle TEXT NOT NULL DEFAULT ''"),
+                ("bay", "ALTER TABLE location ADD COLUMN bay TEXT NOT NULL DEFAULT ''"),
+                ("level", "ALTER TABLE location ADD COLUMN level TEXT NOT NULL DEFAULT ''"),
+                ("barcode", "ALTER TABLE location ADD COLUMN barcode TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in loc_cols:
+                    conn.execute(ddl)
         conn.commit()
     finally:
         conn.close()

@@ -23,6 +23,8 @@
       <div><label>名称 *</label><input name="name" required maxlength="128"></div>
       <div><label>联系人</label><input name="contact"></div>
       <div><label>电话</label><input name="phone"></div>
+      <div><label>邮箱</label><input name="email" type="email"></div>
+      <div><label>地址</label><input name="address"></div>
       <div><label>备注</label><input name="note"></div>
       <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
     </form>
@@ -41,7 +43,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>联系人</th><th>电话</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>联系人</th><th>电话</th><th>邮箱</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -72,7 +74,7 @@ async function load() {
     tb.innerHTML = data.owners.map((o) =>
       `<tr>
         <td>${o.id}</td><td>${esc(o.code)}</td><td>${esc(o.name)}</td>
-        <td>${esc(o.contact)}</td><td>${esc(o.phone)}</td>
+        <td>${esc(o.contact)}</td><td>${esc(o.phone)}</td><td>${esc(o.email)}</td>
         <td>${statusTag(o.status)}</td>
         <td>
           <button class="btn secondary" onclick="toggle(${o.id},'${o.status}')">${o.status === "active" ? "停用" : "启用"}</button>

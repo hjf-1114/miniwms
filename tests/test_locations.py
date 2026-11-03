@@ -129,5 +129,27 @@ class LocationApiTest(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/locations/{lid}").status_code, 200)
 
 
+    # ---------- M8 扩展字段（巷道/列/层/库位条码） ----------
+    def test_create_accepts_extended_fields(self):
+        resp = self._create(
+            aisle="A", bay="01", level="L1", barcode="LOC-A-01-01"
+        )
+        self.assertEqual(resp.status_code, 201)
+        loc = resp.get_json()["location"]
+        self.assertEqual(loc["aisle"], "A")
+        self.assertEqual(loc["bay"], "01")
+        self.assertEqual(loc["level"], "L1")
+        self.assertEqual(loc["barcode"], "LOC-A-01-01")
+
+    def test_update_keeps_extended_fields(self):
+        lid = self._create(aisle="B", bay="02").get_json()["location"]["id"]
+        resp = self.client.put(f"/api/locations/{lid}", json={"capacity": 50})
+        self.assertEqual(resp.status_code, 200)
+        loc = resp.get_json()["location"]
+        self.assertEqual(loc["capacity"], 50)
+        self.assertEqual(loc["aisle"], "B")  # 未动字段不变
+        self.assertEqual(loc["bay"], "02")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,9 @@
       <div><label>所属货主 *</label><select id="ownerSelect" name="owner_id" required></select></div>
       <div><label>联系人</label><input name="contact"></div>
       <div><label>电话</label><input name="phone"></div>
+      <div><label>邮箱</label><input name="email" type="email"></div>
+      <div><label>客户等级</label><select name="level"><option value="普通">普通</option><option value="银牌">银牌</option><option value="金牌">金牌</option><option value="VIP">VIP</option></select></div>
+      <div><label>地区</label><input name="region" placeholder="如 华东/华北"></div>
       <div><label>地址</label><input name="address"></div>
       <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
     </form>
@@ -43,7 +46,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>所属货主</th><th>联系人</th><th>电话</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>所属货主</th><th>联系人</th><th>电话</th><th>邮箱</th><th>等级</th><th>地区</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -86,7 +89,7 @@ async function load() {
       `<tr>
         <td>${c.id}</td><td>${esc(c.code)}</td><td>${esc(c.name)}</td>
         <td>${esc(c.owner_code || "")} · ${esc(c.owner_name || "")}</td>
-        <td>${esc(c.contact)}</td><td>${esc(c.phone)}</td>
+        <td>${esc(c.contact)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.level)}</td><td>${esc(c.region)}</td>
         <td>${statusTag(c.status)}</td>
         <td>
           <button class="btn secondary" onclick="toggle(${c.id},'${c.status}')">${c.status === "active" ? "停用" : "启用"}</button>

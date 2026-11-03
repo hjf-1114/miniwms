@@ -34,19 +34,20 @@
 | D7 (11/5) | M10/M11 | 补货预警 + 按货主报表统计 + 首页仪表盘 |
 | D8 (11/6) | M12 | CSV 导入导出 + 简易鉴权(X-API-Key) + API 文档 + 全量回归收尾 |
 
-> 注：D2/D3/D4 的 M4/M5/M6 实际在 11/03 完成（自动化未触发顺延）；D5 用户指出「出库需要客户资料」此前缺失，故插入 M7 客户主数据，原 M7 移库/M8 盘点顺延为 M8/M9。
+> 注：D2/D3/D4 的 M4/M5/M6 实际在 11/03 完成（自动化未触发顺延）；D5 用户指出「出库需要客户资料」此前缺失，故插入 M7 客户主数据，原 M7 移库/M8 盘点顺延为 M8/M9。D6 用户要求补齐电商化基础资料字段并补充演示数据，故 M8 定为「基础资料字段增强」（新增 `tools/seed_demo.py` 一键演示数据播种）；原 M8 移库/M9 盘点顺延为 M9/M10，预警/报表/CSV 收尾依次顺延为 M11/M12/M13。
 
 ## 规划（Roadmap）
 
-- M4 收货单（ASN 收货 → 上架 putaway：写 stock(货主×物料×库位) + 入库流水，库存增加）
-- M5 出库单（拣货 pick → 发货：按库位扣减库存，超卖拦截）
-- M6 库存账（按货主+库位的库存余额 + 全部动作流水，余额 = 流水累加可核对）
-- M7 客户主数据（客户归属货主，出库单关联客户，多货主隔离）
-- M8 移库（库位间转移：同数量一减一增两条流水，原子事务）
-- M9 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
-- M10 补货预警（min_stock 对比 + 拣货位缺料提示）
-- M11 报表统计（按货主的收发汇总、周转率、库位利用率）
-- M12 CSV 导入导出 + 简易鉴权 + API 文档收尾
+- M4 收货单（ASN 收货 → 上架 putaway：写 stock(货主×物料×库位) + 入库流水，库存增加）✅
+- M5 出库单（拣货 pick → 发货：按库位扣减库存，超卖拦截）✅
+- M6 库存账（按货主+库位的库存余额 + 全部动作流水，余额 = 流水累加可核对）✅
+- M7 客户主数据（客户归属货主，出库单关联客户，多货主隔离）✅
+- M8 基础资料字段增强（电商字段 + 一键演示数据播种）✅
+- M9 移库（库位间转移：同数量一减一增两条流水，原子事务）
+- M10 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
+- M11 补货预警（min_stock 对比 + 拣货位缺料提示）
+- M12 报表统计（按货主的收发汇总、周转率、库位利用率）
+- M13 CSV 导入导出 + 简易鉴权 + API 文档收尾
 
 ## M7 客户主数据与出库关联（2026-11-03）
 
@@ -70,7 +71,27 @@
 - 出库必填客户：缺 customer_id 400；选了别家货主的客户 400（多货主隔离）
 - 列表/详情正确返回 customer_code/customer_name
 
+## M8 基础资料字段增强（电商场景，2026-11-03）
 
+**目标**：补齐货主/客户/物料/库位四类主数据的电商化字段，并附一键演示数据播种脚本，便于本地模拟「收货上架 → 拣货发货」全链路。
+
+**改动清单**（参考电商 WMS 主数据口径）：
+- `main.py`：四类表 DDL 增加电商字段 + 旧库 ALTER 列迁移（幂等）
+  - owner：email、address
+  - customer：email、level（普通/银牌/金牌/VIP）、region
+  - product：barcode、brand、spec、weight_kg、length_cm、width_cm、height_cm、shelf_life_days
+  - location：aisle、bay、level、barcode
+- `routes_owner.py` / `routes_customer.py` / `routes_product.py` / `routes_location.py`：校验层接受新字段、创建 INSERT 写入、详情/列表经 `dict(row)` 自动带出
+- `web_app/owners.html` / `customers.html` / `products.html` / `locations.html`：表单补字段输入、表头补列、JS 行渲染补列
+- `tests/test_owners.py` / `test_customers.py` / `test_products.py` / `test_locations.py`：各补「创建接受扩展字段并返回」「部分更新保留未动字段」用例
+- `tools/seed_demo.py`（新增）：一键播种演示数据（3 货主 / 8 物料 / 8 库位 / 4 客户 + 2 张 ASN 收货上架 + 2 张 DN 拣货发货），支持 `--reset` 重置、`--check` 仅查看
+
+**可验证结果**：
+- `python -m unittest discover -s tests` 97 例全绿
+- 创建返回含新字段；PUT 只改 name 时 email/品牌/巷道等未动字段保持不变
+- 前端字段与后端一致；`python tools/seed_demo.py --reset` 跑通全链路（ASN 全 closed、DN 全 shipped、生成 20 条 stock_movement）
+
+## M6 库存账与流水查询（2026-11-03）
 
 **目标**：交付只读「库存账房」——余额查询、全部动作流水查询、余额与流水累加的
 独立核对接口，让 M4/M5 以来的「每笔变动必落流水」承诺可被事后验证。

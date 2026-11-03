@@ -193,5 +193,36 @@ class ProductApiTest(unittest.TestCase):
         self.assertNotIn("owner_code", p)
 
 
+    # ---------- M8 扩展字段（条码/品牌/规格/重量/尺寸/保质期） ----------
+    def test_create_accepts_extended_fields(self):
+        resp = self._create(
+            barcode="6901234567890", brand="晨光", spec="A5/50页",
+            weight_kg=0.25, length_cm=21, width_cm=14.8, height_cm=1.2,
+            shelf_life_days=365,
+        )
+        self.assertEqual(resp.status_code, 201)
+        p = resp.get_json()["product"]
+        self.assertEqual(p["barcode"], "6901234567890")
+        self.assertEqual(p["brand"], "晨光")
+        self.assertEqual(p["spec"], "A5/50页")
+        self.assertEqual(p["weight_kg"], 0.25)
+        self.assertEqual(p["length_cm"], 21)
+        self.assertEqual(p["width_cm"], 14.8)
+        self.assertEqual(p["height_cm"], 1.2)
+        self.assertEqual(p["shelf_life_days"], 365)
+
+    def test_create_rejects_negative_dimension(self):
+        resp = self._create(weight_kg=-1)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_update_keeps_extended_fields(self):
+        pid = self._create(barcode="X1", brand="原品牌").get_json()["product"]["id"]
+        resp = self.client.put(f"/api/products/{pid}", json={"sale_price": 9.9})
+        self.assertEqual(resp.status_code, 200)
+        p = resp.get_json()["product"]
+        self.assertEqual(p["barcode"], "X1")  # 未动字段不变
+        self.assertEqual(p["brand"], "原品牌")
+
+
 if __name__ == "__main__":
     unittest.main()
