@@ -16,20 +16,11 @@
     </header>
     <div class="content">
       <div id="msg" class="msg"></div>
-<div class="card">
-    <h2>新建收货单（ASN）</h2>
-    <form id="createForm" class="grid-form">
-      <div><label>单号 *</label><input name="code" required placeholder="如 ASN-20261103-01" maxlength="32"></div>
-      <div><label>货主 *</label><select id="ownerSelect" required></select></div>
-      <div><label>物料 *</label><select id="productSelect" required></select></div>
-      <div><label>预期数量 *</label><input name="qty" type="number" min="0.01" step="0.01" required></div>
-      <div><label>备注</label><input name="note"></div>
-      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
-    </form>
-  </div>
-
   <div class="card">
-    <h2>收货单列表</h2>
+    <div class="card-head">
+      <h2>收货单列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建收货单</button>
+    </div>
     <div class="toolbar">
       <input id="kw" placeholder="单号搜索">
       <select id="statusFilter">
@@ -70,19 +61,20 @@
     </div>
 
     <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
     <script src="/js/layout.js"></script>
 <script>
 let currentAsn = null;
+let ownerOptions = [];
+let productOptions = [];
 
-async function loadOwnersAndProducts() {
+async function loadOptions() {
   const [ow, pr] = await Promise.all([
     api("GET", "/api/owners?page_size=100"),
     api("GET", "/api/products?page_size=100"),
   ]);
-  document.getElementById("ownerSelect").innerHTML = ow.owners.map(
-    (o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join("");
-  document.getElementById("productSelect").innerHTML = pr.products.map(
-    (p) => `<option value="${p.id}" data-owner="${p.owner_id || ""}">${esc(p.sku)} · ${esc(p.name)}</option>`).join("");
+  ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  productOptions = pr.products.map((p) => ({ value: p.id, label: `${p.sku} · ${p.name}` }));
 }
 
 async function loadLocs() {
@@ -115,8 +107,8 @@ async function load() {
         <td>${asnStatusTag(a.status)}</td>
         <td class="muted">${esc(a.created_at)}</td>
         <td>
-          <button class="btn secondary" onclick="showDetail(${a.id})">明细</button>
-          ${a.status === "open" ? `<button class="btn danger" onclick="cancelAsn(${a.id})">取消</button>` : ""}
+          <button class="btn secondary sm" onclick="showDetail(${a.id})">明细</button>
+          ${a.status === "open" ? `<button class="btn danger sm" onclick="cancelAsn(${a.id})">取消</button>` : ""}
         </td>
       </tr>`).join("");
   } catch (e) {
@@ -126,7 +118,7 @@ async function load() {
 
 function asnStatusTag(s) {
   const map = { open: "待收货", receiving: "收货中", putaway: "上架中", closed: "已完成", cancelled: "已取消" };
-  const cls = s === "closed" ? "ok" : (s === "cancelled" ? "off" : "off");
+  const cls = s === "closed" ? "ok" : "off";
   return `<span class="tag ${cls}">${map[s] || s}</span>`;
 }
 
@@ -148,11 +140,11 @@ function renderLines() {
       <td>${l.expected_qty}</td><td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
       <td>
         <input id="rq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
-        <button class="btn" onclick="doReceive(${l.id})">收货</button>
+        <button class="btn sm" onclick="doReceive(${l.id})">收货</button>
       </td>
       <td>
         <input id="pq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
-        <button class="btn secondary" onclick="doPutaway(${l.id})">上架</button>
+        <button class="btn secondary sm" onclick="doPutaway(${l.id})">上架</button>
       </td>
     </tr>`).join("");
 }
@@ -197,26 +189,31 @@ async function cancelAsn(id) {
   }
 }
 
-document.getElementById("createForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const code = ev.target.code.value.trim();
-  const ownerId = parseInt(document.getElementById("ownerSelect").value, 10);
-  const pid = parseInt(document.getElementById("productSelect").value, 10);
-  const qty = parseFloat(ev.target.qty.value);
-  try {
-    await api("POST", "/api/asns", {
-      code, owner_id: ownerId, note: ev.target.note.value,
-      lines: [{ product_id: pid, expected_qty: qty }],
-    });
-    showMsg(document.getElementById("msg"), "创建成功", "success");
-    ev.target.reset();
-    load();
-  } catch (e) {
-    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
-  }
-});
+async function openCreate() {
+  await loadOptions();
+  openForm({
+    title: "新建收货单（ASN）", submitText: "创建", width: 720,
+    fields: [
+      { name: "code", label: "单号 *", required: true, autocode: true, autocodePrefix: "ASN" },
+      { name: "owner_id", label: "货主 *", type: "select", required: true, options: ownerOptions },
+      { name: "note", label: "备注", type: "textarea", full: true },
+      {
+        name: "lines", label: "收货明细", type: "lines", full: true,
+        lineFields: [
+          { name: "product_id", label: "物料", type: "select", options: productOptions },
+          { name: "expected_qty", label: "预期数量", type: "number" },
+        ],
+      },
+    ],
+    onSubmit: async (p) => {
+      await api("POST", "/api/asns", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
 
-loadOwnersAndProducts().then(load);
+loadOptions().then(load);
 </script>
 </body>
 </html>

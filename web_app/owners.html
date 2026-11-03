@@ -16,22 +16,11 @@
     </header>
     <div class="content">
       <div id="msg" class="msg"></div>
-<div class="card">
-    <h2>新建货主</h2>
-    <form id="createForm" class="grid-form">
-      <div><label>编码 *</label><input name="code" required maxlength="32"></div>
-      <div><label>名称 *</label><input name="name" required maxlength="128"></div>
-      <div><label>联系人</label><input name="contact"></div>
-      <div><label>电话</label><input name="phone"></div>
-      <div><label>邮箱</label><input name="email" type="email"></div>
-      <div><label>地址</label><input name="address"></div>
-      <div><label>备注</label><input name="note"></div>
-      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
-    </form>
-  </div>
-
   <div class="card">
-    <h2>货主列表</h2>
+    <div class="card-head">
+      <h2>货主列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建货主</button>
+    </div>
     <div class="toolbar">
       <input id="kw" placeholder="编码/名称搜索">
       <select id="statusFilter">
@@ -58,9 +47,20 @@
     </div>
 
     <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
     <script src="/js/layout.js"></script>
 <script>
 let page = 1, pageSize = 20;
+
+const FIELDS = [
+  { name: "code", label: "编码 *", required: true, autocode: true, autocodePrefix: "OW" },
+  { name: "name", label: "名称 *", required: true },
+  { name: "contact", label: "联系人" },
+  { name: "phone", label: "电话" },
+  { name: "email", label: "邮箱", type: "email" },
+  { name: "address", label: "地址", full: true },
+  { name: "note", label: "备注", type: "textarea", full: true },
+];
 
 async function load() {
   const kw = document.getElementById("kw").value.trim();
@@ -70,19 +70,18 @@ async function load() {
   if (st) qs.set("status", st);
   try {
     const data = await api("GET", "/api/owners?" + qs);
-    const tb = document.getElementById("tbody");
-    tb.innerHTML = data.owners.map((o) =>
+    document.getElementById("tbody").innerHTML = data.owners.map((o) =>
       `<tr>
         <td>${o.id}</td><td>${esc(o.code)}</td><td>${esc(o.name)}</td>
         <td>${esc(o.contact)}</td><td>${esc(o.phone)}</td><td>${esc(o.email)}</td>
         <td>${statusTag(o.status)}</td>
         <td>
-          <button class="btn secondary" onclick="toggle(${o.id},'${o.status}')">${o.status === "active" ? "停用" : "启用"}</button>
-          <button class="btn danger" onclick="del(${o.id})">删除</button>
+          <button class="btn secondary sm" onclick="openEdit(${o.id})">编辑</button>
+          <button class="btn secondary sm" onclick="toggle(${o.id},'${o.status}')">${o.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger sm" onclick="del(${o.id})">删除</button>
         </td>
       </tr>`).join("");
-    document.getElementById("pageInfo").textContent =
-      `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
     document.getElementById("prevBtn").disabled = page <= 1;
     document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
   } catch (e) {
@@ -92,19 +91,28 @@ async function load() {
 
 function turn(d) { page += d; load(); }
 
-document.getElementById("createForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const fd = new FormData(ev.target);
-  const payload = Object.fromEntries(fd.entries());
-  try {
-    await api("POST", "/api/owners", payload);
-    showMsg(document.getElementById("msg"), "创建成功", "success");
-    ev.target.reset();
-    load();
-  } catch (e) {
-    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
-  }
-});
+function openCreate() {
+  openForm({
+    title: "新建货主", submitText: "创建", fields: FIELDS,
+    onSubmit: async (p) => {
+      await api("POST", "/api/owners", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/owners/" + id);
+  openForm({
+    title: "编辑货主", submitText: "保存", fields: FIELDS, values: data.owner,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/owners/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
 
 async function toggle(id, status) {
   try {

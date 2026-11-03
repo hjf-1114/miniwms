@@ -16,21 +16,11 @@
     </header>
     <div class="content">
       <div id="msg" class="msg"></div>
-<div class="card">
-    <h2>新建出库单（DN）</h2>
-    <form id="createForm" class="grid-form">
-      <div><label>单号 *</label><input name="code" required placeholder="如 DN-20261103-01" maxlength="32"></div>
-      <div><label>货主 *</label><select id="ownerSelect" required></select></div>
-      <div><label>物料 *</label><select id="productSelect" required></select></div>
-      <div><label>客户 *</label><select id="customerSelect" required></select></div>
-      <div><label>订购数量 *</label><input name="qty" type="number" min="0.01" step="0.01" required></div>
-      <div><label>备注</label><input name="note"></div>
-      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
-    </form>
-  </div>
-
   <div class="card">
-    <h2>出库单列表</h2>
+    <div class="card-head">
+      <h2>出库单列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建出库单</button>
+    </div>
     <div class="toolbar">
       <input id="kw" placeholder="单号搜索">
       <select id="statusFilter">
@@ -76,32 +66,30 @@
     </div>
 
     <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
     <script src="/js/layout.js"></script>
 <script>
 let currentDn = null;
+let ownerOptions = [];
+let productOptions = [];
+let allCustomerOptions = [];
 
-async function loadOwnersAndProducts() {
-  const [ow, pr] = await Promise.all([
+async function loadOptions() {
+  const [ow, pr, cu] = await Promise.all([
     api("GET", "/api/owners?page_size=100"),
     api("GET", "/api/products?page_size=100"),
+    api("GET", "/api/customers?page_size=100"),
   ]);
-  document.getElementById("ownerSelect").innerHTML = ow.owners.map(
-    (o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join("");
-  document.getElementById("productSelect").innerHTML = pr.products.map(
-    (p) => `<option value="${p.id}" data-owner="${p.owner_id || ""}">${esc(p.sku)} · ${esc(p.name)}</option>`).join("");
-  await loadCustomers();
-  document.getElementById("ownerSelect").onchange = loadCustomers;
+  ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  productOptions = pr.products.map((p) => ({ value: p.id, label: `${p.sku} · ${p.name}` }));
+  allCustomerOptions = cu.customers.map((c) => ({
+    value: c.id, label: `${c.code} · ${c.name}`, owner_id: c.owner_id,
+  }));
 }
 
-async function loadCustomers() {
-  const ownerId = document.getElementById("ownerSelect").value;
-  if (!ownerId) {
-    document.getElementById("customerSelect").innerHTML = "";
-    return;
-  }
-  const data = await api("GET", `/api/customers?owner_id=${ownerId}&page_size=100`);
-  document.getElementById("customerSelect").innerHTML = data.customers.map(
-    (c) => `<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join("");
+function customersForOwner(ownerId) {
+  if (!ownerId) return allCustomerOptions;
+  return allCustomerOptions.filter((c) => String(c.owner_id) === String(ownerId));
 }
 
 async function loadLocs() {
@@ -127,8 +115,8 @@ async function load() {
         <td>${dnStatusTag(d.status)}</td>
         <td class="muted">${esc(d.created_at)}</td>
         <td>
-          <button class="btn secondary" onclick="showDetail(${d.id})">明细</button>
-          ${d.status === "open" ? `<button class="btn danger" onclick="cancelDn(${d.id})">取消</button>` : ""}
+          <button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button>
+          ${d.status === "open" ? `<button class="btn danger sm" onclick="cancelDn(${d.id})">取消</button>` : ""}
         </td>
       </tr>`).join("");
   } catch (e) {
@@ -154,15 +142,13 @@ async function showDetail(id) {
 
 function renderLines() {
   const d = currentDn;
-  const lineNo = {};
-  d.lines.forEach((l) => { lineNo[l.id] = l.id; });
   document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
     `<tr>
       <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.product_name)}</td>
       <td>${l.ordered_qty}</td><td><b>${l.picked_qty}</b></td><td>${l.remaining_pick}</td>
       <td>
         <input id="pk-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
-        <button class="btn" onclick="doPick(${l.id})" ${d.dn.status === "shipped" || d.dn.status === "cancelled" ? "disabled" : ""}>拣货</button>
+        <button class="btn sm" onclick="doPick(${l.id})" ${d.dn.status === "shipped" || d.dn.status === "cancelled" ? "disabled" : ""}>拣货</button>
       </td>
     </tr>`).join("");
   document.getElementById("pickBody").innerHTML = d.picks.length
@@ -209,27 +195,48 @@ async function cancelDn(id) {
   }
 }
 
-document.getElementById("createForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const code = ev.target.code.value.trim();
-  const ownerId = parseInt(document.getElementById("ownerSelect").value, 10);
-  const pid = parseInt(document.getElementById("productSelect").value, 10);
-  const customerId = parseInt(document.getElementById("customerSelect").value, 10);
-  const qty = parseFloat(ev.target.qty.value);
-  try {
-    await api("POST", "/api/dns", {
-      code, owner_id: ownerId, customer_id: customerId, note: ev.target.note.value,
-      lines: [{ product_id: pid, ordered_qty: qty }],
-    });
-    showMsg(document.getElementById("msg"), "创建成功", "success");
-    ev.target.reset();
-    load();
-  } catch (e) {
-    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
+async function openCreate() {
+  await loadOptions();
+  openForm({
+    title: "新建出库单（DN）", submitText: "创建", width: 760,
+    fields: [
+      { name: "code", label: "单号 *", required: true, autocode: true, autocodePrefix: "DN" },
+      { name: "owner_id", label: "货主 *", type: "select", required: true, options: ownerOptions },
+      { name: "customer_id", label: "客户 *", type: "select", required: true, options: allCustomerOptions },
+      { name: "note", label: "备注", type: "textarea", full: true },
+      {
+        name: "lines", label: "出库明细", type: "lines", full: true,
+        lineFields: [
+          { name: "product_id", label: "物料", type: "select", options: productOptions },
+          { name: "ordered_qty", label: "订购数量", type: "number" },
+        ],
+      },
+    ],
+    onSubmit: async (p) => {
+      await api("POST", "/api/dns", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+  // 选择货主后联动过滤客户列表（多货主隔离）
+  const ov = document.querySelector(".modal-overlay");
+  if (ov) {
+    const ownerSel = ov.querySelector('[name="owner_id"]');
+    const custSel = ov.querySelector('[name="customer_id"]');
+    if (ownerSel && custSel) {
+      const sync = () => {
+        const list = customersForOwner(ownerSel.value);
+        const cur = custSel.value;
+        custSel.innerHTML = list.map((c) =>
+          `<option value="${esc(c.value)}" ${String(c.value) === String(cur) ? "selected" : ""}>${esc(c.label)}</option>`).join("");
+      };
+      sync();
+      ownerSel.addEventListener("change", sync);
+    }
   }
-});
+}
 
-loadOwnersAndProducts().then(load);
+loadOptions().then(load);
 </script>
 </body>
 </html>

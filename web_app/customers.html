@@ -16,24 +16,11 @@
     </header>
     <div class="content">
       <div id="msg" class="msg"></div>
-<div class="card">
-    <h2>新建客户</h2>
-    <form id="createForm" class="grid-form">
-      <div><label>编码 *</label><input name="code" required maxlength="32"></div>
-      <div><label>名称 *</label><input name="name" required maxlength="128"></div>
-      <div><label>所属货主 *</label><select id="ownerSelect" name="owner_id" required></select></div>
-      <div><label>联系人</label><input name="contact"></div>
-      <div><label>电话</label><input name="phone"></div>
-      <div><label>邮箱</label><input name="email" type="email"></div>
-      <div><label>客户等级</label><select name="level"><option value="普通">普通</option><option value="银牌">银牌</option><option value="金牌">金牌</option><option value="VIP">VIP</option></select></div>
-      <div><label>地区</label><input name="region" placeholder="如 华东/华北"></div>
-      <div><label>地址</label><input name="address"></div>
-      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
-    </form>
-  </div>
-
   <div class="card">
-    <h2>客户列表</h2>
+    <div class="card-head">
+      <h2>客户列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建客户</button>
+    </div>
     <div class="toolbar">
       <input id="kw" placeholder="编码/名称搜索">
       <select id="ownerFilter"><option value="">全部货主</option></select>
@@ -61,17 +48,38 @@
     </div>
 
     <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
     <script src="/js/layout.js"></script>
 <script>
 let page = 1, pageSize = 20;
+let ownerOptions = [{ value: "", label: "（未指定）" }];
+
+function customerFields() {
+  return [
+    { name: "code", label: "编码 *", required: true, autocode: true, autocodePrefix: "CUST" },
+    { name: "name", label: "名称 *", required: true },
+    { name: "owner_id", label: "所属货主 *", type: "select", required: true, options: ownerOptions },
+    { name: "contact", label: "联系人" },
+    { name: "phone", label: "电话" },
+    { name: "email", label: "邮箱", type: "email" },
+    { name: "level", label: "客户等级", type: "select", options: [
+      { value: "普通", label: "普通" },
+      { value: "银牌", label: "银牌" },
+      { value: "金牌", label: "金牌" },
+      { value: "VIP", label: "VIP" },
+    ] },
+    { name: "region", label: "地区", placeholder: "如 华东/华北" },
+    { name: "address", label: "地址", full: true },
+  ];
+}
 
 async function loadOwners() {
   const data = await api("GET", "/api/owners?page_size=100");
-  document.getElementById("ownerSelect").innerHTML = data.owners.map(
-    (o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join("");
-  document.getElementById("ownerFilter").innerHTML =
-    `<option value="">全部货主</option>` + data.owners.map(
-      (o) => `<option value="${o.id}">${esc(o.code)}</option>`).join("");
+  ownerOptions = [{ value: "", label: "（未指定）" }].concat(
+    data.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }))
+  );
+  document.getElementById("ownerFilter").insertAdjacentHTML("beforeend",
+    data.owners.map((o) => `<option value="${o.id}">${esc(o.code)}</option>`).join(""));
 }
 
 async function load() {
@@ -84,16 +92,16 @@ async function load() {
   if (ow) qs.set("owner_id", ow);
   try {
     const data = await api("GET", "/api/customers?" + qs);
-    const tb = document.getElementById("tbody");
-    tb.innerHTML = data.customers.map((c) =>
+    document.getElementById("tbody").innerHTML = data.customers.map((c) =>
       `<tr>
         <td>${c.id}</td><td>${esc(c.code)}</td><td>${esc(c.name)}</td>
         <td>${esc(c.owner_code || "")} · ${esc(c.owner_name || "")}</td>
         <td>${esc(c.contact)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.level)}</td><td>${esc(c.region)}</td>
         <td>${statusTag(c.status)}</td>
         <td>
-          <button class="btn secondary" onclick="toggle(${c.id},'${c.status}')">${c.status === "active" ? "停用" : "启用"}</button>
-          <button class="btn danger" onclick="del(${c.id})">删除</button>
+          <button class="btn secondary sm" onclick="openEdit(${c.id})">编辑</button>
+          <button class="btn secondary sm" onclick="toggle(${c.id},'${c.status}')">${c.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger sm" onclick="del(${c.id})">删除</button>
         </td>
       </tr>`).join("");
     document.getElementById("pageInfo").textContent =
@@ -107,19 +115,28 @@ async function load() {
 
 function turn(d) { page += d; load(); }
 
-document.getElementById("createForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const fd = new FormData(ev.target);
-  const payload = Object.fromEntries(fd.entries());
-  try {
-    await api("POST", "/api/customers", payload);
-    showMsg(document.getElementById("msg"), "创建成功", "success");
-    ev.target.reset();
-    load();
-  } catch (e) {
-    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
-  }
-});
+function openCreate() {
+  openForm({
+    title: "新建客户", submitText: "创建", fields: customerFields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/customers", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/customers/" + id);
+  openForm({
+    title: "编辑客户", submitText: "保存", fields: customerFields(), values: data.customer,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/customers/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
 
 async function toggle(id, status) {
   try {

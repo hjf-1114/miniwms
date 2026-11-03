@@ -207,6 +207,39 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .flex { display: flex; gap: 8px; align-items: center; }
 .mt8 { margin-top: 8px; } .mt12 { margin-top: 12px; } .mt16 { margin-top: 16px; }
 
+/* ── 弹窗 ── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, .45);
+  display: grid; place-items: center; z-index: 50; padding: 16px;
+}
+.modal {
+  background: #fff; border-radius: var(--radius); width: min(600px, 100%);
+  max-height: 90vh; overflow: auto; box-shadow: 0 20px 50px rgba(15, 23, 42, .25);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.modal-head h3 { font-size: 16px; font-weight: 600; }
+.modal-x {
+  background: none; border: none; font-size: 22px; line-height: 1;
+  color: var(--muted); cursor: pointer; padding: 0 4px;
+}
+.modal-body { padding: 18px 20px; }
+.modal-err {
+  display: none; color: #b91c1c; background: var(--warn-soft);
+  padding: 8px 12px; border-radius: var(--radius-sm); margin-top: 4px; font-size: 12.5px;
+}
+.modal-foot {
+  grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px;
+}
+.lines-editor { grid-column: 1 / -1; border: 1px dashed var(--border); border-radius: var(--radius-sm); padding: 10px; background: #f8fafc; }
+.lines-head { display: flex; gap: 8px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.lines-head span { flex: 1; min-width: 0; }
+.line-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.line-row > * { flex: 1; min-width: 0; }
+.line-row [data-del] { flex: 0 0 auto; }
+
 /* ── 概览（首页仪表盘）── */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
 .stat {
