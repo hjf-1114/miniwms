@@ -26,7 +26,7 @@
 | 天 | 里程碑 | 内容 |
 |---|---|---|
 | D1 (10/30) | M3 | 库位主数据(后端+10测) + Web demo 骨架(首页/货主/物料/库位 4 页) |
-| D2 (10/31) | M4 | 收货单+上架(后端: 按货主×物料×库位写 stock+入库流水) + 收货 demo 页 |
+| D2 (10/31) | M4 | ~~收货单+上架~~ 实际 11/03 完成（自动化未触发，手动补进度） |
 | D3 (11/1) | M5 | 出库单+拣货+发货(超卖拦截) + 出库 demo 页 |
 | D4 (11/2) | M6 | 库存账查询+全部动作流水(余额=流水累加可核对) + 库存查询页 |
 | D5 (11/3) | M7/M8 | 移库(原子一减一增) + 盘点(冻结/盲盘/差异调整) + 对应页面 |
@@ -43,6 +43,27 @@
 - M9 补货预警（min_stock 对比 + 拣货位缺料提示）
 - M10 报表统计（按货主的收发汇总、周转率、库位利用率）
 - M11 CSV 导入导出 + 简易鉴权 + API 文档收尾
+
+## M4 收货单与上架（2026-11-03）
+
+**目标**：落地第一个库存单据——ASN 收货单与上架，库存从此只由单据驱动并可由流水核对。
+设计依据 `docs/REFERENCES.md`（GreaterWMS 的 ASN 口径 + Sentry 的服务层分层/暂存位流转/零行保留）。
+
+**改动清单**：
+- `constants.py`：ASN 状态机（open→receiving→putaway→closed/cancelled）与流水类型枚举显式集中
+- `inventory_service.py`：库存变更服务层——`BEGIN IMMEDIATE` 事务、stock upsert（零行保留）、
+  `allocated_qty` 字段、每笔变动写 `stock_movement` 流水
+- `main.py`：`asn`/`asn_line`/`stock_movement` 表 + 旧库 `stock.allocated_qty` 列迁移
+- `routes_asn.py`：创建（货主×物料归属一致性校验）、收货（限 receiving 位、部分收货）、
+  上架（暂存位→storage/picking，一减一增同事务）、取消（仅未收货）；状态自动推进
+- `web_app/asns.html`：收货管理页（建单/明细/收货/上架/取消）+ 首页导航
+- `tests/test_asn.py`：11 例
+
+**可验证结果**：
+- `python -m unittest discover -s tests` 48 例全绿
+- 端到端冒烟：建货主→物料→收货位/存储位→ASN(100)→收货 100→上架 100→
+  暂存位 qty=0（零行保留）、存储位 qty=100、流水 3 条（receive +100 / putaway_out -100 / putaway_in +100）
+- 越界保护：收超剩余 400、错库位类型 400、货主不一致 400、已收货取消 409
 
 ## M3 库位主数据 + Web demo 骨架（2026-10-30）
 

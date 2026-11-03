@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>收货管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav class="navbar">
+  <a class="brand" href="/">MiniWMS</a>
+  <a class="link" href="/owners.html">货主</a>
+  <a class="link" href="/products.html">物料</a>
+  <a class="link" href="/locations.html">库位</a>
+  <a class="link active" href="/asns.html">收货</a>
+</nav>
+
+<div class="container">
+  <div id="msg" class="msg"></div>
+
+  <div class="card">
+    <h2>新建收货单（ASN）</h2>
+    <form id="createForm" class="grid-form">
+      <div><label>单号 *</label><input name="code" required placeholder="如 ASN-20261103-01" maxlength="32"></div>
+      <div><label>货主 *</label><select id="ownerSelect" required></select></div>
+      <div><label>物料 *</label><select id="productSelect" required></select></div>
+      <div><label>预期数量 *</label><input name="qty" type="number" min="0.01" step="0.01" required></div>
+      <div><label>备注</label><input name="note"></div>
+      <div style="align-self:end"><button class="btn" type="submit">创建</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>收货单列表</h2>
+    <div class="toolbar">
+      <input id="kw" placeholder="单号搜索">
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="open">待收货</option>
+        <option value="receiving">收货中</option>
+        <option value="putaway">上架中</option>
+        <option value="closed">已完成</option>
+        <option value="cancelled">已取消</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none">
+    <h2 id="detailTitle">收货单明细</h2>
+    <div class="toolbar">
+      <select id="recvLocSel"></select><span class="muted">← 收货位（收货用）</span>
+      <select id="fromLocSel"></select><span class="muted">← 来源暂存位（上架用）</span>
+      <select id="toLocSel"></select><span class="muted">← 目标存储/拣货位（上架用）</span>
+      <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
+    </div>
+    <table>
+      <thead><tr><th>行</th><th>SKU</th><th>物料</th><th>预期</th><th>已收</th><th>已上架</th><th>收货</th><th>上架</th></tr></thead>
+      <tbody id="lineBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+let currentAsn = null;
+
+async function loadOwnersAndProducts() {
+  const [ow, pr] = await Promise.all([
+    api("GET", "/api/owners?page_size=100"),
+    api("GET", "/api/products?page_size=100"),
+  ]);
+  document.getElementById("ownerSelect").innerHTML = ow.owners.map(
+    (o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join("");
+  document.getElementById("productSelect").innerHTML = pr.products.map(
+    (p) => `<option value="${p.id}" data-owner="${p.owner_id || ""}">${esc(p.sku)} · ${esc(p.name)}</option>`).join("");
+}
+
+async function loadLocs() {
+  const [recv, dest] = await Promise.all([
+    api("GET", "/api/locations?loc_type=receiving&status=active&page_size=100"),
+    api("GET", "/api/locations?status=active&page_size=100"),
+  ]);
+  const recvOpts = recv.locations.map(
+    (l) => `<option value="${l.id}">${esc(l.code)}（收货区）</option>`).join("");
+  const destOpts = dest.locations.filter(
+    (l) => l.loc_type === "storage" || l.loc_type === "picking").map(
+    (l) => `<option value="${l.id}">${esc(l.code)}（${esc(l.loc_type_label)}）</option>`).join("");
+  document.getElementById("recvLocSel").innerHTML = recvOpts;
+  document.getElementById("fromLocSel").innerHTML = recvOpts;
+  document.getElementById("toLocSel").innerHTML = destOpts;
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page_size: 50 });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  try {
+    const data = await api("GET", "/api/asns?" + qs);
+    document.getElementById("tbody").innerHTML = data.asns.map((a) =>
+      `<tr>
+        <td>${a.id}</td><td>${esc(a.code)}</td>
+        <td>${esc(a.owner_code || "")} · ${esc(a.owner_name || "")}</td>
+        <td>${asnStatusTag(a.status)}</td>
+        <td class="muted">${esc(a.created_at)}</td>
+        <td>
+          <button class="btn secondary" onclick="showDetail(${a.id})">明细</button>
+          ${a.status === "open" ? `<button class="btn danger" onclick="cancelAsn(${a.id})">取消</button>` : ""}
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function asnStatusTag(s) {
+  const map = { open: "待收货", receiving: "收货中", putaway: "上架中", closed: "已完成", cancelled: "已取消" };
+  const cls = s === "closed" ? "ok" : (s === "cancelled" ? "off" : "off");
+  return `<span class="tag ${cls}">${map[s] || s}</span>`;
+}
+
+async function showDetail(id) {
+  const data = await api("GET", "/api/asns/" + id);
+  currentAsn = data;
+  document.getElementById("detailCard").style.display = "";
+  document.getElementById("detailTitle").textContent =
+    `收货单明细：${data.asn.code}（${data.asn.status}）`;
+  await loadLocs();
+  renderLines();
+}
+
+function renderLines() {
+  const d = currentAsn;
+  document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
+    `<tr>
+      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.product_name)}</td>
+      <td>${l.expected_qty}</td><td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
+      <td>
+        <input id="rq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
+        <button class="btn" onclick="doReceive(${l.id})">收货</button>
+      </td>
+      <td>
+        <input id="pq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
+        <button class="btn secondary" onclick="doPutaway(${l.id})">上架</button>
+      </td>
+    </tr>`).join("");
+}
+
+async function doReceive(lineId) {
+  const qty = parseFloat(document.getElementById("rq-" + lineId).value);
+  const locationId = parseInt(document.getElementById("recvLocSel").value, 10);
+  try {
+    const r = await api("POST", `/api/asns/${currentAsn.asn.id}/receive`,
+      { line_id: lineId, location_id: locationId, qty });
+    showMsg(document.getElementById("msg"), `收货成功，单据状态：${r.status}`, "success");
+    await showDetail(currentAsn.asn.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "收货失败：" + e.message, "error");
+  }
+}
+
+async function doPutaway(lineId) {
+  const qty = parseFloat(document.getElementById("pq-" + lineId).value);
+  const fromId = parseInt(document.getElementById("fromLocSel").value, 10);
+  const toId = parseInt(document.getElementById("toLocSel").value, 10);
+  try {
+    const r = await api("POST", `/api/asns/${currentAsn.asn.id}/putaway`,
+      { line_id: lineId, from_location_id: fromId, to_location_id: toId, qty });
+    showMsg(document.getElementById("msg"), `上架成功，单据状态：${r.status}`, "success");
+    await showDetail(currentAsn.asn.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "上架失败：" + e.message, "error");
+  }
+}
+
+async function cancelAsn(id) {
+  if (!confirm("确认取消该收货单？（仅未收货可取消）")) return;
+  try {
+    await api("POST", `/api/asns/${id}/cancel`);
+    showMsg(document.getElementById("msg"), "已取消", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "取消失败：" + e.message, "error");
+  }
+}
+
+document.getElementById("createForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const code = ev.target.code.value.trim();
+  const ownerId = parseInt(document.getElementById("ownerSelect").value, 10);
+  const pid = parseInt(document.getElementById("productSelect").value, 10);
+  const qty = parseFloat(ev.target.qty.value);
+  try {
+    await api("POST", "/api/asns", {
+      code, owner_id: ownerId, note: ev.target.note.value,
+      lines: [{ product_id: pid, expected_qty: qty }],
+    });
+    showMsg(document.getElementById("msg"), "创建成功", "success");
+    ev.target.reset();
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "创建失败：" + e.message, "error");
+  }
+});
+
+loadOwnersAndProducts().then(load);
+</script>
+</body>
+</html>

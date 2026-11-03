@@ -42,12 +42,18 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - 库位增删改查：编码唯一、库区、类型（收货/存储/拣货/退货）、容量（0=不限）、启用状态
   - 列表：关键词/库区/类型/状态过滤 + 分页，按编码排序
   - 保护规则：已有库存记录的库位禁止删除（`stock` 表 M3 预建，M4 起写入）
+- **M4 收货单与上架**（`routes_asn.py` / `inventory_service.py` / `constants.py`）
+  - ASN 收货单：单号唯一、货主与物料归属一致性校验（多货主隔离）、行级部分收货
+  - 收货流程：收到「收货区」暂存位 → 上架到「存储/拣货」位（一减一增同事务）
+  - 单据状态机：open → receiving → putaway → closed（+cancelled），收满上完自动关闭
+  - 库存变更统一走 `inventory_service`：BEGIN IMMEDIATE 事务、零行保留、每笔变动落 `stock_movement` 流水
+  - `stock` 表含 `allocated_qty`（已分配），为 M5 拣货分配与超卖拦截预留
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位三个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/收货四个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 收货+上架、拣货+发货、库存账流水、移库、盘点、补货预警、报表统计、CSV 导入导出
+- 拣货+发货（含分配/超卖拦截）、库存账流水查询、移库、盘点、补货预警、报表统计、CSV 导入导出
 
 ## API 概览
 
@@ -59,6 +65,11 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/locations` | 创建库位（编码必填唯一） |
 | GET | `/api/locations` | 列表，支持 `keyword`/`zone`/`loc_type`/`status`/分页 |
 | GET/PUT/DELETE | `/api/locations/<id>` | 详情/更新/删除（有库存时拒绝） |
+| POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性） |
+| GET | `/api/asns` | 收货单列表，支持 `keyword`/`status`/分页 |
+| POST | `/api/asns/<id>/receive` | 收货到收货区位（部分收货，状态自动推进） |
+| POST | `/api/asns/<id>/putaway` | 上架：暂存位 → 存储/拣货位（同事务一减一增） |
+| POST | `/api/asns/<id>/cancel` | 取消（仅未收货） |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/products/<id>` | 详情/更新/删除（库存非 0 时拒绝） |
@@ -67,10 +78,14 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 ```
 main.py               Flask 入口、数据库初始化与连接管理、静态托管 web_app
+constants.py          状态机与流水类型枚举（显式集中）
+inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
 routes_owner.py       货主主数据 Blueprint
 routes_product.py     物料主数据 Blueprint
 routes_location.py    库位主数据 Blueprint
-web_app/              Web demo（index/owners/products/locations + css/js）
+routes_asn.py         收货单与上架 Blueprint
+web_app/              Web demo（index/owners/products/locations/asns + css/js）
+docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录
 ```
@@ -78,5 +93,5 @@ DEVELOPMENT.md        里程碑开发记录
 ## 设计约定
 
 - 所有接口返回 JSON：成功 `{"ok": true, ...}`，失败 `{"ok": false, "errors": [...]}` + 对应 4xx 状态码
-- 库存数量只允许由业务单据（收货/拣货/移库/盘点）驱动变化，M1 阶段仅随建档初始化为 0
+- 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M7/M8），全部经 inventory_service 落流水
 - 时间戳由 SQLite `datetime('now','localtime')` 生成
