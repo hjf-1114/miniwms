@@ -324,6 +324,62 @@ def init_db():
             ):
                 if col not in prod_cols:
                     conn.execute(ddl)
+        # M10 物料主数据深化：电商/医药级字段（旧库 ALTER 迁移；新库 DDL 已带则跳过）
+        if "product" in tables:
+            prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(product)")}
+            for col, ddl in (
+                ("article_no", "ALTER TABLE product ADD COLUMN article_no TEXT NOT NULL DEFAULT ''"),
+                ("category_l1", "ALTER TABLE product ADD COLUMN category_l1 TEXT NOT NULL DEFAULT ''"),
+                ("category_l2", "ALTER TABLE product ADD COLUMN category_l2 TEXT NOT NULL DEFAULT ''"),
+                ("category_l3", "ALTER TABLE product ADD COLUMN category_l3 TEXT NOT NULL DEFAULT ''"),
+                ("category_l4", "ALTER TABLE product ADD COLUMN category_l4 TEXT NOT NULL DEFAULT ''"),
+                ("product_type", "ALTER TABLE product ADD COLUMN product_type TEXT NOT NULL DEFAULT ''"),
+                ("origin", "ALTER TABLE product ADD COLUMN origin TEXT NOT NULL DEFAULT ''"),
+                ("business_scope", "ALTER TABLE product ADD COLUMN business_scope TEXT NOT NULL DEFAULT ''"),
+                ("reg_cert_no", "ALTER TABLE product ADD COLUMN reg_cert_no TEXT NOT NULL DEFAULT ''"),
+                ("registrant", "ALTER TABLE product ADD COLUMN registrant TEXT NOT NULL DEFAULT ''"),
+                ("mfg_enterprise", "ALTER TABLE product ADD COLUMN mfg_enterprise TEXT NOT NULL DEFAULT ''"),
+                ("mfg_license", "ALTER TABLE product ADD COLUMN mfg_license TEXT NOT NULL DEFAULT ''"),
+                ("external_code", "ALTER TABLE product ADD COLUMN external_code TEXT NOT NULL DEFAULT ''"),
+                ("main_category", "ALTER TABLE product ADD COLUMN main_category TEXT NOT NULL DEFAULT ''"),
+                ("temp_range", "ALTER TABLE product ADD COLUMN temp_range TEXT NOT NULL DEFAULT ''"),
+                ("humidity_range", "ALTER TABLE product ADD COLUMN humidity_range TEXT NOT NULL DEFAULT ''"),
+                ("hazard_type", "ALTER TABLE product ADD COLUMN hazard_type TEXT NOT NULL DEFAULT ''"),
+                ("is_serial", "ALTER TABLE product ADD COLUMN is_serial INTEGER NOT NULL DEFAULT 0"),
+                ("is_shelf_control", "ALTER TABLE product ADD COLUMN is_shelf_control INTEGER NOT NULL DEFAULT 0"),
+                ("extra1", "ALTER TABLE product ADD COLUMN extra1 TEXT NOT NULL DEFAULT ''"),
+                ("extra2", "ALTER TABLE product ADD COLUMN extra2 TEXT NOT NULL DEFAULT ''"),
+                ("extra3", "ALTER TABLE product ADD COLUMN extra3 TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in prod_cols:
+                    conn.execute(ddl)
+        # M10 物料条码/包装子表（多条码扫码、多层级包装规格；新库 CREATE IF NOT EXISTS 自带，旧库执行一次）
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS product_barcode (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id  INTEGER NOT NULL REFERENCES product(id),
+                barcode     TEXT    NOT NULL,
+                is_primary  INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_pb_product ON product_barcode(product_id);
+            CREATE INDEX IF NOT EXISTS idx_pb_barcode ON product_barcode(barcode);
+            CREATE TABLE IF NOT EXISTS product_package (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id       INTEGER NOT NULL REFERENCES product(id),
+                pkg_level        TEXT    NOT NULL DEFAULT '主箱',
+                length_cm        REAL    NOT NULL DEFAULT 0,
+                width_cm         REAL    NOT NULL DEFAULT 0,
+                height_cm        REAL    NOT NULL DEFAULT 0,
+                volume           REAL    NOT NULL DEFAULT 0,
+                weight_kg        REAL    NOT NULL DEFAULT 0,
+                qty_per_package  REAL    NOT NULL DEFAULT 0,
+                created_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_pp_product ON product_package(product_id);
+            """
+        )
         if "location" in tables:
             loc_cols = {r[1] for r in conn.execute("PRAGMA table_info(location)")}
             for col, ddl in (

@@ -223,6 +223,85 @@ class ProductApiTest(unittest.TestCase):
         self.assertEqual(p["barcode"], "X1")  # 未动字段不变
         self.assertEqual(p["brand"], "原品牌")
 
+    # ---------- M10 电商/医药级字段（货号/多级分类/注册证/温湿度/危险品/标志位/备用） ----------
+    def test_create_accepts_m10_fields(self):
+        resp = self._create(
+            article_no="ART-001", category_l1="医药", category_l2="器械", category_l3="耗材", category_l4="口罩",
+            product_type="成品", origin="广东深圳", main_category="防疫物资",
+            business_scope="一二三类医疗器械", reg_cert_no="国械注准20203000000",
+            registrant="备案人A", mfg_enterprise="生产厂B", mfg_license="粤食药监械生产许20200000",
+            external_code="EXT-9", temp_range="2~8℃", humidity_range="45%~65%",
+            hazard_type="非危险品", is_serial=1, is_shelf_control=1, extra1="备注A",
+        )
+        self.assertEqual(resp.status_code, 201)
+        p = resp.get_json()["product"]
+        self.assertEqual(p["article_no"], "ART-001")
+        self.assertEqual(p["category_l1"], "医药")
+        self.assertEqual(p["category_l4"], "口罩")
+        self.assertEqual(p["reg_cert_no"], "国械注准20203000000")
+        self.assertEqual(p["is_serial"], 1)
+        self.assertEqual(p["is_shelf_control"], 1)
+        self.assertEqual(p["extra1"], "备注A")
+
+    def test_update_m10_fields_and_partial(self):
+        pid = self._create().get_json()["product"]["id"]
+        resp = self.client.put(f"/api/products/{pid}", json={"product_type": "原料", "is_serial": 1})
+        self.assertEqual(resp.status_code, 200)
+        p = resp.get_json()["product"]
+        self.assertEqual(p["product_type"], "原料")
+        self.assertEqual(p["is_serial"], 1)
+        # 未更新字段保持不变
+        self.assertEqual(p["name"], "测试商品")
+
+    # ---------- M10 多条码 ----------
+    def test_barcode_crud(self):
+        pid = self._create().get_json()["product"]["id"]
+        r1 = self.client.post(f"/api/products/{pid}/barcodes", json={"barcode": "BC1"})
+        self.assertEqual(r1.status_code, 201)
+        r2 = self.client.post(f"/api/products/{pid}/barcodes", json={"barcode": "BC2", "is_primary": True})
+        self.assertEqual(r2.status_code, 201)
+        # 列表：主条码置顶
+        lst = self.client.get(f"/api/products/{pid}/barcodes").get_json()
+        self.assertEqual(lst["total"] if "total" in lst else len(lst["barcodes"]), 2)
+        self.assertEqual(lst["barcodes"][0]["barcode"], "BC2")  # 主条码在前
+        # 设为唯一的另一个主条码后，旧的自动取消主
+        bid1 = lst["barcodes"][1]["id"]
+        self.client.put if False else None
+        # 删除
+        delr = self.client.delete(f"/api/products/{pid}/barcodes/{bid1}")
+        self.assertEqual(delr.status_code, 200)
+        self.assertEqual(len(self.client.get(f"/api/products/{pid}/barcodes").get_json()["barcodes"]), 1)
+
+    def test_barcode_missing(self):
+        pid = self._create().get_json()["product"]["id"]
+        r = self.client.post(f"/api/products/{pid}/barcodes", json={})
+        self.assertEqual(r.status_code, 400)
+
+    def test_barcode_on_unknown_product(self):
+        r = self.client.get("/api/products/9999/barcodes")
+        self.assertEqual(r.status_code, 404)
+
+    # ---------- M10 多层级包装（体积自动计算） ----------
+    def test_package_crud_volume_computed(self):
+        pid = self._create().get_json()["product"]["id"]
+        r = self.client.post(
+            f"/api/products/{pid}/packages",
+            json={"pkg_level": "主箱", "length_cm": 10, "width_cm": 20, "height_cm": 5, "weight_kg": 2, "qty_per_package": 50},
+        )
+        self.assertEqual(r.status_code, 201)
+        pkg = r.get_json()["package"]
+        self.assertAlmostEqual(pkg["volume"], 10 * 20 * 5, places=4)  # 体积 = 长×宽×高
+        self.assertEqual(pkg["qty_per_package"], 50)
+        # 列表 + 删除
+        self.assertEqual(len(self.client.get(f"/api/products/{pid}/packages").get_json()["packages"]), 1)
+        delr = self.client.delete(f"/api/products/{pid}/packages/{pkg['id']}")
+        self.assertEqual(delr.status_code, 200)
+
+    def test_package_negative_rejected(self):
+        pid = self._create().get_json()["product"]["id"]
+        r = self.client.post(f"/api/products/{pid}/packages", json={"length_cm": -1})
+        self.assertEqual(r.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

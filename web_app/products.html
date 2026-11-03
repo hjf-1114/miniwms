@@ -50,14 +50,37 @@ let page = 1, pageSize = 20;
 let ownerOptions = [{ value: "", label: "自营" }];
 
 function productFields() {
+  const yesno = [{ value: 0, label: "否" }, { value: 1, label: "是" }];
   return [
     { name: "sku", label: "SKU *", required: true, autocode: true, autocodePrefix: "SKU" },
     { name: "name", label: "名称 *", required: true },
-    { name: "category", label: "分类" },
+    { name: "article_no", label: "货号" },
+    { name: "category", label: "默认分类" },
     { name: "unit", label: "单位" },
-    { name: "barcode", label: "条码" },
+    { name: "barcode", label: "主条码" },
     { name: "brand", label: "品牌" },
-    { name: "spec", label: "规格" },
+    { name: "spec", label: "规格型号" },
+    { name: "product_type", label: "产品类型" },
+    { name: "main_category", label: "产品主分类" },
+    { name: "category_l1", label: "一级分类" },
+    { name: "category_l2", label: "二级分类" },
+    { name: "category_l3", label: "三级分类" },
+    { name: "category_l4", label: "四级分类" },
+    { name: "origin", label: "产地" },
+    { name: "external_code", label: "外部编码" },
+    { name: "business_scope", label: "经营范围", full: true },
+    { name: "reg_cert_no", label: "注册证号" },
+    { name: "registrant", label: "注册人/备案人" },
+    { name: "mfg_enterprise", label: "生产企业" },
+    { name: "mfg_license", label: "生产企业许可证" },
+    { name: "temp_range", label: "温度范围" },
+    { name: "humidity_range", label: "湿度范围" },
+    { name: "hazard_type", label: "危险品类型" },
+    { name: "is_serial", label: "是否序列号", type: "select", options: yesno },
+    { name: "is_shelf_control", label: "是否保质期控制", type: "select", options: yesno },
+    { name: "extra1", label: "备用字段1" },
+    { name: "extra2", label: "备用字段2" },
+    { name: "extra3", label: "备用字段3" },
     { name: "weight_kg", label: "重量(kg)", type: "number" },
     { name: "length_cm", label: "长(cm)", type: "number" },
     { name: "width_cm", label: "宽(cm)", type: "number" },
@@ -99,6 +122,7 @@ async function load() {
         <td>${statusTag(p.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${p.id})">编辑</button>
+          <button class="btn secondary sm" onclick="manageProductAttrs(${p.id})">条码/包装</button>
           <button class="btn danger sm" onclick="del(${p.id})">删除</button>
         </td>
       </tr>`).join("");
@@ -114,7 +138,7 @@ function turn(d) { page += d; load(); }
 
 function openCreate() {
   openForm({
-    title: "新建物料", submitText: "创建", fields: productFields(),
+    title: "新建物料", submitText: "创建", width: 760, fields: productFields(),
     onSubmit: async (p) => {
       await api("POST", "/api/products", p);
       showMsg(document.getElementById("msg"), "创建成功", "success");
@@ -126,13 +150,104 @@ function openCreate() {
 async function openEdit(id) {
   const data = await api("GET", "/api/products/" + id);
   openForm({
-    title: "编辑物料", submitText: "保存", fields: productFields(), values: data.product,
+    title: "编辑物料", submitText: "保存", width: 760, fields: productFields(), values: data.product,
     onSubmit: async (p) => {
       await api("PUT", "/api/products/" + id, p);
       showMsg(document.getElementById("msg"), "已保存", "success");
       load();
     },
   });
+}
+
+// 条码与包装管理（多条码 / 多层级包装规格）
+async function manageProductAttrs(id) {
+  const data = await api("GET", "/api/products/" + id);
+  const p = data.product;
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML = `
+    <div class="modal" style="width:min(780px,100%)">
+      <div class="modal-head"><h3>条码与包装：${esc(p.name)}</h3><button class="modal-x" type="button" aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <h4>产品条码（多条码，可设主条码）</h4>
+        <div class="toolbar">
+          <input id="bcInput" placeholder="输入条码">
+          <label class="inline"><input type="checkbox" id="bcPrim"> 设为主条码</label>
+          <button class="btn sm" id="bcAdd">+ 添加</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>条码</th><th>主</th><th>操作</th></tr></thead>
+          <tbody id="bcBody"></tbody>
+        </table></div>
+
+        <h4 style="margin-top:16px">包装层级（多规格：主箱/内箱/中箱，长宽高体积重量）</h4>
+        <div class="table-wrap"><table>
+          <thead><tr><th>层级</th><th>长(cm)</th><th>宽(cm)</th><th>高(cm)</th><th>体积(cm³)</th><th>重(kg)</th><th>每箱数量</th><th>操作</th></tr></thead>
+          <tbody id="pkgBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <input id="pkLevel" placeholder="层级" value="主箱" style="width:110px">
+          <input id="pkL" placeholder="长" type="number" step="0.01" style="width:64px">
+          <input id="pkW" placeholder="宽" type="number" step="0.01" style="width:64px">
+          <input id="pkH" placeholder="高" type="number" step="0.01" style="width:64px">
+          <input id="pkWt" placeholder="重kg" type="number" step="0.01" style="width:64px">
+          <input id="pkQty" placeholder="每箱" type="number" step="0.01" style="width:64px">
+          <button class="btn sm" id="pkAdd">+ 添加包装</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov || e.target.classList.contains("modal-x") || e.target.hasAttribute("data-close")) close();
+  });
+  ov.querySelector(".modal-x").addEventListener("click", close);
+
+  const bcBody = ov.querySelector("#bcBody");
+  const pkgBody = ov.querySelector("#pkgBody");
+
+  async function refreshBc() {
+    const d = await api("GET", `/api/products/${id}/barcodes`);
+    bcBody.innerHTML = d.barcodes.map((b) =>
+      `<tr><td>${esc(b.barcode)}</td><td>${b.is_primary ? "★" : ""}</td>` +
+      `<td><button class="btn danger sm" data-delbc="${b.id}">删</button></td></tr>`).join("");
+    bcBody.querySelectorAll("[data-delbc]").forEach((btn) => btn.addEventListener("click", async () => {
+      await api("DELETE", `/api/products/${id}/barcodes/${btn.dataset.delbc}`); refreshBc();
+    }));
+  }
+  async function refreshPkg() {
+    const d = await api("GET", `/api/products/${id}/packages`);
+    pkgBody.innerHTML = d.packages.map((q) =>
+      `<tr><td>${esc(q.pkg_level)}</td><td>${q.length_cm}</td><td>${q.width_cm}</td><td>${q.height_cm}</td>` +
+      `<td>${q.volume}</td><td>${q.weight_kg}</td><td>${q.qty_per_package}</td>` +
+      `<td><button class="btn danger sm" data-delpk="${q.id}">删</button></td></tr>`).join("");
+    pkgBody.querySelectorAll("[data-delpk]").forEach((btn) => btn.addEventListener("click", async () => {
+      await api("DELETE", `/api/products/${id}/packages/${btn.dataset.delpk}`); refreshPkg();
+    }));
+  }
+  ov.querySelector("#bcAdd").addEventListener("click", async () => {
+    const barcode = ov.querySelector("#bcInput").value.trim();
+    if (!barcode) return;
+    const is_primary = ov.querySelector("#bcPrim").checked ? 1 : 0;
+    await api("POST", `/api/products/${id}/barcodes`, { barcode, is_primary });
+    ov.querySelector("#bcInput").value = "";
+    refreshBc();
+  });
+  ov.querySelector("#pkAdd").addEventListener("click", async () => {
+    const payload = {
+      pkg_level: ov.querySelector("#pkLevel").value.trim() || "主箱",
+      length_cm: Number(ov.querySelector("#pkL").value || 0),
+      width_cm: Number(ov.querySelector("#pkW").value || 0),
+      height_cm: Number(ov.querySelector("#pkH").value || 0),
+      weight_kg: Number(ov.querySelector("#pkWt").value || 0),
+      qty_per_package: Number(ov.querySelector("#pkQty").value || 0),
+    };
+    await api("POST", `/api/products/${id}/packages`, payload);
+    ["#pkL", "#pkW", "#pkH", "#pkWt", "#pkQty"].forEach((s) => { ov.querySelector(s).value = ""; });
+    refreshPkg();
+  });
+  await refreshBc();
+  await refreshPkg();
 }
 
 async function del(id) {

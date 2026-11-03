@@ -56,6 +56,21 @@ def _validate_product_payload(payload, *, partial=False):
         if has(key):
             cleaned[key] = str(payload.get(key) or "").strip()
 
+    # M10 电商/医药级文本字段
+    for key in (
+        "article_no", "category_l1", "category_l2", "category_l3", "category_l4",
+        "product_type", "origin", "business_scope", "reg_cert_no", "registrant",
+        "mfg_enterprise", "mfg_license", "external_code", "main_category",
+        "temp_range", "humidity_range", "hazard_type", "extra1", "extra2", "extra3",
+    ):
+        if has(key):
+            cleaned[key] = str(payload.get(key) or "").strip()
+
+    # M10 标志位：是否序列号 / 是否保质期控制
+    for key in ("is_serial", "is_shelf_control"):
+        if has(key):
+            cleaned[key] = 1 if payload.get(key) else 0
+
     for key in ("weight_kg", "length_cm", "width_cm", "height_cm"):
         if has(key):
             try:
@@ -194,15 +209,47 @@ def create_product():
         "status": cleaned.get("status", "active"),
         "note": cleaned.get("note", ""),
         "owner_id": cleaned.get("owner_id"),
+        "article_no": cleaned.get("article_no", ""),
+        "category_l1": cleaned.get("category_l1", ""),
+        "category_l2": cleaned.get("category_l2", ""),
+        "category_l3": cleaned.get("category_l3", ""),
+        "category_l4": cleaned.get("category_l4", ""),
+        "product_type": cleaned.get("product_type", ""),
+        "origin": cleaned.get("origin", ""),
+        "business_scope": cleaned.get("business_scope", ""),
+        "reg_cert_no": cleaned.get("reg_cert_no", ""),
+        "registrant": cleaned.get("registrant", ""),
+        "mfg_enterprise": cleaned.get("mfg_enterprise", ""),
+        "mfg_license": cleaned.get("mfg_license", ""),
+        "external_code": cleaned.get("external_code", ""),
+        "main_category": cleaned.get("main_category", ""),
+        "temp_range": cleaned.get("temp_range", ""),
+        "humidity_range": cleaned.get("humidity_range", ""),
+        "hazard_type": cleaned.get("hazard_type", ""),
+        "is_serial": cleaned.get("is_serial", 0),
+        "is_shelf_control": cleaned.get("is_shelf_control", 0),
+        "extra1": cleaned.get("extra1", ""),
+        "extra2": cleaned.get("extra2", ""),
+        "extra3": cleaned.get("extra3", ""),
     }
     cur = db.execute(
         """
         INSERT INTO product (sku, name, category, unit, barcode, brand, spec,
                              weight_kg, length_cm, width_cm, height_cm, shelf_life_days,
-                             purchase_price, sale_price, stock_qty, min_stock, status, note, owner_id)
+                             purchase_price, sale_price, stock_qty, min_stock, status, note, owner_id,
+                             article_no, category_l1, category_l2, category_l3, category_l4,
+                             product_type, origin, business_scope, reg_cert_no, registrant,
+                             mfg_enterprise, mfg_license, external_code, main_category,
+                             temp_range, humidity_range, hazard_type, is_serial, is_shelf_control,
+                             extra1, extra2, extra3)
         VALUES (:sku, :name, :category, :unit, :barcode, :brand, :spec,
                 :weight_kg, :length_cm, :width_cm, :height_cm, :shelf_life_days,
-                :purchase_price, :sale_price, :stock_qty, :min_stock, :status, :note, :owner_id)
+                :purchase_price, :sale_price, :stock_qty, :min_stock, :status, :note, :owner_id,
+                :article_no, :category_l1, :category_l2, :category_l3, :category_l4,
+                :product_type, :origin, :business_scope, :reg_cert_no, :registrant,
+                :mfg_enterprise, :mfg_license, :external_code, :main_category,
+                :temp_range, :humidity_range, :hazard_type, :is_serial, :is_shelf_control,
+                :extra1, :extra2, :extra3)
         """,
         params,
     )
@@ -313,5 +360,106 @@ def delete_product(product_id):
     if row["stock_qty"] != 0:
         return jsonify({"ok": False, "error": "库存不为 0，禁止删除；请改用停用(status=inactive)"}), 409
     db.execute("DELETE FROM product WHERE id = ?", (product_id,))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+# ── M10 物料条码（多条码，支持主条码标记）──
+@product_bp.route("/<int:product_id>/barcodes", methods=["GET"])
+def list_product_barcodes(product_id):
+    db = get_db()
+    if db.execute("SELECT id FROM product WHERE id = ?", (product_id,)).fetchone() is None:
+        return jsonify({"ok": False, "error": "商品不存在"}), 404
+    rows = db.execute(
+        "SELECT * FROM product_barcode WHERE product_id = ? ORDER BY is_primary DESC, id",
+        (product_id,),
+    ).fetchall()
+    return jsonify({"ok": True, "barcodes": [dict(r) for r in rows]})
+
+
+@product_bp.route("/<int:product_id>/barcodes", methods=["POST"])
+def add_product_barcode(product_id):
+    payload = request_payload()
+    barcode = str(payload.get("barcode") or "").strip()
+    if not barcode:
+        return jsonify({"ok": False, "errors": ["barcode 必填"]}), 400
+    is_primary = 1 if payload.get("is_primary") else 0
+    db = get_db()
+    if db.execute("SELECT id FROM product WHERE id = ?", (product_id,)).fetchone() is None:
+        return jsonify({"ok": False, "error": "商品不存在"}), 404
+    if is_primary:
+        db.execute("UPDATE product_barcode SET is_primary = 0 WHERE product_id = ?", (product_id,))
+    cur = db.execute(
+        "INSERT INTO product_barcode (product_id, barcode, is_primary) VALUES (?, ?, ?)",
+        (product_id, barcode, is_primary),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM product_barcode WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify({"ok": True, "barcode": dict(row)}), 201
+
+
+@product_bp.route("/<int:product_id>/barcodes/<int:barcode_id>", methods=["DELETE"])
+def delete_product_barcode(product_id, barcode_id):
+    db = get_db()
+    if db.execute(
+        "SELECT id FROM product_barcode WHERE id = ? AND product_id = ?",
+        (barcode_id, product_id),
+    ).fetchone() is None:
+        return jsonify({"ok": False, "error": "条码不存在"}), 404
+    db.execute("DELETE FROM product_barcode WHERE id = ?", (barcode_id,))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+# ── M10 物料包装层级（多层级规格：主箱/内箱/中箱，含长宽高体积重量）──
+@product_bp.route("/<int:product_id>/packages", methods=["GET"])
+def list_product_packages(product_id):
+    db = get_db()
+    if db.execute("SELECT id FROM product WHERE id = ?", (product_id,)).fetchone() is None:
+        return jsonify({"ok": False, "error": "商品不存在"}), 404
+    rows = db.execute(
+        "SELECT * FROM product_package WHERE product_id = ? ORDER BY id", (product_id,)
+    ).fetchall()
+    return jsonify({"ok": True, "packages": [dict(r) for r in rows]})
+
+
+@product_bp.route("/<int:product_id>/packages", methods=["POST"])
+def add_product_package(product_id):
+    payload = request_payload()
+    try:
+        length_cm = float(payload.get("length_cm") or 0)
+        width_cm = float(payload.get("width_cm") or 0)
+        height_cm = float(payload.get("height_cm") or 0)
+        weight_kg = float(payload.get("weight_kg") or 0)
+        qty_per_package = float(payload.get("qty_per_package") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "errors": ["长宽高/重量/每箱数量必须为数字"]}), 400
+    if min(length_cm, width_cm, height_cm, weight_kg, qty_per_package) < 0:
+        return jsonify({"ok": False, "errors": ["数值不能为负数"]}), 400
+    volume = round(length_cm * width_cm * height_cm, 6)
+    pkg_level = str(payload.get("pkg_level") or "主箱").strip() or "主箱"
+    db = get_db()
+    if db.execute("SELECT id FROM product WHERE id = ?", (product_id,)).fetchone() is None:
+        return jsonify({"ok": False, "error": "商品不存在"}), 404
+    cur = db.execute(
+        """INSERT INTO product_package
+           (product_id, pkg_level, length_cm, width_cm, height_cm, volume, weight_kg, qty_per_package)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (product_id, pkg_level, length_cm, width_cm, height_cm, volume, weight_kg, qty_per_package),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM product_package WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify({"ok": True, "package": dict(row)}), 201
+
+
+@product_bp.route("/<int:product_id>/packages/<int:package_id>", methods=["DELETE"])
+def delete_product_package(product_id, package_id):
+    db = get_db()
+    if db.execute(
+        "SELECT id FROM product_package WHERE id = ? AND product_id = ?",
+        (package_id, product_id),
+    ).fetchone() is None:
+        return jsonify({"ok": False, "error": "包装层级不存在"}), 404
+    db.execute("DELETE FROM product_package WHERE id = ?", (package_id,))
     db.commit()
     return jsonify({"ok": True})
