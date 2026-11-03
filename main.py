@@ -170,6 +170,35 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_movement_owner ON stock_movement(owner_id);
             CREATE INDEX IF NOT EXISTS idx_movement_ref   ON stock_movement(ref_type, ref_id);
+            -- M5 出库单：主表 + 行表 + 拣货明细（拣货在哪些库位各分配多少，发货按此扣减）
+            CREATE TABLE IF NOT EXISTS dn (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                status      TEXT    NOT NULL DEFAULT 'open',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_dn_owner  ON dn(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_dn_status ON dn(status);
+            CREATE TABLE IF NOT EXISTS dn_line (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                dn_id        INTEGER NOT NULL REFERENCES dn(id),
+                product_id   INTEGER NOT NULL REFERENCES product(id),
+                ordered_qty  REAL    NOT NULL,
+                picked_qty   REAL    NOT NULL DEFAULT 0,
+                UNIQUE(dn_id, product_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dn_line_dn ON dn_line(dn_id);
+            CREATE TABLE IF NOT EXISTS dn_pick (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                dn_id       INTEGER NOT NULL REFERENCES dn(id),
+                line_id     INTEGER NOT NULL REFERENCES dn_line(id),
+                location_id INTEGER NOT NULL REFERENCES location(id),
+                qty         REAL    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dn_pick_dn ON dn_pick(dn_id);
             """
         )
         conn.commit()
@@ -191,8 +220,10 @@ else:
     from routes_owner import owner_bp  # noqa: E402
     from routes_product import product_bp  # noqa: E402
     from routes_asn import asn_bp  # noqa: E402
+    from routes_dn import dn_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
     app.register_blueprint(location_bp)
     app.register_blueprint(asn_bp)
+    app.register_blueprint(dn_bp)

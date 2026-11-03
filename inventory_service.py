@@ -52,6 +52,11 @@ def adjust_stock(db, owner_id, product_id, location_id, qty_delta, ref_type, ref
     """
     row = _lock_stock_row(db, owner_id, product_id, location_id)
     if row is None:
+        # 无库存行时不允许凭空出库/分配（qty_delta<=0 或纯分配都会产生非法负/超配行）
+        if qty_delta < 0 or allocated_delta < 0 or allocated_delta > qty_delta:
+            raise StockError(
+                f"库存不足: location={location_id} 无库存记录, 变更量={qty_delta}"
+            )
         db.execute(
             "INSERT INTO stock (owner_id, product_id, location_id, qty, allocated_qty) "
             "VALUES (?, ?, ?, ?, ?)",

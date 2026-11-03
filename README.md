@@ -48,12 +48,18 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - 单据状态机：open → receiving → putaway → closed（+cancelled），收满上完自动关闭
   - 库存变更统一走 `inventory_service`：BEGIN IMMEDIATE 事务、零行保留、每笔变动落 `stock_movement` 流水
   - `stock` 表含 `allocated_qty`（已分配），为 M5 拣货分配与超卖拦截预留
+- **M5 出库单与拣货发货**（`routes_dn.py`）
+  - DN 出库单：单号唯一、货主与物料归属一致性校验（多货主隔离）、行级拆分拣货
+  - 拣货流程：从存储/拣货位按可用量（在手-已分配）分配，写 `allocated_qty` 与拣货明细
+  - 发货流程：所有行拣满后按拣货明细逐库位扣减在手与分配，写发货流水
+  - 超卖拦截：可用量不足即拒绝，全程 BEGIN IMMEDIATE 事务锁行防并发双扣
+  - 单据状态机：open → picking → shipped（+cancelled），仅未拣货可取消
 - **Web demo**（`web_app/`）
   - 首页导航 + 货主/物料/库位/收货四个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 拣货+发货（含分配/超卖拦截）、库存账流水查询、移库、盘点、补货预警、报表统计、CSV 导入导出
+- 库存账流水查询、移库、盘点、补货预警、报表统计、CSV 导入导出
 
 ## API 概览
 
@@ -70,6 +76,11 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/asns/<id>/receive` | 收货到收货区位（部分收货，状态自动推进） |
 | POST | `/api/asns/<id>/putaway` | 上架：暂存位 → 存储/拣货位（同事务一减一增） |
 | POST | `/api/asns/<id>/cancel` | 取消（仅未收货） |
+| POST | `/api/dns` | 创建出库单（行 = 物料×订购数量，校验货主一致性） |
+| GET | `/api/dns` | 出库单列表，支持 `keyword`/`status`/分页 |
+| POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库） |
+| POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存） |
+| POST | `/api/dns/<id>/cancel` | 取消（仅未拣货） |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/products/<id>` | 详情/更新/删除（库存非 0 时拒绝） |
@@ -84,6 +95,7 @@ routes_owner.py       货主主数据 Blueprint
 routes_product.py     物料主数据 Blueprint
 routes_location.py    库位主数据 Blueprint
 routes_asn.py         收货单与上架 Blueprint
+routes_dn.py          出库单（拣货/发货）Blueprint
 web_app/              Web demo（index/owners/products/locations/asns + css/js）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland）
 tests/                单元测试（unittest，共享临时库+每用例清表）
