@@ -150,6 +150,43 @@ class LocationApiTest(unittest.TestCase):
         self.assertEqual(loc["aisle"], "B")  # 未动字段不变
         self.assertEqual(loc["bay"], "02")
 
+    # ---------- M13 库位组 + 长宽高 + 体积库容 ----------
+    def test_group_auto_from_code(self):
+        # 编码含 "-" → 库位组取首个分段
+        loc = self._create(code="A-01-02").get_json()["location"]
+        self.assertEqual(loc["location_group"], "A")
+        # 编码无 "-" → 取前两位
+        loc2 = self._create(code="STORE1").get_json()["location"]
+        self.assertEqual(loc2["location_group"], "ST")
+
+    def test_group_manual_override(self):
+        loc = self._create(code="X-1", location_group="冷链区").get_json()["location"]
+        self.assertEqual(loc["location_group"], "冷链区")
+
+    def test_volume_computed_from_dimensions(self):
+        loc = self._create(length_cm=100, width_cm=200, height_cm=50).get_json()["location"]
+        # 体积 = 100*200*50 / 1e6 = 1.0 m³
+        self.assertAlmostEqual(loc["capacity_volume"], 1.0, places=4)
+
+    def test_update_dimension_recomputes_volume(self):
+        lid = self._create(length_cm=10, width_cm=10, height_cm=10).get_json()["location"]["id"]
+        resp = self.client.put(f"/api/locations/{lid}", json={"length_cm": 100})
+        self.assertEqual(resp.status_code, 200)
+        loc = resp.get_json()["location"]
+        # 旧 10*10*10 + 新长 100 → 100*10*10 /1e6 = 0.01 m³
+        self.assertAlmostEqual(loc["capacity_volume"], 0.01, places=4)
+
+    def test_group_filter_and_list(self):
+        self._create(code="G-A-1", location_group="")  # 自动组 G
+        self._create(code="G-A-2", location_group="")  # 自动组 G
+        self._create(code="H-1", location_group="")     # 自动组 H
+        groups = self.client.get("/api/locations/groups").get_json()["groups"]
+        self.assertIn("G", groups)
+        self.assertIn("H", groups)
+        # 按组过滤
+        g_total = self.client.get("/api/locations?location_group=G").get_json()["total"]
+        self.assertEqual(g_total, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

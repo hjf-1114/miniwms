@@ -5,6 +5,7 @@ M4 收货上架与 M5 拣货发货将在库位上产生库存变动。
 库位类型对应仓储动线：收货区 / 存储区 / 拣货区 / 退货区。
 """
 from flask import Blueprint, jsonify, request
+import math
 
 from main import get_db, request_payload
 
@@ -55,6 +56,23 @@ def _validate_location_payload(payload, *, partial=False):
         cleaned["level"] = str(payload.get("level") or "").strip()
     if "barcode" in payload:
         cleaned["barcode"] = str(payload.get("barcode") or "").strip()
+
+    # M13 库位组（可手工维护，建库位时留空则按编码前缀自动生成）
+    if "location_group" in payload:
+        cleaned["location_group"] = str(payload.get("location_group") or "").strip()
+
+    # M13 长宽高（用于按体积计算库容）
+    for key in ("length_cm", "width_cm", "height_cm"):
+        if key in payload:
+            try:
+                val = float(payload.get(key))
+            except (TypeError, ValueError):
+                errors.append(f"{key} 必须为数字")
+                continue
+            if math.isnan(val) or val < 0:
+                errors.append(f"{key} 不能为负数")
+            else:
+                cleaned[key] = val
 
     if "loc_type" in payload:
         lt = str(payload.get("loc_type") or "").strip()
@@ -112,6 +130,16 @@ def create_location():
     if _code_exists(db, cleaned["code"]):
         return jsonify({"ok": False, "errors": [f"库位编码已存在: {cleaned['code']}"]}), 409
 
+    # M13 库位组：留空则按编码前缀自动生成；体积库容按 长宽高 计算（m³）
+    group = cleaned.get("location_group", "")
+    if not group:
+        code = cleaned["code"]
+        group = code.split("-")[0] if "-" in code else (code[:2] if len(code) >= 2 else code)
+    length_cm = float(cleaned.get("length_cm", 0) or 0)
+    width_cm = float(cleaned.get("width_cm", 0) or 0)
+    height_cm = float(cleaned.get("height_cm", 0) or 0)
+    capacity_volume = round(length_cm * width_cm * height_cm / 1e6, 6)
+
     params = {
         "code": cleaned["code"],
         "name": cleaned["name"],
@@ -124,10 +152,17 @@ def create_location():
         "barcode": cleaned.get("barcode", ""),
         "status": cleaned.get("status", "active"),
         "note": cleaned.get("note", ""),
+        "location_group": group,
+        "length_cm": length_cm,
+        "width_cm": width_cm,
+        "height_cm": height_cm,
+        "capacity_volume": capacity_volume,
     }
     cur = db.execute(
-        "INSERT INTO location (code, name, zone, loc_type, capacity, aisle, bay, level, barcode, status, note) "
-        "VALUES (:code, :name, :zone, :loc_type, :capacity, :aisle, :bay, :level, :barcode, :status, :note)",
+        """INSERT INTO location (code, name, zone, loc_type, capacity, aisle, bay, level, barcode,
+                                status, note, location_group, length_cm, width_cm, height_cm, capacity_volume)
+           VALUES (:code, :name, :zone, :loc_type, :capacity, :aisle, :bay, :level, :barcode,
+                   :status, :note, :location_group, :length_cm, :width_cm, :height_cm, :capacity_volume)""",
         params,
     )
     db.commit()
@@ -141,6 +176,7 @@ def list_locations():
     keyword = (args.get("keyword") or "").strip()
     zone = (args.get("zone") or "").strip()
     loc_type = (args.get("loc_type") or "").strip()
+    location_group = (args.get("location_group") or "").strip()
     status = (args.get("status") or "").strip()
     try:
         page = max(1, int(args.get("page", 1)))
@@ -158,6 +194,9 @@ def list_locations():
     if loc_type:
         where.append("loc_type = ?")
         params.append(loc_type)
+    if location_group:
+        where.append("location_group = ?")
+        params.append(location_group)
     if status:
         where.append("status = ?")
         params.append(status)
@@ -178,6 +217,16 @@ def list_locations():
             "locations": [_row_to_dict(r) for r in rows],
         }
     )
+
+
+@location_bp.route("/groups", methods=["GET"])
+def list_location_groups():
+    """库位组列表（去重），供下拉/筛选使用。"""
+    db = get_db()
+    rows = db.execute(
+        "SELECT DISTINCT location_group FROM location WHERE location_group != '' ORDER BY location_group"
+    ).fetchall()
+    return jsonify({"ok": True, "groups": [r["location_group"] for r in rows]})
 
 
 @location_bp.route("/<int:location_id>", methods=["GET"])
@@ -201,6 +250,25 @@ def update_location(location_id):
         return jsonify({"ok": False, "error": "库位不存在"}), 404
     if "code" in cleaned and _code_exists(db, cleaned["code"], exclude_id=location_id):
         return jsonify({"ok": False, "errors": [f"库位编码已存在: {cleaned['code']}"]}), 409
+
+    # M13 体积库容：提交任意维度时按「新值覆盖 + 旧值补齐」重算体积（m³）
+    dim_keys = ("length_cm", "width_cm", "height_cm")
+    if any(k in cleaned for k in dim_keys):
+        cur_row = db.execute(
+            "SELECT length_cm, width_cm, height_cm FROM location WHERE id = ?", (location_id,)
+        ).fetchone()
+        dims = {k: float(cur_row[k] or 0) for k in dim_keys}
+        for k in dim_keys:
+            if k in cleaned:
+                dims[k] = float(cleaned[k])
+        cleaned["capacity_volume"] = round(
+            dims["length_cm"] * dims["width_cm"] * dims["height_cm"] / 1e6, 6
+        )
+    # M13 库位组：显式提交空串时按编码前缀重新生成；否则沿用已填值
+    if "location_group" in cleaned and not cleaned["location_group"]:
+        cur_row = db.execute("SELECT code FROM location WHERE id = ?", (location_id,)).fetchone()
+        code = cur_row["code"]
+        cleaned["location_group"] = code.split("-")[0] if "-" in code else (code[:2] if len(code) >= 2 else code)
 
     set_sql = ", ".join(f"{k} = :{k}" for k in cleaned)
     cleaned["id"] = location_id

@@ -30,11 +30,12 @@
         <option value="picking">拣货区</option>
         <option value="returns">退货区</option>
       </select>
+      <select id="groupFilter"><option value="">全部库位组</option></select>
       <button class="btn secondary" onclick="load()">查询</button>
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>库区</th><th>巷道</th><th>层</th><th>类型</th><th>容量</th><th>条码</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>库区</th><th>库位组</th><th>巷道</th><th>层</th><th>类型</th><th>容量</th><th>体积库容(m³)</th><th>条码</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -69,22 +70,38 @@ const FIELDS = [
     { value: "returns", label: "退货区" },
   ] },
   { name: "capacity", label: "容量（0=不限）", type: "number" },
+  { name: "location_group", label: "库位组（留空按编码前缀自动生成）" },
+  { name: "length_cm", label: "长(cm)", type: "number" },
+  { name: "width_cm", label: "宽(cm)", type: "number" },
+  { name: "height_cm", label: "高(cm)", type: "number" },
 ];
+
+async function loadGroups() {
+  try {
+    const d = await api("GET", "/api/locations/groups");
+    const sel = document.getElementById("groupFilter");
+    sel.innerHTML = '<option value="">全部库位组</option>' +
+      d.groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+  } catch (e) { /* 忽略 */ }
+}
 
 async function load() {
   const kw = document.getElementById("kw").value.trim();
   const lt = document.getElementById("typeFilter").value;
+  const grp = document.getElementById("groupFilter").value;
   const qs = new URLSearchParams({ page, page_size: pageSize });
   if (kw) qs.set("keyword", kw);
   if (lt) qs.set("loc_type", lt);
+  if (grp) qs.set("location_group", grp);
   try {
     const data = await api("GET", "/api/locations?" + qs);
     document.getElementById("tbody").innerHTML = data.locations.map((l) =>
       `<tr>
         <td>${l.id}</td><td>${esc(l.code)}</td><td>${esc(l.name)}</td>
-        <td>${esc(l.zone)}</td><td>${esc(l.aisle)}</td><td>${esc(l.level)}</td>
+        <td>${esc(l.zone)}</td><td>${esc(l.location_group || "")}</td><td>${esc(l.aisle)}</td><td>${esc(l.level)}</td>
         <td>${esc(l.loc_type_label)}</td>
-        <td>${l.capacity === 0 ? "不限" : l.capacity}</td><td>${esc(l.barcode)}</td>
+        <td>${l.capacity === 0 ? "不限" : l.capacity}</td>
+        <td>${l.capacity_volume ? l.capacity_volume : "-"}</td><td>${esc(l.barcode)}</td>
         <td>${statusTag(l.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${l.id})">编辑</button>
@@ -105,7 +122,7 @@ function turn(d) { page += d; load(); }
 
 function openCreate() {
   openForm({
-    title: "新建库位", submitText: "创建", fields: FIELDS,
+    title: "新建库位", submitText: "创建", width: 760, fields: FIELDS,
     onSubmit: async (p) => {
       await api("POST", "/api/locations", p);
       showMsg(document.getElementById("msg"), "创建成功", "success");
@@ -117,7 +134,7 @@ function openCreate() {
 async function openEdit(id) {
   const data = await api("GET", "/api/locations/" + id);
   openForm({
-    title: "编辑库位", submitText: "保存", fields: FIELDS, values: data.location,
+    title: "编辑库位", submitText: "保存", width: 760, fields: FIELDS, values: data.location,
     onSubmit: async (p) => {
       await api("PUT", "/api/locations/" + id, p);
       showMsg(document.getElementById("msg"), "已保存", "success");
@@ -146,7 +163,7 @@ async function del(id) {
   }
 }
 
-load();
+loadGroups().then(load);
 </script>
 </body>
 </html>

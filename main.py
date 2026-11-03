@@ -434,6 +434,18 @@ def init_db():
             ):
                 if col not in loc_cols:
                     conn.execute(ddl)
+        # M13 库位主数据深化：库位组 + 长宽高 + 体积库容（按体积计算）
+        if "location" in tables:
+            loc_cols = {r[1] for r in conn.execute("PRAGMA table_info(location)")}
+            for col, ddl in (
+                ("location_group", "ALTER TABLE location ADD COLUMN location_group TEXT NOT NULL DEFAULT ''"),
+                ("length_cm", "ALTER TABLE location ADD COLUMN length_cm REAL NOT NULL DEFAULT 0"),
+                ("width_cm", "ALTER TABLE location ADD COLUMN width_cm REAL NOT NULL DEFAULT 0"),
+                ("height_cm", "ALTER TABLE location ADD COLUMN height_cm REAL NOT NULL DEFAULT 0"),
+                ("capacity_volume", "ALTER TABLE location ADD COLUMN capacity_volume REAL NOT NULL DEFAULT 0"),
+            ):
+                if col not in loc_cols:
+                    conn.execute(ddl)
         # 用户与角色（M9 基础：后续功能通过 require_permission 联动）
         conn.executescript(
             """
