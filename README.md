@@ -62,6 +62,11 @@ python -m unittest discover -s tests -p "test_*.py" -v
     货主编码/物料 SKU/库位编码/单据引用，支持同维度 + `ref_type`/`ref_id` 过滤、分页
   - 余额核对 `/api/stock/reconcile`：逐 货主×物料×库位 校验「余额 = 流水累加」，
     覆盖有余额无流水、有流水无库存行两类异常，返回不一致明细
+- **M7 客户主数据与出库关联**（`routes_customer.py` / `routes_dn.py`）
+  - 客户主数据：多货主下客户归属货主（客户是货主的客户），编码唯一、联系人/电话/地址、启用状态
+  - 出库单强制关联客户：创建必填 `customer_id`，且客户必须与单据货主一致（多货主隔离），
+    列表/详情联表返回 `customer_code`/`customer_name`
+  - 保护规则：客户被出库单引用时禁止删除
 - **Web demo**（`web_app/`）
   - 首页导航 + 货主/物料/库位/收货/出库/库存六个管理页，零依赖原生 JS，直接调用后端 API
 
@@ -89,6 +94,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库） |
 | POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存） |
 | POST | `/api/dns/<id>/cancel` | 取消（仅未拣货） |
+| POST | `/api/customers` | 创建客户（归属货主，code 必填唯一） |
+| GET | `/api/customers` | 客户列表，支持 `keyword`/`status`/`owner_id`/分页 |
+| GET/PUT/DELETE | `/api/customers/<id>` | 详情/更新/删除（被出库单引用时拒绝） |
 | GET | `/api/stock` | 库存余额列表，支持 `owner_id`/`product_id`/`location_id`/`has_stock`/分页 |
 | GET | `/api/stock/reconcile` | 余额核对（余额 = 流水累加，返回不一致明细） |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
@@ -108,7 +116,8 @@ routes_location.py    库位主数据 Blueprint
 routes_asn.py         收货单与上架 Blueprint
 routes_dn.py          出库单（拣货/发货）Blueprint
 routes_stock.py       库存账/流水/余额核对只读 Blueprint
-web_app/              Web demo（index/owners/products/locations/asns/dns/stock + css/js）
+routes_customer.py   客户主数据 Blueprint（出库收货方维度）
+web_app/              Web demo（index/owners/products/locations/asns/dns/stock/customers + css/js）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录

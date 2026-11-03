@@ -170,11 +170,28 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_movement_owner ON stock_movement(owner_id);
             CREATE INDEX IF NOT EXISTS idx_movement_ref   ON stock_movement(ref_type, ref_id);
+            -- M7 客户主数据：客户归属货主（多货主下客户是货主的客户），出库单关联客户
+            CREATE TABLE IF NOT EXISTS customer (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                name        TEXT    NOT NULL,
+                owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                contact     TEXT    NOT NULL DEFAULT '',
+                phone       TEXT    NOT NULL DEFAULT '',
+                address     TEXT    NOT NULL DEFAULT '',
+                status      TEXT    NOT NULL DEFAULT 'active',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_customer_owner  ON customer(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_customer_status ON customer(status);
             -- M5 出库单：主表 + 行表 + 拣货明细（拣货在哪些库位各分配多少，发货按此扣减）
             CREATE TABLE IF NOT EXISTS dn (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 code        TEXT    NOT NULL UNIQUE,
                 owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                customer_id INTEGER REFERENCES customer(id),
                 status      TEXT    NOT NULL DEFAULT 'open',
                 note        TEXT    NOT NULL DEFAULT '',
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -201,6 +218,31 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_dn_pick_dn ON dn_pick(dn_id);
             """
         )
+        # M7 客户主数据：customer 表（新库 DDL 已带则跳过）+ dn.customer_id 列迁移
+        if "customer" not in tables:
+            conn.executescript(
+                """CREATE TABLE IF NOT EXISTS customer (
+                       id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                       code        TEXT    NOT NULL UNIQUE,
+                       name        TEXT    NOT NULL,
+                       owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                       contact     TEXT    NOT NULL DEFAULT '',
+                       phone       TEXT    NOT NULL DEFAULT '',
+                       address     TEXT    NOT NULL DEFAULT '',
+                       status      TEXT    NOT NULL DEFAULT 'active',
+                       note        TEXT    NOT NULL DEFAULT '',
+                       created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                       updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+                   );
+                   CREATE INDEX IF NOT EXISTS idx_customer_owner  ON customer(owner_id);
+                   CREATE INDEX IF NOT EXISTS idx_customer_status ON customer(status);"""
+            )
+        if "dn" in tables:
+            dn_cols = {r[1] for r in conn.execute("PRAGMA table_info(dn)")}
+            if "customer_id" not in dn_cols:
+                conn.execute(
+                    "ALTER TABLE dn ADD COLUMN customer_id INTEGER REFERENCES customer(id)"
+                )
         conn.commit()
     finally:
         conn.close()
@@ -222,6 +264,7 @@ else:
     from routes_asn import asn_bp  # noqa: E402
     from routes_dn import dn_bp  # noqa: E402
     from routes_stock import stock_bp  # noqa: E402
+    from routes_customer import customer_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -229,3 +272,4 @@ else:
     app.register_blueprint(asn_bp)
     app.register_blueprint(dn_bp)
     app.register_blueprint(stock_bp)
+    app.register_blueprint(customer_bp)

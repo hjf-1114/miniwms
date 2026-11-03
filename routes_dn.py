@@ -1,7 +1,7 @@
 """出库单（DN）模块：/api/dns。
 
 流程（单据驱动库存，与 ASN 对称的出库动线）：
-1. 创建 DN（指定货主 + 行：物料 × 订购数量）
+1. 创建 DN（指定货主 + 客户 + 行：物料 × 订购数量）
 2. 拣货 pick：从存储/拣货位按「可用量」分配（allocated_qty +，在手不变），
    分配明细落 dn_pick，流水 dn_pick（qty_delta=0，仅审计分配动作）
 3. 发货 ship：要求所有行拣满，按 dn_pick 明细逐库位扣减在手与分配，
@@ -81,6 +81,7 @@ def create_dn():
     payload = request_payload()
     code = str(payload.get("code") or "").strip()
     owner_id = payload.get("owner_id")
+    customer_id = payload.get("customer_id")
     lines = payload.get("lines")
     note = str(payload.get("note") or "")
 
@@ -93,6 +94,10 @@ def create_dn():
         owner_id = int(owner_id)
     except (TypeError, ValueError):
         errors.append("owner_id 必填且为整数")
+    try:
+        customer_id = int(customer_id)
+    except (TypeError, ValueError):
+        errors.append("customer_id 必填且为整数")
     if not isinstance(lines, list) or not lines:
         errors.append("lines 必须为非空数组")
     if errors:
@@ -115,6 +120,17 @@ def create_dn():
     if db.execute("SELECT id FROM dn WHERE code = ?", (code,)).fetchone() is not None:
         return jsonify({"ok": False, "errors": [f"DN 编码已存在: {code}"]}), 409
 
+    # 客户必须存在，且归属与单据货主一致（多货主隔离：甲货主不能选乙货主的客户）
+    cust = db.execute(
+        "SELECT id, owner_id FROM customer WHERE id = ?", (customer_id,)
+    ).fetchone()
+    if cust is None:
+        return jsonify({"ok": False, "errors": [f"客户不存在: id={customer_id}"]}), 400
+    if cust["owner_id"] != owner_id:
+        return jsonify({"ok": False, "errors": [
+            f"客户 id={customer_id} 不属于该货主（多货主隔离）"
+        ]}), 400
+
     # 物料必须存在，且货主归属与单据一致（多货主隔离）
     for pid, _ in parsed_lines:
         p = db.execute(
@@ -128,8 +144,8 @@ def create_dn():
             ]}), 400
 
     cur = db.execute(
-        "INSERT INTO dn (code, owner_id, note) VALUES (?, ?, ?)",
-        (code, owner_id, note),
+        "INSERT INTO dn (code, owner_id, customer_id, note) VALUES (?, ?, ?, ?)",
+        (code, owner_id, customer_id, note),
     )
     dn_id = cur.lastrowid
     db.executemany(
@@ -167,8 +183,11 @@ def list_dns():
         f"SELECT COUNT(*) AS n FROM dn d {where_sql}", params
     ).fetchone()["n"]
     rows = db.execute(
-        f"""SELECT d.*, o.code AS owner_code, o.name AS owner_name
-            FROM dn d JOIN owner o ON o.id = d.owner_id {where_sql}
+        f"""SELECT d.*, o.code AS owner_code, o.name AS owner_name,
+                   c.code AS customer_code, c.name AS customer_name
+            FROM dn d
+            JOIN owner o ON o.id = d.owner_id
+            LEFT JOIN customer c ON c.id = d.customer_id {where_sql}
             ORDER BY d.id DESC LIMIT ? OFFSET ?""",
         params + [page_size, (page - 1) * page_size],
     ).fetchall()
@@ -185,6 +204,8 @@ def get_dn(dn_id):
     o = db.execute("SELECT code, name FROM owner WHERE id = ?", (dn["owner_id"],)).fetchone()
     body = dict(dn)
     body["owner_code"], body["owner_name"] = (o["code"], o["name"]) if o else (None, None)
+    c = db.execute("SELECT code, name FROM customer WHERE id = ?", (dn["customer_id"],)).fetchone()
+    body["customer_code"], body["customer_name"] = (c["code"], c["name"]) if c else (None, None)
     return jsonify({"ok": True, "dn": body,
                     "lines": [_dict_line(l) for l in _load_lines(db, dn_id)],
                     "picks": [dict(p) for p in _load_picks(db, dn_id)]})

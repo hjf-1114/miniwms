@@ -29,6 +29,7 @@ class DnApiTest(unittest.TestCase):
             conn.execute("DELETE FROM dn_pick")
             conn.execute("DELETE FROM dn_line")
             conn.execute("DELETE FROM dn")
+            conn.execute("DELETE FROM customer")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")
@@ -72,9 +73,16 @@ class DnApiTest(unittest.TestCase):
             "line_id": line_id, "from_location_id": recv_loc,
             "to_location_id": to_loc_id, "qty": qty})
 
-    def _mk_dn(self, owner_id, product_id, ordered=5, code="DN-001"):
+    def _mk_customer(self, owner_id, code="C1"):
+        return self.client.post("/api/customers", json={
+            "code": code, "name": code, "owner_id": owner_id,
+        }).get_json()["customer"]["id"]
+
+    def _mk_dn(self, owner_id, product_id, ordered=5, code="DN-001", customer_id=None):
+        if customer_id is None:
+            customer_id = self._mk_customer(owner_id, code=f"C-{code}")
         resp = self.client.post("/api/dns", json={
-            "code": code, "owner_id": owner_id,
+            "code": code, "owner_id": owner_id, "customer_id": customer_id,
             "lines": [{"product_id": product_id, "ordered_qty": ordered}],
         })
         self.assertEqual(resp.status_code, 201, resp.get_json())
@@ -103,9 +111,10 @@ class DnApiTest(unittest.TestCase):
     def test_create_duplicate_code(self):
         oid = self._mk_owner()
         pid = self._mk_product(oid)
-        self._mk_dn(oid, pid, code="DN-X")
+        cid = self._mk_customer(oid, code="C-DUP")
+        self._mk_dn(oid, pid, code="DN-X", customer_id=cid)
         resp = self.client.post("/api/dns", json={
-            "code": "DN-X", "owner_id": oid,
+            "code": "DN-X", "owner_id": oid, "customer_id": cid,
             "lines": [{"product_id": pid, "ordered_qty": 1}]})
         self.assertEqual(resp.status_code, 409)
 
@@ -113,8 +122,9 @@ class DnApiTest(unittest.TestCase):
         oid = self._mk_owner("OW-A")
         oid2 = self._mk_owner("OW-B")
         pid = self._mk_product(oid2)  # 物料属于 OW-B
+        cid = self._mk_customer(oid, code="C-MM")  # 客户属于 OW-A
         resp = self.client.post("/api/dns", json={
-            "code": "DN-M", "owner_id": oid,
+            "code": "DN-M", "owner_id": oid, "customer_id": cid,
             "lines": [{"product_id": pid, "ordered_qty": 5}]})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("不一致", resp.get_json()["errors"][0])
@@ -126,6 +136,37 @@ class DnApiTest(unittest.TestCase):
             "code": "DN-Q", "owner_id": oid,
             "lines": [{"product_id": pid, "ordered_qty": 0}]})
         self.assertEqual(resp.status_code, 400)
+
+    def test_create_requires_customer(self):
+        """出库必须指定客户（此前缺失的维度）。"""
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        resp = self.client.post("/api/dns", json={
+            "code": "DN-NC", "owner_id": oid,
+            "lines": [{"product_id": pid, "ordered_qty": 1}]})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("customer_id", resp.get_json()["errors"][0])
+
+    def test_create_customer_owner_mismatch(self):
+        """客户必须属于该货主（多货主隔离），选错货主客户应被拒。"""
+        oid_a = self._mk_owner("OW-A")
+        oid_b = self._mk_owner("OW-B")
+        pid = self._mk_product(oid_a)  # 物料属于 OW-A
+        cid_b = self._mk_customer(oid_b, code="C-B")  # 客户属于 OW-B
+        resp = self.client.post("/api/dns", json={
+            "code": "DN-MM", "owner_id": oid_a, "customer_id": cid_b,
+            "lines": [{"product_id": pid, "ordered_qty": 1}]})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("客户", resp.get_json()["errors"][0])
+
+    def test_detail_returns_customer_info(self):
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        cid = self._mk_customer(oid, code="C-INFO")
+        body = self._mk_dn(oid, pid, ordered=2, code="DN-INFO", customer_id=cid)
+        body = self.client.get(f"/api/dns/{body['dn']['id']}").get_json()
+        self.assertEqual(body["dn"]["customer_code"], "C-INFO")
+        self.assertEqual(body["dn"]["customer_name"], "C-INFO")
 
     # ---------- 拣货 ----------
     def test_pick_flow_only_allocates(self):

@@ -31,6 +31,7 @@ class StockApiTest(unittest.TestCase):
             conn.execute("DELETE FROM dn_pick")
             conn.execute("DELETE FROM dn_line")
             conn.execute("DELETE FROM dn")
+            conn.execute("DELETE FROM customer")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")
@@ -74,11 +75,18 @@ class StockApiTest(unittest.TestCase):
             "line_id": line_id, "from_location_id": recv_loc,
             "to_location_id": to_loc_id, "qty": qty})
 
+    def _mk_customer(self, owner_id, code="C1"):
+        return self.client.post("/api/customers", json={
+            "code": code, "name": code, "owner_id": owner_id,
+        }).get_json()["customer"]["id"]
+
     def _ship_partial(self, owner_id, product_id, from_loc_id, qty):
         """出库 qty 件：DN 拣满并发货，库存减少。"""
         self._dn_seq += 1
+        cid = self._mk_customer(owner_id, code=f"C-DN-S{self._dn_seq}")
         body = self.client.post("/api/dns", json={
             "code": f"DN-S{self._dn_seq}", "owner_id": owner_id,
+            "customer_id": cid,
             "lines": [{"product_id": product_id, "ordered_qty": qty}],
         }).get_json()
         dn_id, line_id = body["dn"]["id"], body["lines"][0]["id"]
@@ -131,8 +139,9 @@ class StockApiTest(unittest.TestCase):
         store = self._mk_location("ST-1", "storage")
         self._inbound(oid, pid, store, 10)
         self._dn_seq += 1
+        cid = self._mk_customer(oid, code=f"C-DN-S{self._dn_seq}")
         body = self.client.post("/api/dns", json={
-            "code": f"DN-S{self._dn_seq}", "owner_id": oid,
+            "code": f"DN-S{self._dn_seq}", "owner_id": oid, "customer_id": cid,
             "lines": [{"product_id": pid, "ordered_qty": 4}],
         }).get_json()
         self.client.post(f"/api/dns/{body['dn']['id']}/pick", json={
