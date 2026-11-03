@@ -7,6 +7,7 @@
     { href: "/products.html", label: "物料", ico: "📦" },
     { href: "/locations.html", label: "库位", ico: "📍" },
     { href: "/customers.html", label: "客户", ico: "👥" },
+    { href: "/carriers.html", label: "承运商", ico: "🚚" },
     { group: "出入库作业" },
     { href: "/asns.html", label: "收货", ico: "📥" },
     { href: "/dns.html", label: "出库", ico: "📤" },

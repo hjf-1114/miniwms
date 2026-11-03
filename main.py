@@ -446,6 +446,28 @@ def init_db():
             ):
                 if col not in loc_cols:
                     conn.execute(ddl)
+        # M14 承运商（物流履约资源，全系统共享，独立于多货主）
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS carrier (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                code          TEXT    NOT NULL UNIQUE,
+                name          TEXT    NOT NULL,
+                contact       TEXT    NOT NULL DEFAULT '',
+                phone         TEXT    NOT NULL DEFAULT '',
+                api_code      TEXT    NOT NULL DEFAULT '',
+                address       TEXT    NOT NULL DEFAULT '',
+                carrier_type  TEXT    NOT NULL DEFAULT '快递',
+                status        TEXT    NOT NULL DEFAULT 'active',
+                note          TEXT    NOT NULL DEFAULT '',
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_carrier_code   ON carrier(code);
+            CREATE INDEX IF NOT EXISTS idx_carrier_type   ON carrier(carrier_type);
+            CREATE INDEX IF NOT EXISTS idx_carrier_status ON carrier(status);
+            """
+        )
         # 用户与角色（M9 基础：后续功能通过 require_permission 联动）
         conn.executescript(
             """
@@ -495,6 +517,7 @@ else:
     from routes_stock import stock_bp  # noqa: E402
     from routes_customer import customer_bp
     from routes_user import user_bp  # noqa: E402
+    from routes_carrier import carrier_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -504,3 +527,4 @@ else:
     app.register_blueprint(stock_bp)
     app.register_blueprint(customer_bp)
     app.register_blueprint(user_bp)
+    app.register_blueprint(carrier_bp)
