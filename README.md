@@ -17,8 +17,8 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 ```
 
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
-货主/物料/库位/收货/出库五个管理页，创建、搜索、启停、删除与收货/上架/拣货/发货
-均直接调用后端 API。
+货主/物料/库位/收货/出库/库存六个管理页，创建、搜索、启停、删除与
+收货/上架/拣货/发货/账目核对均直接调用后端 API。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
 运行测试：
@@ -55,12 +55,19 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - 发货流程：所有行拣满后按拣货明细逐库位扣减在手与分配，写发货流水
   - 超卖拦截：可用量不足即拒绝，全程 BEGIN IMMEDIATE 事务锁行防并发双扣
   - 单据状态机：open → picking → shipped（+cancelled），仅未拣货可取消
+- **M6 库存账与流水查询**（`routes_stock.py`，只读）
+  - 库存余额：按 货主×物料×库位 查询在手/已分配/可用（可用=在手-已分配），
+    支持 owner_id/product_id/location_id 过滤、`has_stock=1` 剔除零行、分页
+  - 动作流水：全部库存变动流水（收货/上架/拣货/发货），联表带出
+    货主编码/物料 SKU/库位编码/单据引用，支持同维度 + `ref_type`/`ref_id` 过滤、分页
+  - 余额核对 `/api/stock/reconcile`：逐 货主×物料×库位 校验「余额 = 流水累加」，
+    覆盖有余额无流水、有流水无库存行两类异常，返回不一致明细
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/收货/出库五个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/收货/出库/库存六个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 库存账流水查询、移库、盘点、补货预警、报表统计、CSV 导入导出
+- 移库、盘点、补货预警、报表统计、CSV 导入导出
 
 ## API 概览
 
@@ -82,6 +89,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库） |
 | POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存） |
 | POST | `/api/dns/<id>/cancel` | 取消（仅未拣货） |
+| GET | `/api/stock` | 库存余额列表，支持 `owner_id`/`product_id`/`location_id`/`has_stock`/分页 |
+| GET | `/api/stock/reconcile` | 余额核对（余额 = 流水累加，返回不一致明细） |
+| GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/products/<id>` | 详情/更新/删除（库存非 0 时拒绝） |
@@ -97,7 +107,8 @@ routes_product.py     物料主数据 Blueprint
 routes_location.py    库位主数据 Blueprint
 routes_asn.py         收货单与上架 Blueprint
 routes_dn.py          出库单（拣货/发货）Blueprint
-web_app/              Web demo（index/owners/products/locations/asns + css/js）
+routes_stock.py       库存账/流水/余额核对只读 Blueprint
+web_app/              Web demo（index/owners/products/locations/asns/dns/stock + css/js）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录

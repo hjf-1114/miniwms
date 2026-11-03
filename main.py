@@ -221,9 +221,11 @@ else:
     from routes_product import product_bp  # noqa: E402
     from routes_asn import asn_bp  # noqa: E402
     from routes_dn import dn_bp  # noqa: E402
+    from routes_stock import stock_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
     app.register_blueprint(location_bp)
     app.register_blueprint(asn_bp)
     app.register_blueprint(dn_bp)
+    app.register_blueprint(stock_bp)
