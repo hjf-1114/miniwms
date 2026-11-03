@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>角色管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>角色管理</h1><div class="crumb">MiniWMS / 系统管理</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>角色列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建角色</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>角色名</th><th>权限</th><th>用户数</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
+    <script src="/js/layout.js"></script>
+<script>
+requireLogin();
+
+const FIELDS = [
+  { name: "name", label: "角色名 *", required: true },
+  { name: "permissions", label: "权限（JSON 数组，如 [\"product:read\",\"product:write\"]，管理员用 [\"*\"]）",
+    type: "textarea", full: true },
+];
+
+async function load() {
+  try {
+    const data = await api("GET", "/api/roles");
+    document.getElementById("tbody").innerHTML = data.roles.map((r) =>
+      `<tr>
+        <td>${r.id}</td>
+        <td>${esc(r.name)}</td>
+        <td><code class="muted">${esc(JSON.stringify(r.permissions))}</code></td>
+        <td>${r.user_count}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${r.id})">编辑</button>
+          <button class="btn danger sm" onclick="del(${r.id})" ${r.user_count > 0 ? "disabled" : ""}>删除</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function openCreate() {
+  openForm({
+    title: "新建角色", submitText: "创建", fields: FIELDS, width: 560,
+    onSubmit: async (p) => {
+      if (typeof p.permissions === "string") p.permissions = JSON.parse(p.permissions);
+      await api("POST", "/api/roles", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/roles/" + id);
+  const r = data.role;
+  openForm({
+    title: "编辑角色", submitText: "保存", fields: FIELDS, width: 560,
+    values: { name: r.name, permissions: JSON.stringify(r.permissions, null, 0) },
+    onSubmit: async (p) => {
+      if (typeof p.permissions === "string") p.permissions = JSON.parse(p.permissions);
+      await api("PUT", "/api/roles/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+async function del(id) {
+  if (!confirm("确认删除该角色？")) return;
+  try {
+    await api("DELETE", "/api/roles/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+load();
+</script>
+</body>
+</html>

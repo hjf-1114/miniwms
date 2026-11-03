@@ -34,7 +34,7 @@
 | D7 (11/5) | M10/M11 | 补货预警 + 按货主报表统计 + 首页仪表盘 |
 | D8 (11/6) | M12 | CSV 导入导出 + 简易鉴权(X-API-Key) + API 文档 + 全量回归收尾 |
 
-> 注：D2/D3/D4 的 M4/M5/M6 实际在 11/03 完成（自动化未触发顺延）；D5 用户指出「出库需要客户资料」此前缺失，故插入 M7 客户主数据，原 M7 移库/M8 盘点顺延为 M8/M9。D6 用户要求补齐电商化基础资料字段并补充演示数据，故 M8 定为「基础资料字段增强」（新增 `tools/seed_demo.py` 一键演示数据播种）；原 M8 移库/M9 盘点顺延为 M9/M10，预警/报表/CSV 收尾依次顺延为 M11/M12/M13。
+> 注：D2/D3/D4 的 M4/M5/M6 实际在 11/03 完成（自动化未触发顺延）；D5 用户指出「出库需要客户资料」此前缺失，故插入 M7 客户主数据，原 M7 移库/M8 盘点顺延为 M8/M9。D6 用户要求补齐电商化基础资料字段并补充演示数据，故 M8 定为「基础资料字段增强」（新增 `tools/seed_demo.py` 一键演示数据播种）；原 M8 移库/M9 盘点顺延为 M9/M10，预警/报表/CSV 收尾依次顺延为 M11/M12/M13。另 11/03 用户要求「建立角色用户并供后续功能联动」，故插入 **M9 用户与角色管理**（RBAC 基础 + 登录），原移库及之后顺延为 M10–M15。
 
 ## 规划（Roadmap）
 
@@ -43,12 +43,13 @@
 - M6 库存账（按货主+库位的库存余额 + 全部动作流水，余额 = 流水累加可核对）✅
 - M7 客户主数据（客户归属货主，出库单关联客户，多货主隔离）✅
 - M8 基础资料字段增强（电商字段 + 一键演示数据播种）✅
-- M9 移库（库位间转移：同数量一减一增两条流水，原子事务）
-- M10 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
-- M11 补货预警（min_stock 对比 + 拣货位缺料提示）
-- M12 报表统计（按货主的收发汇总、周转率、库位利用率）
-- M13 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）
-- M14 CSV 导入导出
+- M9 用户与角色管理（登录/权限基础，供后续功能联动）✅
+- M10 移库（库位间转移：同数量一减一增两条流水，原子事务）
+- M11 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
+- M12 补货预警（min_stock 对比 + 拣货位缺料提示）
+- M13 报表统计（按货主的收发汇总、周转率、库位利用率）
+- M14 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）
+- M15 CSV 导入导出
 
 ## 外部对接设计（规划中，2026-11-03 用户提出）
 
@@ -128,6 +129,38 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
 - `python -m unittest discover -s tests` 97 例全绿
 - 创建返回含新字段；PUT 只改 name 时 email/品牌/巷道等未动字段保持不变
 - 前端字段与后端一致；`python tools/seed_demo.py --reset` 跑通全链路（ASN 全 closed、DN 全 shipped、生成 20 条 stock_movement）
+
+## M9 用户与角色管理（2026-11-03）
+
+**目标（用户原话）**：「目前没有用户管理，需要有角色用户，后续增加功能的时候这个需要联动起来 别忘记」。
+建立 RBAC 基础——用户归属角色、角色持权限清单、登录签发无状态 token；并约定**后续任何功能要做权限控制，只需给路由加 `@require_permission("xxx")` 即可联动本模块**（详见 `auth.py` / `routes_user.py`）。
+
+**改动清单**：
+- `auth.py`（新增）：`hash_password`（salt+sha256，不存明文）、`verify_password`、`make_token`/`verify_token`（HMAC-SHA256 签名、7 天有效、无外部依赖）、
+  `get_current_user`（从 `Authorization: Bearer` 还原当前用户并带出角色权限）、`has_permission`、
+  `require_permission(perm)` 装饰器（要求登录 + 具备 perm；`*`/资源`*` 通配；角色「管理员」默认全部权限）
+- `main.py`：`role`(name 唯一/permissions JSON)、`user`(username 唯一/salt/hash/role_id/owner_id 可空/status)
+  两表 DDL（幂等）+ `_seed_auth` 播种默认角色（管理员/操作员/只读）与 admin 账号（admin / admin123，仅空库）
+  + 注册 `user_bp`
+- `routes_user.py`（新增）：`POST /api/auth/login`（签发 token）、`/api/roles` 与 `/api/users` 的
+  GET/POST/GET+PUT/DELETE 全套 CRUD，**全部要求 `user:manage` 权限**（管理员默认具备）
+- 前端：`login.html`（登录页，token 存 localStorage）、`roles.html`/`users.html`（弹窗式 CRUD，
+  owner 可空=全局）、`js/api.js` 自动附带 `Authorization` 头 + `requireLogin()`/`logout()`、
+  `js/layout.js` 增「系统管理」分组（角色/用户）与退出登录入口
+- `tests/test_users.py`（新增，11 例）：登录成功/失败、未登录 401、管理员列出角色、角色 CRUD +
+  重名 409 + 有用户禁删 409、用户 CRUD + 改密后旧密失效、非管理员访问 403、删最后一个管理员 409、非法 token 拒
+
+**联动约定（后续功能必读）**：
+- 新建任何需要鉴权的接口，先决定权限点（如 `stock:read`、`asn:write`），再在函数上加
+  `@user_bp.route(...); @require_permission("asn:write")`。`request.user` 即为当前操作人，可用于审计字段。
+- 用户可绑定 `owner_id`（空=全局），后续多货主下的「某用户只能看某货主数据」据此过滤。
+- 外部对接（M14）用 X-API-Key（按货主），与这里的内部 RBAC 是两套体系，互不影响；内部 UI/接口走 RBAC。
+
+**可验证结果**：
+- `python -m unittest discover -s tests` 108 例全绿（新增 11）
+- 登录签发 token；无 token 访问 `/api/roles` 返回 401；操作员 token 访问返回 403
+- 创建角色/用户 → 用新账号登录成功 → 改密后旧密失效；删除最后一个管理员被拒（409）
+- 前端 `/login.html` 登录后 localStorage 持 token，受保护页面自动带 `Authorization` 头
 
 ## M6 库存账与流水查询（2026-11-03）
 

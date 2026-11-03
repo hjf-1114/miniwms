@@ -7,8 +7,26 @@
  * @param {object|null} body JSON 请求体
  * @returns {Promise<object>} 解析后的 JSON；4xx 时抛出含 errors 的 Error
  */
+/** 读取本地登录令牌（无则空串）。 */
+function getToken() {
+  try { return localStorage.getItem("miniwms_token") || ""; } catch (e) { return ""; }
+}
+
+/** 退出登录：清除令牌并跳转到登录页。 */
+function logout() {
+  try { localStorage.removeItem("miniwms_token"); } catch (e) {}
+  location.href = "/login.html";
+}
+
+/** 若未登录则跳转到登录页（用于需要权限的页面）。 */
+function requireLogin() {
+  if (!getToken()) location.href = "/login.html";
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: {} };
+  const t = getToken();
+  if (t) opts.headers["Authorization"] = "Bearer " + t;
   if (body !== undefined && body !== null) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用户管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>用户管理</h1><div class="crumb">MiniWMS / 系统管理</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>用户列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建用户</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>绑定货主</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
+    <script src="/js/layout.js"></script>
+<script>
+requireLogin();
+
+let roleOptions = [];
+let ownerOptions = [{ value: "", label: "（不绑定，全局）" }];
+
+function userFields() {
+  return [
+    { name: "username", label: "用户名 *", required: true },
+    { name: "password", label: "密码 *（编辑时留空=不修改）", type: "text" },
+    { name: "role_id", label: "角色 *", type: "select", required: true, options: roleOptions },
+    { name: "owner_id", label: "绑定货主（可空=全局）", type: "select", nullable: true, options: ownerOptions },
+    { name: "status", label: "状态", type: "select", options: [
+      { value: "active", label: "启用" }, { value: "inactive", label: "停用" },
+    ] },
+  ];
+}
+
+async function loadOptions() {
+  const [roles, owners] = await Promise.all([
+    api("GET", "/api/roles"),
+    api("GET", "/api/owners?page_size=100"),
+  ]);
+  roleOptions = roles.roles.map((r) => ({ value: r.id, label: `${r.name}${r.name === "管理员" ? "（全部权限）" : ""}` }));
+  ownerOptions = [{ value: "", label: "（不绑定，全局）" }].concat(
+    owners.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }))
+  );
+}
+
+async function load() {
+  try {
+    const data = await api("GET", "/api/users");
+    document.getElementById("tbody").innerHTML = data.users.map((u) =>
+      `<tr>
+        <td>${u.id}</td>
+        <td>${esc(u.username)}</td>
+        <td>${esc(u.role_name || "-")}</td>
+        <td>${u.owner_code ? esc(u.owner_code) : '<span class="muted">全局</span>'}</td>
+        <td>${statusTag(u.status)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${u.id})">编辑</button>
+          <button class="btn danger sm" onclick="del(${u.id})">删除</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function openCreate() {
+  openForm({
+    title: "新建用户", submitText: "创建", fields: userFields(), width: 600,
+    onSubmit: async (p) => {
+      await api("POST", "/api/users", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/users/" + id);
+  const u = data.user;
+  openForm({
+    title: "编辑用户", submitText: "保存", fields: userFields(), width: 600,
+    values: {
+      username: u.username, password: "", role_id: u.role_id,
+      owner_id: u.owner_id == null ? "" : u.owner_id, status: u.status,
+    },
+    onSubmit: async (p) => {
+      if (!p.password) delete p.password;  // 留空不修改
+      await api("PUT", "/api/users/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+async function del(id) {
+  if (!confirm("确认删除该用户？")) return;
+  try {
+    await api("DELETE", "/api/users/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+loadOptions().then(load);
+</script>
+</body>
+</html>

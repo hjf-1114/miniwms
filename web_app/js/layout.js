@@ -11,6 +11,9 @@
     { href: "/asns.html", label: "收货", ico: "📥" },
     { href: "/dns.html", label: "出库", ico: "📤" },
     { href: "/stock.html", label: "库存账", ico: "📊" },
+    { group: "系统管理" },
+    { href: "/roles.html", label: "角色", ico: "🔑" },
+    { href: "/users.html", label: "用户", ico: "🧑" },
   ];
 
   function render() {
@@ -28,6 +31,14 @@
       }
     }
     html += "</nav>";
+    const token = (function () {
+      try { return localStorage.getItem("miniwms_token"); } catch (e) { return ""; }
+    })();
+    if (token) {
+      html += '<a class="nav-item" href="#" onclick="logout();return false;"><span class="nav-ico">🚪</span><span>退出登录</span></a>';
+    } else if (path !== "/login.html") {
+      html += '<a class="nav-item" href="/login.html"><span class="nav-ico">🔐</span><span>登录</span></a>';
+    }
     html += '<div class="side-foot">轻量多货主 WMS · 本地演示</div>';
     el.innerHTML = html;
   }
