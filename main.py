@@ -78,6 +78,19 @@ def request_payload():
     return request.get_json(silent=True) or request.form or {}
 
 
+def gen_doc_no(db, table, prefix):
+    """生成业务单号：前缀-YYYYMMDD-NNN（当日前缀下计数 +1，3 位补零）。
+
+    留空单号时调用；创建接口传入 code 则优先用传入值，实现「英文开头 + 日期流水号」。
+    """
+    import datetime
+
+    day = datetime.date.today().strftime("%Y%m%d")
+    like = f"{prefix}-{day}-%"
+    n = db.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE code LIKE ?", (like,)).fetchone()["n"]
+    return f"{prefix}-{day}-{n + 1:03d}"
+
+
 def init_db():
     """初始化数据库：建表与列迁移（幂等，可重复执行）。"""
     conn = sqlite3.connect(DB_PATH)
@@ -160,6 +173,44 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_stock_location ON stock(location_id);
             """
         )
+        # M16 供应商主数据（收货单的上游来源，归属货主，多货主隔离）
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS supplier (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                name        TEXT    NOT NULL,
+                owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                contact     TEXT    NOT NULL DEFAULT '',
+                phone       TEXT    NOT NULL DEFAULT '',
+                address     TEXT    NOT NULL DEFAULT '',
+                status      TEXT    NOT NULL DEFAULT 'active',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_supplier_owner  ON supplier(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_supplier_status ON supplier(status);
+            """
+        )
+        # M16 仓库主数据（多仓库支持；仓库为运营方资产，全系统共享，不绑定货主）
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS warehouse (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                name        TEXT    NOT NULL,
+                address     TEXT    NOT NULL DEFAULT '',
+                contact     TEXT    NOT NULL DEFAULT '',
+                phone       TEXT    NOT NULL DEFAULT '',
+                status      TEXT    NOT NULL DEFAULT 'active',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_warehouse_status ON warehouse(status);
+            """
+        )
         # 列迁移：product.owner_id（M2 多货主；NULL 表示自营/未指定货主）
         cols = {r[1] for r in conn.execute("PRAGMA table_info(product)")}
         if "owner_id" not in cols:
@@ -183,13 +234,29 @@ def init_db():
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS asn (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                code        TEXT    NOT NULL UNIQUE,
-                owner_id    INTEGER NOT NULL REFERENCES owner(id),
-                status      TEXT    NOT NULL DEFAULT 'open',
-                note        TEXT    NOT NULL DEFAULT '',
-                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                code            TEXT    NOT NULL UNIQUE,
+                owner_id        INTEGER NOT NULL REFERENCES owner(id),
+                doc_type        TEXT    NOT NULL DEFAULT '采购',
+                external_no     TEXT    NOT NULL DEFAULT '',
+                order_source    TEXT    NOT NULL DEFAULT '',
+                source_warehouse INTEGER REFERENCES warehouse(id),
+                supplier_id     INTEGER REFERENCES supplier(id),
+                customer_name   TEXT    NOT NULL DEFAULT '',
+                carrier_name    TEXT    NOT NULL DEFAULT '',
+                supplier_name   TEXT    NOT NULL DEFAULT '',
+                supplier_contact TEXT   NOT NULL DEFAULT '',
+                supplier_phone  TEXT    NOT NULL DEFAULT '',
+                supplier_address TEXT   NOT NULL DEFAULT '',
+                total_qty       REAL    NOT NULL DEFAULT 0,
+                category_count  INTEGER NOT NULL DEFAULT 0,
+                status          TEXT    NOT NULL DEFAULT 'open',
+                extra1          TEXT    NOT NULL DEFAULT '',
+                extra2          TEXT    NOT NULL DEFAULT '',
+                extra3          TEXT    NOT NULL DEFAULT '',
+                note            TEXT    NOT NULL DEFAULT '',
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
             CREATE INDEX IF NOT EXISTS idx_asn_owner  ON asn(owner_id);
             CREATE INDEX IF NOT EXISTS idx_asn_status ON asn(status);
@@ -237,14 +304,24 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_customer_status ON customer(status);
             -- M5 出库单：主表 + 行表 + 拣货明细（拣货在哪些库位各分配多少，发货按此扣减）
             CREATE TABLE IF NOT EXISTS dn (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                code        TEXT    NOT NULL UNIQUE,
-                owner_id    INTEGER NOT NULL REFERENCES owner(id),
-                customer_id INTEGER REFERENCES customer(id),
-                status      TEXT    NOT NULL DEFAULT 'open',
-                note        TEXT    NOT NULL DEFAULT '',
-                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                code            TEXT    NOT NULL UNIQUE,
+                owner_id        INTEGER NOT NULL REFERENCES owner(id),
+                customer_id     INTEGER REFERENCES customer(id),
+                doc_type        TEXT    NOT NULL DEFAULT '销售',
+                external_no     TEXT    NOT NULL DEFAULT '',
+                order_source    TEXT    NOT NULL DEFAULT '',
+                source_warehouse INTEGER REFERENCES warehouse(id),
+                carrier_name    TEXT    NOT NULL DEFAULT '',
+                total_qty       REAL    NOT NULL DEFAULT 0,
+                category_count  INTEGER NOT NULL DEFAULT 0,
+                status          TEXT    NOT NULL DEFAULT 'open',
+                extra1          TEXT    NOT NULL DEFAULT '',
+                extra2          TEXT    NOT NULL DEFAULT '',
+                extra3          TEXT    NOT NULL DEFAULT '',
+                note            TEXT    NOT NULL DEFAULT '',
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
             CREATE INDEX IF NOT EXISTS idx_dn_owner  ON dn(owner_id);
             CREATE INDEX IF NOT EXISTS idx_dn_status ON dn(status);
@@ -295,6 +372,45 @@ def init_db():
                 conn.execute(
                     "ALTER TABLE dn ADD COLUMN customer_id INTEGER REFERENCES customer(id)"
                 )
+        # M16 单据字段增强：ASN/DN 新增单据类型/外部单号/来源仓库/供应商/承运商/自定义字段/汇总字段
+        if "asn" in tables:
+            asn_cols = {r[1] for r in conn.execute("PRAGMA table_info(asn)")}
+            for col, ddl in (
+                ("doc_type", "ALTER TABLE asn ADD COLUMN doc_type TEXT NOT NULL DEFAULT '采购'"),
+                ("external_no", "ALTER TABLE asn ADD COLUMN external_no TEXT NOT NULL DEFAULT ''"),
+                ("order_source", "ALTER TABLE asn ADD COLUMN order_source TEXT NOT NULL DEFAULT ''"),
+                ("source_warehouse", "ALTER TABLE asn ADD COLUMN source_warehouse INTEGER REFERENCES warehouse(id)"),
+                ("supplier_id", "ALTER TABLE asn ADD COLUMN supplier_id INTEGER REFERENCES supplier(id)"),
+                ("customer_name", "ALTER TABLE asn ADD COLUMN customer_name TEXT NOT NULL DEFAULT ''"),
+                ("carrier_name", "ALTER TABLE asn ADD COLUMN carrier_name TEXT NOT NULL DEFAULT ''"),
+                ("supplier_name", "ALTER TABLE asn ADD COLUMN supplier_name TEXT NOT NULL DEFAULT ''"),
+                ("supplier_contact", "ALTER TABLE asn ADD COLUMN supplier_contact TEXT NOT NULL DEFAULT ''"),
+                ("supplier_phone", "ALTER TABLE asn ADD COLUMN supplier_phone TEXT NOT NULL DEFAULT ''"),
+                ("supplier_address", "ALTER TABLE asn ADD COLUMN supplier_address TEXT NOT NULL DEFAULT ''"),
+                ("total_qty", "ALTER TABLE asn ADD COLUMN total_qty REAL NOT NULL DEFAULT 0"),
+                ("category_count", "ALTER TABLE asn ADD COLUMN category_count INTEGER NOT NULL DEFAULT 0"),
+                ("extra1", "ALTER TABLE asn ADD COLUMN extra1 TEXT NOT NULL DEFAULT ''"),
+                ("extra2", "ALTER TABLE asn ADD COLUMN extra2 TEXT NOT NULL DEFAULT ''"),
+                ("extra3", "ALTER TABLE asn ADD COLUMN extra3 TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in asn_cols:
+                    conn.execute(ddl)
+        if "dn" in tables:
+            dn_cols = {r[1] for r in conn.execute("PRAGMA table_info(dn)")}
+            for col, ddl in (
+                ("doc_type", "ALTER TABLE dn ADD COLUMN doc_type TEXT NOT NULL DEFAULT '销售'"),
+                ("external_no", "ALTER TABLE dn ADD COLUMN external_no TEXT NOT NULL DEFAULT ''"),
+                ("order_source", "ALTER TABLE dn ADD COLUMN order_source TEXT NOT NULL DEFAULT ''"),
+                ("source_warehouse", "ALTER TABLE dn ADD COLUMN source_warehouse INTEGER REFERENCES warehouse(id)"),
+                ("carrier_name", "ALTER TABLE dn ADD COLUMN carrier_name TEXT NOT NULL DEFAULT ''"),
+                ("total_qty", "ALTER TABLE dn ADD COLUMN total_qty REAL NOT NULL DEFAULT 0"),
+                ("category_count", "ALTER TABLE dn ADD COLUMN category_count INTEGER NOT NULL DEFAULT 0"),
+                ("extra1", "ALTER TABLE dn ADD COLUMN extra1 TEXT NOT NULL DEFAULT ''"),
+                ("extra2", "ALTER TABLE dn ADD COLUMN extra2 TEXT NOT NULL DEFAULT ''"),
+                ("extra3", "ALTER TABLE dn ADD COLUMN extra3 TEXT NOT NULL DEFAULT ''"),
+            ):
+                if col not in dn_cols:
+                    conn.execute(ddl)
         # M8 主数据字段增强：电商场景补充字段（旧库 ALTER 迁移；新库 DDL 已带则跳过）
         if "owner" in tables:
             owner_cols = {r[1] for r in conn.execute("PRAGMA table_info(owner)")}
@@ -477,6 +593,32 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_carrier_status ON carrier(status);
             """
         )
+        # M16 移库单（Stock Transfer）：单据驱动库位间一减一增，同事务原子完成
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS transfer (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                status      TEXT    NOT NULL DEFAULT 'open',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_transfer_owner  ON transfer(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_transfer_status ON transfer(status);
+            CREATE TABLE IF NOT EXISTS transfer_line (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                transfer_id     INTEGER NOT NULL REFERENCES transfer(id),
+                product_id      INTEGER NOT NULL REFERENCES product(id),
+                from_location_id INTEGER NOT NULL REFERENCES location(id),
+                to_location_id  INTEGER NOT NULL REFERENCES location(id),
+                qty             REAL    NOT NULL,
+                UNIQUE(transfer_id, product_id, from_location_id, to_location_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_transfer_line_transfer ON transfer_line(transfer_id);
+            """
+        )
         # 用户与角色（M9 基础：后续功能通过 require_permission 联动）
         conn.executescript(
             """
@@ -527,6 +669,9 @@ else:
     from routes_customer import customer_bp
     from routes_user import user_bp  # noqa: E402
     from routes_carrier import carrier_bp  # noqa: E402
+    from routes_supplier import supplier_bp  # noqa: E402
+    from routes_warehouse import warehouse_bp  # noqa: E402
+    from routes_transfer import transfer_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -537,3 +682,6 @@ else:
     app.register_blueprint(customer_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(carrier_bp)
+    app.register_blueprint(supplier_bp)
+    app.register_blueprint(warehouse_bp)
+    app.register_blueprint(transfer_bp)

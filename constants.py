@@ -18,12 +18,24 @@ DN_SHIPPED = "shipped"      # 已发货（库存已扣减）
 DN_CANCELLED = "cancelled"  # 已取消（仅未拣货可取消）
 DN_STATUSES = (DN_OPEN, DN_PICKING, DN_SHIPPED, DN_CANCELLED)
 
+# ASN（收货单）单据类型
+ASN_DOC_TYPES = ("调拨", "销退", "采购", "期初", "其他")
+
+# DN（出库单）单据类型
+DN_DOC_TYPES = ("销售", "调拨", "退货", "其他")
+
 # 库存动作流水类型
 MOVEMENT_ASN_RECEIVE = "asn_receive"    # 收货入暂存位（+）
 MOVEMENT_ASN_PUTAWAY_OUT = "asn_putaway_out"  # 上架出暂存位（-）
 MOVEMENT_ASN_PUTAWAY_IN = "asn_putaway_in"    # 上架入目标位（+）
-MOVEMENT_DN_PICK = "dn_pick"            # 拣货（M5）
+MOVEMENT_DN_PICK = "dn_pick"            # 拣货分配（M5）
 MOVEMENT_DN_SHIP = "dn_ship"            # 发货（M5）
-MOVEMENT_MOVE_OUT = "move_out"          # 移库出（M7）
-MOVEMENT_MOVE_IN = "move_in"            # 移库入（M7）
-MOVEMENT_ADJUSTMENT = "adjustment"      # 盘点调整（M8）
+MOVEMENT_MOVE_OUT = "move_out"          # 移库出（M16）
+MOVEMENT_MOVE_IN = "move_in"            # 移库入（M16）
+MOVEMENT_ADJUSTMENT = "adjustment"      # 盘点调整（M17）
+
+# 移库单（Stock Transfer）状态机: open → done（含 cancelled）
+TRANSFER_OPEN = "open"              # 已创建，未执行
+TRANSFER_DONE = "done"              # 已执行（库存已转移）
+TRANSFER_CANCELLED = "cancelled"    # 已取消（仅未执行可取消）
+TRANSFER_STATUSES = (TRANSFER_OPEN, TRANSFER_DONE, TRANSFER_CANCELLED)

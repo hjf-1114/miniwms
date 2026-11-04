@@ -252,6 +252,33 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
 
 **可验证结果**：全量 148 绿；演示库 reseed 后含 8 承运商、物料体积按尺寸自动落值。
 
+## M16 移库单（Stock Transfer，2026-11-04）
+
+**目标**：落实 D6 首条里程碑——把"库位间库存转移"做成单据驱动（与 ASN/DN 对称），
+保证转移在单一事务内原子完成：来源位减少、目标位增加、两条流水（move_out/move_in）
+一一对应，余额始终可由流水核对。
+
+**改动清单**：
+- `constants.py`：新增移库单状态机 `TRANSFER_OPEN/DONE/CANCELLED`；`MOVEMENT_MOVE_OUT`/`MOVE_IN`
+  流水类型（服务层 `stock_move` 此前已存在，本里程碑将其对接到单据）
+- `main.py`：新增 `transfer`（code 唯一/owner_id 归属/status 状态机）与
+  `transfer_line`（product × from_location × to_location × qty，唯一键防重复行）两表 DDL
+- `routes_transfer.py`（新增）：`POST /api/transfers` 创建（货主×物料归属一致性校验、来源/目标库位启用校验、
+  来源=目标位拒绝、编码唯一 409）、`GET /api/transfers` 列表（keyword/status/分页）、
+  `GET /api/transfers/<id>` 详情（联表带出 来源/目标库位编码）、
+  `POST /api/transfers/<id>/move` 执行（BEGIN IMMEDIATE 事务，来源位按**可用量**=在手-已分配转出，
+  `stock_move` 同事务一减一增写 move_out/move_in 流水，状态→done）、
+  `POST /api/transfers/<id>/cancel` 取消（仅未执行）
+- `tests/test_transfer.py`（新增，12 例）
+
+**可验证结果**：
+- `python -m unittest discover -s tests` 163 例全绿（+12）
+- 执行移库：来源位 qty 10→6、目标位 0→4，两条流水 delta=-4/+4（ref_type=move_out/move_in，ref_id=单据），
+  执行后 reconcile 仍一致（checked>0, consistent=true）
+- 拒绝路径：编码重复 409、货主/物料不一致 400、来源=目标位 400、来源位停用 400、
+  可用量不足 400、已执行重复 move 409、取消已执行单 409
+- 不移动已分配（已拣货）库存：可用量 = 在手 - 已分配，扣减仅取可用部分
+
 ## M6 库存账与流水查询（2026-11-03）
 
 **目标**：交付只读「库存账房」——余额查询、全部动作流水查询、余额与流水累加的
