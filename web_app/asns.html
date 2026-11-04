@@ -19,7 +19,10 @@
   <div class="card">
     <div class="card-head">
       <h2>收货单列表</h2>
-      <button class="btn" onclick="openCreate()">+ 新建收货单</button>
+      <div class="flex">
+        <button class="btn secondary" onclick="if(window.parent!==window&&window.parent.openTab){window.parent.openTab('批次管理','/batches.html');}else{location.href='/batches.html';}">批次管理</button>
+        <button class="btn" onclick="openCreate()">+ 新建收货单</button>
+      </div>
     </div>
     <div class="toolbar">
       <input id="kw" placeholder="单号搜索">
@@ -79,23 +82,32 @@ let productMap = {}, supplierMap = {}, customerMap = {};
 let asnList = [];
 let modalEl = null;
 
-// 商品档案字段（选商品时自动带出、随单据留快照）
+// 商品档案字段：选商品时自动带出，但**全部可人工编辑**（自动带出只是默认值），随单据留快照
 const SNAP_FIELDS = [
-  { name: "product_name", label: "货品名称", readonly: true },
-  { name: "spec", label: "规格", readonly: true },
-  { name: "article_no", label: "货号", readonly: true },
-  { name: "unit", label: "单位", readonly: true },
-  { name: "brand", label: "品牌", readonly: true },
-  { name: "mfg_enterprise", label: "厂家", readonly: true },
-  { name: "reg_cert_no", label: "注册证号", readonly: true },
-  { name: "registrant", label: "注册人/备案人", readonly: true },
-  { name: "mfg_license", label: "生产许可证", readonly: true },
-  { name: "shelf_life_days", label: "效期(天)", readonly: true },
+  { name: "product_name", label: "货品名称" },
+  { name: "spec", label: "规格" },
+  { name: "article_no", label: "货号" },
+  { name: "unit", label: "单位" },
+  { name: "brand", label: "品牌" },
+  { name: "mfg_enterprise", label: "厂家" },
+  { name: "production_enterprise", label: "生产企业" },
+  { name: "origin", label: "产地" },
+  { name: "udi", label: "UDI" },
+  { name: "reg_cert_no", label: "注册证号" },
+  { name: "registrant", label: "注册人/备案人" },
+  { name: "mfg_license", label: "生产许可证" },
+  { name: "shelf_life_days", label: "效期(天)" },
 ];
+// 批次 / 验收信息：验收入库时写入批次档案，每次收货生成唯一批次号
 const BATCH_FIELDS = [
   { name: "batch_no", label: "批号" },
+  { name: "sterilization_batch_no", label: "灭菌批号" },
   { name: "production_date", label: "生产日期", type: "date" },
   { name: "expiry_date", label: "失效日期", type: "date" },
+  { name: "internal_batch_no", label: "内部批次号（退货填出库值）" },
+  { name: "goods_property", label: "货品属性", type: "select",
+    options: [{ value: "合格", label: "合格" }, { value: "不合格", label: "不合格" }] },
+  { name: "patient_name", label: "患者名称" },
 ];
 
 async function loadOptions() {
@@ -140,6 +152,8 @@ function productData() {
     out[id] = {
       name: p.name || "", spec: p.spec || "", article_no: p.article_no || "",
       unit: p.unit || "", brand: p.brand || "", mfg_enterprise: p.mfg_enterprise || "",
+      // 生产企业/产地默认取物料档案（可在明细里人工改写）
+      production_enterprise: p.mfg_enterprise || "", origin: p.origin || "",
       reg_cert_no: p.reg_cert_no || "", registrant: p.registrant || "",
       mfg_license: p.mfg_license || "", shelf_life_days: p.shelf_life_days || "",
     };
@@ -312,11 +326,24 @@ async function showDetail(id) {
   renderLines();
 }
 
+function detailChip(k, v) {
+  return `<span style="display:inline-block;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:4px;padding:2px 7px;margin:2px 6px 2px 0;font-size:11.5px">${esc(k)}：${esc(v || "-")}</span>`;
+}
+
 function renderLines() {
   const d = currentAsn;
   const cell = (v) => esc(v === 0 || v ? v : "-");
-  document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
-    `<tr>
+  document.getElementById("lineBody").innerHTML = d.lines.map((l) => {
+    const extraFields = [
+      ["品牌", l.brand], ["生产企业", l.production_enterprise], ["产地", l.origin],
+      ["UDI", l.udi], ["灭菌批号", l.sterilization_batch_no], ["患者名称", l.patient_name],
+      ["内部批次号", l.internal_batch_no], ["货品属性", l.goods_property],
+      ["效期(天)", l.shelf_life_days],
+    ].map(([k, v]) => detailChip(k, v)).join("");
+    const batches = (l.batch_receipts || []).map((b) =>
+      `<div class="mono text-sm">${esc(b.batch_no)} · 内部 ${esc(b.internal_batch_no)} · ${b.qty}${esc(l.unit || "")} · ${esc(b.goods_property || "-")} <span class="muted">${esc(b.created_at)}</span></div>`
+    ).join("") || '<span class="muted text-sm">尚未验收</span>';
+    return `<tr>
       <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td>
       <td>${cell(l.spec)}</td><td>${cell(l.article_no)}</td>
       <td>${l.expected_qty}</td><td>${cell(l.unit)}</td>
@@ -327,22 +354,32 @@ function renderLines() {
       <td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
       <td>
         <input id="rq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
+        <input id="ib-${l.id}" placeholder="内部批次号(退货填出库值)" style="width:170px" title="一般由数据传入；留空时首次入库自动=批次号，销退沿用原内部批次号">
         <button class="btn sm" onclick="doReceive(${l.id})">收货</button>
       </td>
       <td>
         <input id="pq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
         <button class="btn secondary sm" onclick="doPutaway(${l.id})">上架</button>
       </td>
-    </tr>`).join("");
+    </tr>
+    <tr><td colspan="17" style="background:#f8fafc;padding:8px 12px">
+      <div style="margin-bottom:6px">${extraFields}</div>
+      <div class="text-sm"><b>验收入库批次：</b>${batches}</div>
+    </td></tr>`;
+  }).join("");
 }
 
 async function doReceive(lineId) {
   const qty = parseFloat(document.getElementById("rq-" + lineId).value);
   const locationId = parseInt(document.getElementById("recvLocSel").value, 10);
+  const ibEl = document.getElementById("ib-" + lineId);
+  const internal_batch_no = ibEl ? ibEl.value.trim() : "";
   try {
     const r = await api("POST", `/api/asns/${currentAsn.asn.id}/receive`,
-      { line_id: lineId, location_id: locationId, qty });
-    showMsg(document.getElementById("msg"), `收货成功，单据状态：${r.status}`, "success");
+      { line_id: lineId, location_id: locationId, qty, internal_batch_no });
+    showMsg(document.getElementById("msg"),
+      `收货成功：批次号 ${r.batch ? r.batch.batch_no : "-"}（内部批次号 ${r.batch ? r.batch.internal_batch_no : "-"}），单据状态 ${r.status}`,
+      "success");
     await showDetail(currentAsn.asn.id);
     load();
   } catch (e) {
@@ -408,7 +445,7 @@ async function openCreate() {
     { name: "customer_address", label: "客户地址" },
     { name: "carrier_name", label: "承运商" },
 
-    { type: "section", label: "③ 收货明细（选择商品自动带出档案，批号/效期可补录）" },
+    { type: "section", label: "③ 收货明细（选商品自动带出档案，全部字段均可人工编辑；验收入库写入批次信息）" },
     {
       name: "lines", label: "收货明细", type: "lines", full: true, cardLayout: true,
       lineFields: [
@@ -419,8 +456,10 @@ async function openCreate() {
       ],
       autoFill: { product_id: {
         product_name: "name", spec: "spec", article_no: "article_no", unit: "unit",
-        brand: "brand", mfg_enterprise: "mfg_enterprise", reg_cert_no: "reg_cert_no",
-        registrant: "registrant", mfg_license: "mfg_license", shelf_life_days: "shelf_life_days",
+        brand: "brand", mfg_enterprise: "mfg_enterprise",
+        production_enterprise: "production_enterprise", origin: "origin",
+        reg_cert_no: "reg_cert_no", registrant: "registrant",
+        mfg_license: "mfg_license", shelf_life_days: "shelf_life_days",
       } },
       onLineChange: () => {
         if (modalEl) validateLinesOwner(modalEl, modalEl.querySelector('[name="owner_id"]').value);

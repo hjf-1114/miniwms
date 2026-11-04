@@ -104,16 +104,21 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **M16 供应链与单据主数据增强**（2026-11-04）：供应商主数据(归属货主/多货主隔离) + 多仓库主数据(全系统共享，此前仅支持多货主) + ASN/DN 自动单号(英文开头+日期流水，留空自动生成) + ASN/DN 单据字段增强(单据类型/外部单号/订单来源/来源仓库/供应商快照/承运商/自定义字段/订单总数量·品类数汇总)
 - **M17 移库单（Stock Transfer）**（`routes_transfer.py` + `inventory_service.stock_move`）：单据驱动库位间转移——创建移库单（货主×物料×来源位×目标位×数量，含归属/启停/来源≠目标校验），执行时在同一事务内源位扣减、目标位增加，落 move_out/move_in 两条流水且余额始终可由流水核对；仅未执行单可取消
 - **M18 盘点单（Stocktake）**（`routes_stocktake.py` + `inventory_service.adjust_stock`）：账实核对——冻结快照账存 → 盲盘录入实盘 → 差异生成 adjustment 调整流水 → 解冻结案，全程余额仍可由流水核对；含未盘行拦截、负数拦截、状态机守卫
-- **收货单体验增强**（2026-11-04 用户反馈，`web_app/asns.html` + `routes_asn.py`）：单据类型默认「采购」、来源仓库表单必填且默认选中（无仓库时自动建默认仓库）；货主默认不填，选定后客户/供应商/商品**全量可选**并按归属排前打 ✓，**选错即时红字报错**（不再预先过滤）；供应商/客户联系方式可在下单时覆盖；收货明细选商品自动带出**货品名称/规格/货号/单位/品牌/厂家/注册证号/注册人备案人/生产许可证/效期**，并支持批号、生产日期、失效日期补录，随单据留档
+- **M19 批次与验收入库追溯**（`batch_fields.py` / `batch_service.py` / `routes_batch.py` / `web_app/batches.html`）：
+  - **批次字段配置**：20 个批次字段可配置「是否关键 / 启用 / 默认值 / 标签 / 备注」；默认关键字段＝批号、生产日期、失效日期、灭菌批号、UDI、产地、生产企业
+  - **批次档案**：按 `货主 + 物料 + 关键字段值` 指纹去重，配置的关键批次信息一致即同一档案；支持手动「预配置批次」
+  - **每次入库唯一批次号**：验收入库 `receive()` 在原有事务内写入完整批次信息并生成 `BAT-日期-流水`；内部批次号＝外部数据传入优先 → 退货沿用出库内部批次号 → 首次入库等于批次号
+  - 收货明细新增灭菌批号 / 产地 / 患者名称 / 内部批次号 / 货品属性(合格·不合格) / UDI / 生产企业，且**所有自动带出的档案字段均可人工编辑**（自动带出只是默认值，单据留存最终填写值）
+- **收货单体验增强**（2026-11-04 用户反馈，`web_app/asns.html` + `routes_asn.py`）：单据类型默认「采购」、来源仓库表单必填且默认选中（无仓库时自动建默认仓库）；货主默认不填，选定后客户/供应商/商品**全量可选**并按归属排前打 ✓，**选错即时红字报错**（不再预先过滤）；供应商/客户联系方式可在下单时覆盖；收货明细选商品自动带出**货品名称/规格/货号/单位/品牌/厂家/生产企业/产地/注册证号/注册人备案人/生产许可证/效期/UDI**，并支持批号、灭菌批号、生产日期、失效日期、内部批次号、货品属性、患者名称补录，全部字段可人工改写，随单据留档并在验收入库时写入批次信息
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/客户/供应商/承运商/仓库/收货/出库/移库/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/客户/供应商/承运商/仓库/收货/出库/移库/盘点/批次/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
   - **工作台（`/app.html`）**：左侧垂直一级菜单 + 内嵌可折叠子菜单（图标条 hover/点按展开）+ 多标签页，多个页面在同一窗口以 iframe 标签并存；单据「明细」按钮在工作台内以新标签打开，独立打开页面时回退为页内展开；含防嵌套守卫，工作台不会被套进自己的标签（详见 `app.html`）
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 补货预警（M19）、报表统计（M20）
-- **外部对接（M21）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
-- CSV 导入导出（M21）
+- 补货预警（M20）、报表统计（M21）
+- **外部对接（M22）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
+- CSV 导入导出（M23）
 
 ## API 概览
 
@@ -125,10 +130,10 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/locations` | 创建库位（编码必填唯一） |
 | GET | `/api/locations` | 列表，支持 `keyword`/`zone`/`loc_type`/`status`/分页 |
 | GET/PUT/DELETE | `/api/locations/<id>` | 详情/更新/删除（有库存时拒绝） |
-| POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性；单号留空自动生成 `ASN-日期-流水`；单据类型默认「采购」；支持 外部单号/订单来源/来源仓库/供应商/`customer_id`/承运商/自定义字段，自动算 总数量·品类数）。供应商与客户须属同一货主，否则 400 明确报错；`supplier_contact`/`supplier_phone`/`supplier_address`/`customer_contact`/`customer_phone`/`customer_address` 可覆盖主数据快照；明细行可带商品档案与批号/生产日期/失效日期，落库为单据快照 |
+| POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性；单号留空自动生成 `ASN-日期-流水`；单据类型默认「采购」；支持 外部单号/订单来源/来源仓库/供应商/`customer_id`/承运商/自定义字段，自动算 总数量·品类数）。供应商与客户须属同一货主，否则 400 明确报错；`supplier_contact`/`supplier_phone`/`supplier_address`/`customer_contact`/`customer_phone`/`customer_address` 可覆盖主数据快照；明细行可带 20 个商品档案 + 批次信息字段（含灭菌批号/产地/患者名称/内部批次号/货品属性/UDI/生产企业），全部可人工编辑、落库为单据快照；`goods_property` 仅接受 合格/不合格 |
 | GET | `/api/asns` | 收货单列表，支持 `keyword`/`status`/分页（返回 来源仓库/供应商/总数量/品类数） |
-| GET | `/api/asns/<id>` | 收货单详情 + 明细行（返回规格/货号/单位/厂家/批号/生产日期/失效日期/注册证号/注册人/生产许可证等档案快照；老单据回退物料主数据） |
-| POST | `/api/asns/<id>/receive` | 收货到收货区位（部分收货，状态自动推进） |
+| GET | `/api/asns/<id>` | 收货单详情 + 明细行（返回规格/货号/单位/厂家/生产企业/产地/UDI/批号/灭菌批号/生产日期/失效日期/内部批次号/货品属性/患者名称/注册证号/注册人/生产许可证等快照，老单据回退物料主数据；每行附本行已生成的 `batch_receipts`） |
+| POST | `/api/asns/<id>/receive` | 收货到收货区位（部分收货，状态自动推进）；同事务写入批次信息，返回 `batch`（唯一 `batch_no`、批次档案、`internal_batch_no` 及其来源）；可传 `internal_batch_no` 覆盖（退货/外部数据场景） |
 | POST | `/api/asns/<id>/putaway` | 上架：暂存位 → 存储/拣货位（同事务一减一增） |
 | POST | `/api/asns/<id>/cancel` | 取消（仅未收货） |
 | POST | `/api/dns` | 创建出库单（行 = 物料×订购数量，校验货主一致性；单号留空自动生成 `DN-日期-流水`；支持 单据类型/外部单号/订单来源/来源仓库/承运商/自定义字段，自动算 总数量·品类数） |
@@ -148,6 +153,14 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/stocktakes/<id>/count` | 盲盘录入实盘（逐行 counted_qty，负数 400，状态保持 frozen） |
 | POST | `/api/stocktakes/<id>/adjust` | 差异调整（有未盘行 400；对差异行生成 adjustment 流水，状态→adjusted） |
 | POST | `/api/stocktakes/<id>/close` | 解冻结案（仅已调整单，状态→closed） |
+| GET | `/api/batch/fields` | 批次字段字典（20 个字段及默认是否关键），前端表单据此动态渲染 |
+| GET | `/api/batch/config` | 批次字段配置列表 + 当前生效的关键字段 |
+| PUT | `/api/batch/config/<field_name>` | 编辑配置（是否关键/启用/默认值/标签/备注/排序）；至少保留一个关键字段 |
+| GET | `/api/batch/profiles` | 批次档案列表（关键批次信息），支持 `keyword`/`owner_id`/`product_id`/分页 |
+| POST | `/api/batch/profiles` | 手动预配置批次档案（关键批次信息已存在返回 409，物料归属货主须一致） |
+| GET | `/api/batch/profiles/<id>` | 批次档案详情（关键批次信息 + 完整批次信息 + 关联验收入库批次） |
+| GET | `/api/batch/receipts` | 验收入库批次流水（每次收货唯一批次号），支持 `keyword`/`owner_id`/`product_id`/`asn_id`/`asn_line_id`/`goods_property`/分页 |
+| GET | `/api/batch/receipts/<id>` | 单条入库批次详情（含货主/物料/库位/收货单编码与完整批次信息） |
 | POST | `/api/customers` | 创建客户（归属货主，code 必填唯一） |
 | GET | `/api/customers` | 客户列表，支持 `keyword`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/customers/<id>` | 详情/更新/删除（被出库单引用时拒绝） |
@@ -174,19 +187,22 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ```
 main.py               Flask 入口、数据库初始化与连接管理、静态托管 web_app
 auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器）
-constants.py          状态机与流水类型枚举（显式集中）
+constants.py          状态机、流水类型、批次号前缀与货品属性枚举（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
+batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
+batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则）
 routes_owner.py       货主主数据 Blueprint
 routes_product.py     物料主数据 Blueprint
 routes_location.py    库位主数据 Blueprint
-routes_asn.py         收货单与上架 Blueprint
+routes_asn.py         收货单与上架 Blueprint（验收入库同事务写批次信息）
 routes_dn.py          出库单（拣货/发货）Blueprint
 routes_stock.py       库存账/流水/余额核对只读 Blueprint
 routes_customer.py   客户主数据 Blueprint（出库收货方维度）
 routes_user.py        用户与角色（登录/权限）Blueprint
-web_app/              Web demo（index/owners/products/locations/customers/asns/dns/stock/roles/users/login + css/js）
+routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
+web_app/              Web demo（index/owners/products/locations/customers/suppliers/warehouses/carriers/asns/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货，支持 --reset/--check）
-docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland）
+docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录
 ```
@@ -194,5 +210,6 @@ DEVELOPMENT.md        里程碑开发记录
 ## 设计约定
 
 - 所有接口返回 JSON：成功 `{"ok": true, ...}`，失败 `{"ok": false, "errors": [...]}` + 对应 4xx 状态码
-- 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M10/M11），全部经 inventory_service 落流水
+- 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M17/M18），全部经 inventory_service 落流水
+- 批次只由验收驱动：批次流水无手工新增接口，由 `receive()` 在同事务内经 batch_service 写入；关键批次信息由 `batch_config` 配置，改配置不重算历史档案
 - 时间戳由 SQLite `datetime('now','localtime')` 生成

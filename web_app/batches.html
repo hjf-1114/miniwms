@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批次管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>批次管理</h1><div class="crumb">MiniWMS / 出入库作业 / 批次追溯</div></div>
+      <span class="env-badge">医疗器械 · GSP 口径</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <h2>批次模型</h2>
+        <div class="sub">
+          ① <b>批次字段配置</b>：决定哪些字段算「关键批次信息」，并可设默认值 →
+          ② <b>批次档案</b>：货主 + 物料 + 关键字段值一致即同一档案（关键批次信息一致） →
+          ③ <b>验收入库批次流水</b>：每次收货写入一条、生成唯一批次号；内部批次号首次入库 = 批次号，退货沿用出库内部批次号，一般由外部数据传入。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>① 批次字段配置</h2>
+          <button class="btn secondary sm" onclick="loadConfig()">刷新</button>
+        </div>
+        <div class="sub">勾选「关键」的字段组成关键批次信息指纹；留空的明细字段在验收入库时自动套用这里配置的默认值。</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>标签</th><th>关键</th><th>启用</th><th>默认值</th><th>备注</th><th>操作</th></tr></thead>
+            <tbody id="cfgBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>② 批次档案（关键批次信息）</h2>
+          <button class="btn" onclick="openProfileCreate()">+ 预配置批次</button>
+        </div>
+        <div class="toolbar">
+          <input id="pfKw" placeholder="档案号 / 指纹">
+          <select id="pfOwner"><option value="">全部货主</option></select>
+          <select id="pfProduct"><option value="">全部物料</option></select>
+          <button class="btn secondary" onclick="loadProfiles()">查询</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>档案号</th><th>货主 / 物料</th><th>关键批次信息</th><th>验收入库次数</th><th>创建时间</th><th>操作</th></tr></thead>
+            <tbody id="pfBody"></tbody>
+          </table>
+        </div>
+        <div class="pager" id="pfPager"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>③ 验收入库批次流水（每次收货唯一批次号）</h2></div>
+        <div class="toolbar">
+          <input id="rcKw" placeholder="批次号 / 内部批次号">
+          <select id="rcProp">
+            <option value="">全部货品属性</option>
+            <option value="合格">合格</option>
+            <option value="不合格">不合格</option>
+          </select>
+          <button class="btn secondary" onclick="loadReceipts()">查询</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>批次号</th><th>内部批次号</th><th>内部批次号来源</th><th>批次档案</th><th>货主 / 物料</th><th>数量</th><th>货品属性</th><th>单据类型</th><th>收货单</th><th>库位</th><th>验收时间</th></tr></thead>
+            <tbody id="rcBody"></tbody>
+          </table>
+        </div>
+        <div class="pager" id="rcPager"></div>
+      </div>
+
+      <div class="card" id="detailCard" style="display:none">
+        <div class="card-head"><h2 id="detailTitle">批次档案明细</h2>
+          <button class="btn secondary sm" onclick="document.getElementById('detailCard').style.display='none'">收起</button>
+        </div>
+        <div id="detailBody"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+const SRC_LABEL = { first_in: "首次入库", return_trace: "退货沿用出库值", external: "外部数据传入" };
+const GOODS_OPTS = [{ value: "合格", label: "合格" }, { value: "不合格", label: "不合格" }];
+const YES_NO = [{ value: "1", label: "是" }, { value: "0", label: "否" }];
+let cfgRows = [], cfgFields = [], keyFields = [];
+let ownerOptions = [], productOptions = [];
+let profileList = [];
+
+function labelOf(name) {
+  const r = cfgRows.find((x) => x.field_name === name);
+  return r ? r.label : name;
+}
+
+function chip(k, v) {
+  return `<span style="display:inline-block;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:4px;padding:3px 8px;margin:2px 6px 2px 0;font-size:11.5px">${esc(k)}：${esc(v === "" || v === null || v === undefined ? "-" : v)}</span>`;
+}
+
+async function loadOptions() {
+  const [ow, pr] = await Promise.all([
+    api("GET", "/api/owners?page_size=100"),
+    api("GET", "/api/products?page_size=100"),
+  ]);
+  ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  productOptions = pr.products.map((p) => ({ value: p.id, label: `${p.sku} · ${p.name}` }));
+  ["pfOwner", "rcOwner"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = `<option value="">全部货主</option>` +
+      ownerOptions.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("");
+  });
+  const ps = document.getElementById("pfProduct");
+  if (ps) ps.innerHTML = `<option value="">全部物料</option>` +
+    productOptions.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("");
+}
+
+// ── ① 批次字段配置 ────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const d = await api("GET", "/api/batch/config");
+    cfgRows = d.config; cfgFields = d.fields; keyFields = d.key_fields;
+    document.getElementById("cfgBody").innerHTML = cfgRows.map((r) =>
+      `<tr>
+        <td class="mono">${esc(r.field_name)}</td>
+        <td>${esc(r.label)}</td>
+        <td>${r.is_key ? '<span class="tag ok">✓ 关键</span>' : '<span class="muted">—</span>'}</td>
+        <td>${r.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag off">停用</span>'}</td>
+        <td>${esc(r.default_value || "-")}</td>
+        <td class="muted">${esc(r.note || "-")}</td>
+        <td><button class="btn secondary sm" onclick="openConfigEdit('${esc(r.field_name)}')">编辑</button></td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "配置加载失败：" + e.message, "error");
+  }
+}
+
+function openConfigEdit(name) {
+  const r = cfgRows.find((x) => x.field_name === name);
+  if (!r) return;
+  openForm({
+    title: `配置批次字段 · ${r.label}`, submitText: "保存", width: 560,
+    values: {
+      label: r.label, is_key: String(r.is_key), enabled: String(r.enabled),
+      default_value: r.default_value, note: r.note,
+    },
+    fields: [
+      { type: "section", label: `字段标识：${name}（${r.input_type}）` },
+      { name: "label", label: "中文标签" },
+      { name: "is_key", label: "计入关键批次信息", type: "select", options: YES_NO,
+        help: "关键批次信息一致的多次验收入库会归入同一批次档案" },
+      { name: "enabled", label: "启用", type: "select", options: YES_NO },
+      { name: "default_value", label: "默认值（明细留空时自动补齐）" },
+      { name: "note", label: "备注" },
+    ],
+    onSubmit: async (p) => {
+      await api("PUT", "/api/batch/config/" + encodeURIComponent(name), p);
+      showMsg(document.getElementById("msg"), "配置已保存", "success");
+      await loadConfig();
+    },
+  });
+}
+
+// ── ② 批次档案 ────────────────────────────────────────────────────
+function profileInfoFields() {
+  return cfgRows.filter((r) => r.enabled).map((r) => {
+    const base = { name: r.field_name, label: r.label + (r.is_key ? " ✓关键" : "") };
+    if (r.input_type === "date") return { ...base, type: "date" };
+    if (r.input_type === "select") return { ...base, type: "select",
+      options: r.field_name === "goods_property" ? GOODS_OPTS : [{ value: "", label: "-" }] };
+    return base;
+  });
+}
+
+function openProfileCreate() {
+  if (!cfgRows.length) { showMsg(document.getElementById("msg"), "配置尚未加载", "error"); return; }
+  const fields = [
+    { type: "section", label: "归属" },
+    { name: "owner_id", label: "货主 *", type: "select", required: true,
+      placeholder: "请选择货主", options: ownerOptions },
+    { name: "product_id", label: "物料 *", type: "select", required: true,
+      placeholder: "请选择物料", options: productOptions,
+      help: "物料归属货主须与所选货主一致" },
+    { type: "section", label: "批次信息（✓ 为关键批次信息；留空套用配置默认值）" },
+    ...profileInfoFields(),
+  ];
+  openForm({
+    title: "预配置批次档案", submitText: "创建", width: 900, fields,
+    onSubmit: async (p) => {
+      const { owner_id, product_id, ...info } = p;
+      await api("POST", "/api/batch/profiles", { owner_id, product_id, info });
+      showMsg(document.getElementById("msg"), "批次档案已创建", "success");
+      await loadProfiles();
+    },
+  });
+}
+
+function keySummary(ki) {
+  return Object.keys(ki || {}).filter((k) => k !== "owner_id" && k !== "product_id")
+    .map((k) => `<span class="muted text-sm">${esc(labelOf(k))}=${esc(ki[k] || "-")}</span>`)
+    .join('<span class="muted"> · </span>') || '<span class="muted">—</span>';
+}
+
+async function loadProfiles() {
+  try {
+    const qs = new URLSearchParams({ page_size: 50 });
+    const kw = document.getElementById("pfKw").value.trim();
+    const ow = document.getElementById("pfOwner").value;
+    const pr = document.getElementById("pfProduct").value;
+    if (kw) qs.set("keyword", kw);
+    if (ow) qs.set("owner_id", ow);
+    if (pr) qs.set("product_id", pr);
+    const d = await api("GET", "/api/batch/profiles?" + qs);
+    profileList = d.profiles;
+    document.getElementById("pfBody").innerHTML = d.profiles.map((p) =>
+      `<tr>
+        <td class="mono">${esc(p.code)}</td>
+        <td>${esc(p.owner_code || "-")} / ${esc(p.sku || "-")} · ${esc(p.product_name || "")}</td>
+        <td>${keySummary(p.key_info)}</td>
+        <td><b>${p.receipt_count}</b></td>
+        <td class="muted">${esc(p.created_at)}</td>
+        <td><button class="btn secondary sm" onclick="openProfileDetail(${p.id})">明细</button></td>
+      </tr>`).join("") || '<tr><td colspan="6" class="empty">暂无批次档案，去「收货作业」验收入库后自动生成</td></tr>';
+    document.getElementById("pfPager").innerHTML = `共 ${d.total} 条`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "批次档案加载失败：" + e.message, "error");
+  }
+}
+
+function openProfileDetail(id) {
+  const r = profileList.find((x) => x.id === id);
+  openDetail("批次档案 " + (r ? r.code : id), "/batches.html?detail=" + id);
+}
+
+async function showDetail(id) {
+  try {
+    const d = await api("GET", "/api/batch/profiles/" + id);
+    const p = d.profile;
+    const el = document.getElementById("detailCard");
+    el.style.display = "";
+    document.getElementById("detailTitle").textContent = `批次档案明细 · ${p.code}`;
+    const keyHtml = Object.keys(p.key_info || {}).map(
+      (k) => chip(k === "owner_id" ? "货主ID" : k === "product_id" ? "物料ID" : labelOf(k), p.key_info[k])
+    ).join("");
+    const infoHtml = Object.keys(p.info || {}).map((k) => chip(labelOf(k), p.info[k])).join("");
+    const rows = d.receipts.map((r) =>
+      `<tr><td class="mono">${esc(r.batch_no)}</td><td class="mono">${esc(r.internal_batch_no)}</td>
+       <td>${esc(SRC_LABEL[r.internal_source] || r.internal_source)}</td>
+       <td>${r.qty}</td><td>${esc(r.goods_property || "-")}</td>
+       <td>${esc(r.doc_type || "-")}</td><td class="muted">${esc(r.created_at)}</td></tr>`
+    ).join("") || '<tr><td colspan="7" class="empty">尚未验收入库</td></tr>';
+    document.getElementById("detailBody").innerHTML = `
+      <div class="sub mono">指纹 batch_key：${esc(p.batch_key)}</div>
+      <h3 style="font-size:13px;margin:12px 0 6px">关键批次信息（决定档案是否一致）</h3>
+      <div>${keyHtml}</div>
+      <h3 style="font-size:13px;margin:14px 0 6px">完整批次信息</h3>
+      <div>${infoHtml}</div>
+      <h3 style="font-size:13px;margin:14px 0 6px">验收入库批次流水（${d.receipts.length}）</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>批次号</th><th>内部批次号</th><th>来源</th><th>数量</th><th>货品属性</th><th>单据类型</th><th>验收时间</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "明细加载失败：" + e.message, "error");
+  }
+}
+
+// ── ③ 验收入库批次流水 ────────────────────────────────────────────
+async function loadReceipts() {
+  try {
+    const qs = new URLSearchParams({ page_size: 50 });
+    const kw = document.getElementById("rcKw").value.trim();
+    const gp = document.getElementById("rcProp").value;
+    if (kw) qs.set("keyword", kw);
+    if (gp) qs.set("goods_property", gp);
+    const d = await api("GET", "/api/batch/receipts?" + qs);
+    document.getElementById("rcBody").innerHTML = d.receipts.map((r) =>
+      `<tr>
+        <td class="mono">${esc(r.batch_no)}</td>
+        <td class="mono">${esc(r.internal_batch_no)}</td>
+        <td>${esc(SRC_LABEL[r.internal_source] || r.internal_source)}</td>
+        <td class="mono">${esc(r.batch_code || "-")}</td>
+        <td>${esc(r.owner_code || "-")} / ${esc(r.sku || "-")}</td>
+        <td>${r.qty}</td>
+        <td>${r.goods_property === "不合格"
+          ? '<span class="tag off">不合格</span>'
+          : `<span class="tag ok">${esc(r.goods_property || "-")}</span>`}</td>
+        <td>${esc(r.doc_type || "-")}</td>
+        <td class="mono">${esc(r.asn_code || "-")}</td>
+        <td>${esc(r.location_code || "-")}</td>
+        <td class="muted">${esc(r.created_at)}</td>
+      </tr>`).join("") || '<tr><td colspan="11" class="empty">暂无验收入库批次流水</td></tr>';
+    document.getElementById("rcPager").innerHTML = `共 ${d.total} 条`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "批次流水加载失败：" + e.message, "error");
+  }
+}
+
+async function loadAll() {
+  await loadConfig();
+  await Promise.all([loadProfiles(), loadReceipts()]);
+}
+
+loadOptions().then(loadAll).then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
+</script>
+</body>
+</html>
