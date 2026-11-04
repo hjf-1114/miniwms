@@ -39,3 +39,10 @@ TRANSFER_OPEN = "open"              # 已创建，未执行
 TRANSFER_DONE = "done"              # 已执行（库存已转移）
 TRANSFER_CANCELLED = "cancelled"    # 已取消（仅未执行可取消）
 TRANSFER_STATUSES = (TRANSFER_OPEN, TRANSFER_DONE, TRANSFER_CANCELLED)
+
+# 盘点单（Stocktake）状态机: open → frozen → adjusted → closed
+STOCKTAKE_OPEN = "open"          # 已创建，未冻结
+STOCKTAKE_FROZEN = "frozen"      # 已冻结并快照账存（盲盘阶段）
+STOCKTAKE_ADJUSTED = "adjusted"  # 已按盘点差异生成调整流水
+STOCKTAKE_CLOSED = "closed"      # 已解冻结案
+STOCKTAKE_STATUSES = (STOCKTAKE_OPEN, STOCKTAKE_FROZEN, STOCKTAKE_ADJUSTED, STOCKTAKE_CLOSED)

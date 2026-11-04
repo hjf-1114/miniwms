@@ -298,6 +298,31 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
   可用量不足 400、已执行重复 move 409、取消已执行单 409
 - 不移动已分配（已拣货）库存：可用量 = 在手 - 已分配，扣减仅取可用部分
 
+## M17 盘点单（Stocktake，2026-11-04）
+
+**目标**：落实 D6 第二条里程碑——账实核对（与 ASN/DN/Transfer 对称，全部经 inventory_service 落流水）。
+锁定单→冻结快照账存→盲盘录入实盘→按差异生成 adjustment 调整流水→解冻结案，全程余额仍可由流水核对。
+
+**改动清单**：
+- `constants.py`：新增盘点单状态机 `STOCKTAKE_OPEN/FROZEN/ADJUSTED/CLOSED`；复用 `MOVEMENT_ADJUSTMENT` 流水类型
+- `main.py`：新增 `stocktake`（code 唯一/owner_id 归属/status 状态机）与 `stocktake_line`
+  （owner×product×location 唯一，book_qty 快照/ counted_qty 实盘，可为空待盘）两表 DDL
+- `routes_stocktake.py`（新增）：`POST /api/stocktakes` 创建（货主校验、编码唯一 409）、
+  `GET /api/stocktakes` 列表（keyword/status/分页）、`GET /api/stocktakes/<id>` 详情（联表带出
+  物料/库位编码 + diff=counted-book）、`POST /api/stocktakes/<id>/freeze` 冻结（BEGIN IMMEDIATE 快照货主
+  有货库存到盘点行，状态→frozen）、`POST .../count` 盲盘（逐行录入 counted_qty，状态保持 frozen，
+  负数 400）、`POST .../adjust` 差异调整（有未盘行 400；对 counted≠book 行以 adjustment 流水修正账存，
+  状态→adjusted）、`POST .../close` 解冻结案（仅已调整单可结案，状态→closed）
+- `tests/test_stocktake.py`（新增，14 例）
+
+**可验证结果**：
+- `python -m unittest discover -s tests` 212 例全绿（+14，总测试 212）
+- 冻结快照：来源位账存 10 → 盘点行 book_qty=10；盲盘录 7 → diff=-3；调整 → 来源位账存变 7，
+  产生 1 条 adjustment 流水（delta=-3），reconcile 仍 consistent=true
+- 拒绝路径：编码重复 409、货主非法 400、非 open 冻结 409、非 frozen 盲盘/调整 409、
+  盲盘负数 400、有未盘行调整 400、非 adjusted 结案 409
+- 无差异（实盘=账存）仍正常置 adjusted，账存不变
+
 ## M6 库存账与流水查询（2026-11-03）
 
 **目标**：交付只读「库存账房」——余额查询、全部动作流水查询、余额与流水累加的

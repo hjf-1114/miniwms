@@ -619,6 +619,33 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_transfer_line_transfer ON transfer_line(transfer_id);
             """
         )
+        # M17 盘点单（Stocktake）：单据驱动账实核对——冻结快照 → 盲盘 → 差异调整 → 解冻
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS stocktake (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                code        TEXT    NOT NULL UNIQUE,
+                owner_id    INTEGER NOT NULL REFERENCES owner(id),
+                status      TEXT    NOT NULL DEFAULT 'open',
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_stocktake_owner  ON stocktake(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_stocktake_status ON stocktake(status);
+            CREATE TABLE IF NOT EXISTS stocktake_line (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                stocktake_id     INTEGER NOT NULL REFERENCES stocktake(id),
+                owner_id         INTEGER NOT NULL REFERENCES owner(id),
+                product_id       INTEGER NOT NULL REFERENCES product(id),
+                location_id      INTEGER NOT NULL REFERENCES location(id),
+                book_qty         REAL    NOT NULL DEFAULT 0,
+                counted_qty      REAL    DEFAULT NULL,
+                UNIQUE(stocktake_id, product_id, location_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_stocktake_line_st ON stocktake_line(stocktake_id);
+            """
+        )
         # 用户与角色（M9 基础：后续功能通过 require_permission 联动）
         conn.executescript(
             """
@@ -672,6 +699,7 @@ else:
     from routes_supplier import supplier_bp  # noqa: E402
     from routes_warehouse import warehouse_bp  # noqa: E402
     from routes_transfer import transfer_bp  # noqa: E402
+    from routes_stocktake import stocktake_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -685,3 +713,4 @@ else:
     app.register_blueprint(supplier_bp)
     app.register_blueprint(warehouse_bp)
     app.register_blueprint(transfer_bp)
+    app.register_blueprint(stocktake_bp)
