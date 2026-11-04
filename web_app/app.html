@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-<div class="ws">
+<div class="ws" id="wsRoot">
   <aside class="ws-side" id="wsSide">
     <button class="ws-pin" onclick="togglePin()" title="固定 / 收起导航">⤢</button>
     <div class="brand"><span class="logo">📦</span><span class="nav-label">MiniWMS 工作台</span></div>
@@ -25,108 +25,150 @@
 <script src="/js/api.js"></script>
 <script src="/js/layout.js"></script>
 <script>
-const NAV = window.MWS_NAV || [];
-const side = document.getElementById("wsSide");
-const navEl = document.getElementById("wsNav");
-const tabsEl = document.getElementById("wsTabs");
-const stageEl = document.getElementById("wsStage");
+const EMBED = new URLSearchParams(location.search).get("embed") === "1";
 
-// ── 构建可折叠侧边栏 ──
-let navHtml = "";
-for (const it of NAV) {
-  if (it.group) {
-    navHtml += `<div class="nav-group">${it.group}</div>`;
-  } else {
-    navHtml += `<a class="nav-item" href="#" data-href="${it.href}" title="${it.label}">` +
-      `<span class="nav-ico">${it.ico}</span><span class="nav-label">${it.label}</span></a>`;
+// 防套娃：工作台自身不允许被塞进 iframe（否则「进入工作台」可无限点击嵌套）
+if (EMBED) {
+  document.getElementById("wsRoot").innerHTML =
+    '<div class="ws-empty"><div><span class="ico">🗂️</span>' +
+    "工作台不能嵌套在标签页内。<br>" +
+    '<a class="btn mt12" href="/app.html" target="_blank">在新窗口打开工作台</a></div></div>';
+} else {
+  const NAV = window.MWS_NAV || [];
+  const side = document.getElementById("wsSide");
+  const navEl = document.getElementById("wsNav");
+  const tabsEl = document.getElementById("wsTabs");
+  const stageEl = document.getElementById("wsStage");
+
+  const GROUP_ICONS = { "基础主数据": "🗂️", "出入库作业": "📦", "系统管理": "⚙️" };
+
+  // ── 构建垂直一级菜单 + 内嵌子菜单 ──
+  const groups = [];
+  let cur = null;
+  for (const it of NAV) {
+    if (it.group) {
+      cur = { label: it.group, ico: GROUP_ICONS[it.group] || "📁", items: [] };
+      groups.push(cur);
+    } else if (cur) {
+      cur.items.push(it);
+    } else {
+      cur = { label: "其他", ico: "📁", items: [it] };
+      groups.push(cur);
+    }
   }
-}
-navEl.innerHTML = navHtml;
-navEl.querySelectorAll(".nav-item").forEach((a) => {
-  a.addEventListener("click", (e) => {
-    e.preventDefault();
-    openTab(a.querySelector(".nav-label").textContent, a.dataset.href);
-  });
-});
+  navEl.innerHTML = groups.map((g, gi) =>
+    `<div class="nav-group-box" data-gi="${gi}">
+       <button type="button" class="nav-group-toggle" data-toggle="${gi}" title="${esc(g.label)}">
+         <span class="nav-ico">${g.ico}</span>
+         <span class="nav-label">${esc(g.label)}</span>
+         <span class="nav-arrow">▾</span>
+       </button>
+       <div class="nav-sub" data-sub="${gi}">
+         ${g.items.map((it) =>
+           `<a class="nav-item" href="#" data-href="${it.href}" title="${esc(it.label)}">` +
+           `<span class="nav-ico">${it.ico}</span><span class="nav-label">${esc(it.label)}</span></a>`
+         ).join("")}
+       </div>
+     </div>`).join("");
 
-function togglePin() { side.classList.toggle("pinned"); }
-
-// ── 标签页管理 ──
-let tabs = [];
-let seq = 0;
-let activeId = null;
-
-function ensureEmbed(url) {
-  if (url.indexOf("embed=1") !== -1) return url;
-  return url + (url.indexOf("?") === -1 ? "?" : "&") + "embed=1";
-}
-
-function openTab(title, url) {
-  const key = url;
-  const existing = tabs.find((x) => x.key === key);
-  if (existing) { activate(existing.id); return; }
-  const id = "tab" + (++seq);
-  const iframe = document.createElement("iframe");
-  iframe.className = "ws-iframe";
-  iframe.src = ensureEmbed(url);
-  iframe.style.display = "none";
-  stageEl.appendChild(iframe);
-  tabs.push({ id, title, url, key, iframe });
-  activate(id);
-  highlightNav(url);
-}
-
-function activate(id) {
-  activeId = id;
-  tabs.forEach((t) => { t.iframe.style.display = t.id === id ? "" : "none"; });
-  renderTabs();
-}
-
-function closeTab(id) {
-  const i = tabs.findIndex((t) => t.id === id);
-  if (i < 0) return;
-  tabs[i].iframe.remove();
-  const wasActive = activeId === id;
-  tabs.splice(i, 1);
-  if (wasActive) {
-    if (tabs.length) activate(tabs[tabs.length - 1].id);
-    else { activeId = null; renderEmpty(); }
-  }
-  renderTabs();
-}
-
-function highlightNav(url) {
-  const base = url.split("?")[0];
-  navEl.querySelectorAll(".nav-item").forEach((a) => {
-    a.classList.toggle("active", a.dataset.href === base && url.indexOf("detail=") === -1);
-  });
-}
-
-function renderTabs() {
-  tabsEl.innerHTML = tabs.map((t) =>
-    `<div class="ws-tab${t.id === activeId ? " active" : ""}" data-id="${t.id}">` +
-    `<span>${esc(t.title)}</span>` +
-    `<span class="ws-tab-close" data-close="${t.id}" title="关闭">×</span></div>`).join("");
-  tabsEl.querySelectorAll(".ws-tab").forEach((el) => {
-    el.addEventListener("click", (e) => {
-      if (e.target.dataset.close) { closeTab(e.target.dataset.close); return; }
-      activate(el.dataset.id);
+  // 一级菜单：折叠/展开子菜单；图标条状态先固定展开，否则看不到子项
+  navEl.querySelectorAll("[data-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!side.classList.contains("pinned")) side.classList.add("pinned");
+      btn.closest(".nav-group-box").classList.toggle("collapsed");
     });
   });
-  if (!tabs.length) renderEmpty();
+
+  navEl.querySelectorAll(".nav-item").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      a.closest(".nav-group-box").classList.remove("collapsed");
+      openTab(a.querySelector(".nav-label").textContent, a.dataset.href);
+    });
+  });
+
+  function togglePin() { side.classList.toggle("pinned"); }
+
+  // ── 标签页管理 ──
+  let tabs = [];
+  let seq = 0;
+  let activeId = null;
+
+  function ensureEmbed(url) {
+    if (url.indexOf("embed=1") !== -1) return url;
+    return url + (url.indexOf("?") === -1 ? "?" : "&") + "embed=1";
+  }
+
+  function openTab(title, url) {
+    // 工作台自身绝不作为标签内容打开
+    if (url.split("?")[0] === "/app.html") url = "/index.html";
+    const key = url;
+    const existing = tabs.find((x) => x.key === key);
+    if (existing) { activate(existing.id); return; }
+    const id = "tab" + (++seq);
+    const iframe = document.createElement("iframe");
+    iframe.className = "ws-iframe";
+    iframe.src = ensureEmbed(url);
+    iframe.style.display = "none";
+    stageEl.appendChild(iframe);
+    tabs.push({ id, title, url, key, iframe });
+    activate(id);
+    highlightNav(url);
+  }
+
+  function activate(id) {
+    activeId = id;
+    tabs.forEach((t) => { t.iframe.style.display = t.id === id ? "" : "none"; });
+    renderTabs();
+  }
+
+  function closeTab(id) {
+    const i = tabs.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    tabs[i].iframe.remove();
+    const wasActive = activeId === id;
+    tabs.splice(i, 1);
+    if (wasActive) {
+      if (tabs.length) activate(tabs[tabs.length - 1].id);
+      else { activeId = null; renderEmpty(); }
+    }
+    renderTabs();
+  }
+
+  function highlightNav(url) {
+    const base = url.split("?")[0];
+    navEl.querySelectorAll(".nav-item").forEach((a) => {
+      a.classList.toggle("active", a.dataset.href === base && url.indexOf("detail=") === -1);
+    });
+  }
+
+  function renderTabs() {
+    tabsEl.innerHTML = tabs.map((t) =>
+      `<div class="ws-tab${t.id === activeId ? " active" : ""}" data-id="${t.id}">` +
+      `<span>${esc(t.title)}</span>` +
+      `<span class="ws-tab-close" data-close="${t.id}" title="关闭">×</span></div>`).join("");
+    tabsEl.querySelectorAll(".ws-tab").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        if (e.target.dataset.close) { closeTab(e.target.dataset.close); return; }
+        activate(el.dataset.id);
+      });
+    });
+    if (!tabs.length) renderEmpty();
+  }
+
+  function renderEmpty() {
+    stageEl.innerHTML =
+      '<div class="ws-empty"><div><span class="ico">🗂️</span>' +
+      "从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>";
+  }
+
+  // 供 iframe 内页面调用：openDetail(...) 在明细按钮处打开新标签
+  window.openTab = openTab;
+  window.togglePin = togglePin;
+
+  // 默认打开概览
+  openTab("概览", "/index.html");
 }
-
-function renderEmpty() {
-  stageEl.innerHTML =
-    '<div class="ws-empty"><div><span class="ico">🗂️</span>' +
-    "从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>";
-}
-
-// 供 iframe 内页面调用：openDetail(...) 在明细按钮处打开新标签
-window.openTab = openTab;
-
-// 默认打开概览
-openTab("概览", "/index.html");
 </script>
 </body>
 </html>

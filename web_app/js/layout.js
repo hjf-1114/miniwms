@@ -33,6 +33,8 @@
     if (EMBED) {
       el.style.display = "none";
       document.body.classList.add("embed");
+      // 内嵌到工作台 iframe 时隐藏「仅独立页面可用」的入口，避免套娃
+      document.querySelectorAll("[data-embed-hide]").forEach((n) => { n.style.display = "none"; });
       return;
     }
     const path = location.pathname;

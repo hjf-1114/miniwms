@@ -300,6 +300,34 @@ body.embed .main { min-height: 100vh; }
   font-size: 11px; color: var(--sidebar-fg-dim); padding: 12px 12px 6px; letter-spacing: .5px;
   white-space: nowrap;
 }
+
+/* 垂直一级菜单 + 内嵌子菜单 */
+.nav-group-box { margin-bottom: 4px; }
+.nav-group-toggle {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px; border: 0; border-radius: 8px; background: transparent;
+  color: var(--sidebar-fg); font-size: 13.5px; font-weight: 600; font-family: inherit;
+  cursor: pointer; white-space: nowrap; text-align: left;
+  transition: background .15s, color .15s;
+}
+.nav-group-toggle:hover { background: rgba(255,255,255,.07); color: #fff; }
+.nav-group-toggle .nav-ico { width: 20px; flex-shrink: 0; text-align: center; font-size: 15px; }
+.nav-group-toggle .nav-label { opacity: 0; transition: opacity .15s; }
+.ws-side:hover .nav-group-toggle .nav-label,
+.ws-side.pinned .nav-group-toggle .nav-label { opacity: 1; }
+.nav-group-toggle .nav-arrow {
+  margin-left: auto; font-size: 11px; opacity: 0; transition: transform .15s, opacity .15s;
+}
+.ws-side:hover .nav-group-toggle .nav-arrow,
+.ws-side.pinned .nav-group-toggle .nav-arrow { opacity: 1; }
+.nav-group-box.collapsed .nav-arrow { transform: rotate(-90deg); }
+.nav-sub {
+  margin-left: 22px; padding-left: 10px;
+  border-left: 1px solid rgba(255,255,255,.12);
+}
+.nav-group-box.collapsed .nav-sub { display: none; }
+.nav-sub .nav-item { padding-left: 10px; font-size: 13px; }
+
 .ws-side .nav-item {
   display: flex; align-items: center; gap: 12px; padding: 9px 12px; margin-bottom: 2px;
   color: var(--sidebar-fg); text-decoration: none; border-radius: 8px; font-size: 13.5px;
@@ -342,6 +370,10 @@ body.embed .main { min-height: 100vh; }
   .ws { flex-direction: column; }
   .ws-side, .ws-side:hover, .ws-side.pinned { width: 100%; height: auto; }
   .ws-side .nav { display: flex; overflow-x: auto; }
-  .ws-side .nav-group, .ws-side .side-foot { display: none; }
-  .ws-side .nav-item .nav-label { opacity: 1; }
+  .ws-side .nav-group, .ws-side .side-foot,
+  .nav-group-toggle .nav-arrow, .nav-group-toggle { display: none; }
+  .nav-group-box { display: flex; flex-shrink: 0; }
+  .nav-sub { display: flex !important; margin: 0; padding: 0; border-left: 0; }
+  .ws-side .nav-item .nav-label,
+  .ws-side .nav-group-toggle .nav-label { opacity: 1; }
 }
