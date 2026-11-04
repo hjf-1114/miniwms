@@ -94,23 +94,46 @@ PUTAWAY_PLAN = {
     "SKU-101": "A-02-02",
 }
 
-# 入/出库流程定义：(asn_code, owner_code, [(sku, expected)], [(dn_code, customer_code, [(sku, ordered)])])
+# 仓库（多仓库，全系统共享、不绑定货主）：深圳中心仓/上海华东仓/北京华北仓
+WAREHOUSES = [
+    {"code": "WH-SZ", "name": "深圳中心仓", "address": "广东省深圳市宝安区物流园 A 区", "contact": "仓管-李", "phone": "0755-88880001"},
+    {"code": "WH-SH", "name": "上海华东仓", "address": "上海市青浦区华新镇物流大道 18 号", "contact": "仓管-王", "phone": "021-66660002"},
+    {"code": "WH-BJ", "name": "北京华北仓", "address": "北京市通州区马驹桥物流基地 3 号库", "contact": "仓管-张", "phone": "010-55550003"},
+]
+
+# 供应商（归属货主，多货主隔离）：每个货主配 1-2 个常用供应商
+SUPPLIERS = [
+    {"code": "SUP-TM-FACTORY", "name": "天猫美妆代工厂", "owner_code": "OW-TMALL",
+     "contact": "供货-陈", "phone": "0571-87000011", "address": "浙江省杭州市萧山区靖江街道工业园 1 号"},
+    {"code": "SUP-TM-AGENT", "name": "进口食品总代", "owner_code": "OW-TMALL",
+     "contact": "供货-刘", "phone": "020-38000012", "address": "广东省广州市天河区珠江新城"},
+    {"code": "SUP-JD-DIGITAL", "name": "京东数码供应链", "owner_code": "OW-JD",
+     "contact": "供货-孙", "phone": "010-59000013", "address": "北京市海淀区上地信息路 9 号"},
+    {"code": "SUP-SELF-MFG", "name": "自营制造车间", "owner_code": "OW-SELF",
+     "contact": "供货-周", "phone": "0755-26000014", "address": "广东省深圳市南山区"},
+]
+
+# 入/出库流程定义：(asn_code, owner_code, source_warehouse_code, supplier_code, [(sku, expected)], [(dn_code, customer_code, source_warehouse_code, [(sku, ordered)])])
 FLOWS = [
     {
         "owner": "OW-TMALL",
+        "source_warehouse": "WH-SZ",
+        "supplier": "SUP-TM-FACTORY",
         "asn_code": "ASN-DEMO-001",
         "asn_lines": [("SKU-001", 100), ("SKU-002", 50), ("SKU-004", 80)],
         "dns": [
-            {"code": "DN-DEMO-001", "customer": "C-GOLD",
+            {"code": "DN-DEMO-001", "customer": "C-GOLD", "source_warehouse": "WH-SZ",
              "lines": [("SKU-001", 30), ("SKU-002", 20), ("SKU-004", 10)]},
         ],
     },
     {
         "owner": "OW-JD",
+        "source_warehouse": "WH-SH",
+        "supplier": "SUP-JD-DIGITAL",
         "asn_code": "ASN-DEMO-101",
         "asn_lines": [("SKU-101", 20)],
         "dns": [
-            {"code": "DN-DEMO-101", "customer": "C-JD",
+            {"code": "DN-DEMO-101", "customer": "C-JD", "source_warehouse": "WH-SH",
              "lines": [("SKU-101", 5)]},
         ],
     },
@@ -137,7 +160,7 @@ def _reset(db_path):
         conn.execute("PRAGMA foreign_keys = OFF")
         for t in ("dn_pick", "dn_line", "dn", "asn_line", "asn",
                   "stock_movement", "stock", "customer", "product",
-                  "location", "owner", "carrier"):
+                  "supplier", "location", "warehouse", "owner", "carrier"):
             conn.execute(f"DELETE FROM {t}")
         conn.commit()
     finally:
@@ -193,6 +216,13 @@ def seed(reset):
         loc_ids[code] = body["location"]["id"]
     print(f"  库位：{len(loc_ids)} 个（收货/存储/拣货/退货）")
 
+    # 4.2) 仓库（多仓库，全系统共享）
+    wh_ids = {}
+    for wh in WAREHOUSES:
+        body = _post(c, "/api/warehouses", wh)
+        wh_ids[wh["code"]] = body["warehouse"]["id"]
+    print(f"  仓库：{len(wh_ids)} 个（深圳/上海/北京）")
+
     # 4) 客户
     cust_ids = {}
     for (code, name, owner_code, contact, phone, address, email, level, region) in CUSTOMERS:
@@ -204,7 +234,18 @@ def seed(reset):
         cust_ids[code] = body["customer"]["id"]
     print(f"  客户：{len(cust_ids)} 个（含等级/地区/邮箱）")
 
-    # 4.5) 承运商（全系统共享的物流资源目录）
+    # 4.5) 供应商（归属货主，多货主隔离）
+    sup_ids = {}
+    for sp in SUPPLIERS:
+        body = _post(c, "/api/suppliers", {
+            "code": sp["code"], "name": sp["name"], "owner_id": owner_ids[sp["owner_code"]],
+            "contact": sp.get("contact", ""), "phone": sp.get("phone", ""),
+            "address": sp.get("address", ""),
+        })
+        sup_ids[sp["code"]] = body["supplier"]["id"]
+    print(f"  供应商：{len(sup_ids)} 个（各货主常用供货方）")
+
+    # 4.6) 承运商（全系统共享的物流资源目录）
     carrier_count = 0
     for car in CARRIERS:
         _post(c, "/api/carriers", car)
@@ -216,10 +257,15 @@ def seed(reset):
     for flow in FLOWS:
         oid = owner_ids[flow["owner"]]
         recv_loc = loc_ids["RECV-01"]
+        wh_id = wh_ids.get(flow.get("source_warehouse"))
+        sup_id = sup_ids.get(flow.get("supplier"))
 
-        # 5.1 创建 ASN
+        # 5.1 创建 ASN（含单据类型/来源仓库/供应商/外部单号等）
         asn_body = _post(c, "/api/asns", {
             "code": flow["asn_code"], "owner_id": oid,
+            "doc_type": "采购", "external_no": flow["asn_code"] + "-EXT",
+            "order_source": "演示平台", "source_warehouse": wh_id,
+            "supplier_id": sup_id, "carrier_name": "顺丰速运",
             "lines": [{"product_id": product_ids[sku], "expected_qty": q}
                       for sku, q in flow["asn_lines"]],
         })
@@ -247,6 +293,10 @@ def seed(reset):
             cid = cust_ids[dn["customer"]]
             dn_body = _post(c, "/api/dns", {
                 "code": dn["code"], "owner_id": oid, "customer_id": cid,
+                "doc_type": "销售", "external_no": dn["code"] + "-EXT",
+                "order_source": "演示平台",
+                "source_warehouse": wh_ids.get(dn.get("source_warehouse")),
+                "carrier_name": "京东物流",
                 "lines": [{"product_id": product_ids[sku], "ordered_qty": q}
                           for sku, q in dn["lines"]],
             })

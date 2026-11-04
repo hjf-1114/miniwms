@@ -17,7 +17,7 @@ from flask import Blueprint, jsonify, request
 
 import constants as C
 from inventory_service import StockError, adjust_stock
-from main import get_db, request_payload
+from main import get_db, gen_doc_no, request_payload
 
 dn_bp = Blueprint("dn", __name__, url_prefix="/api/dns")
 
@@ -85,11 +85,19 @@ def create_dn():
     lines = payload.get("lines")
     note = str(payload.get("note") or "")
 
+    # 单据字段（M16）：单据类型/外部单号/订单来源/来源仓库/承运商/自定义字段
+    doc_type = str(payload.get("doc_type") or "").strip() or "销售"
+    external_no = str(payload.get("external_no") or "").strip()
+    order_source = str(payload.get("order_source") or "").strip()
+    source_warehouse = payload.get("source_warehouse")
+    carrier_name = str(payload.get("carrier_name") or "").strip()
+    extra1 = str(payload.get("extra1") or "").strip()
+    extra2 = str(payload.get("extra2") or "").strip()
+    extra3 = str(payload.get("extra3") or "").strip()
+
     errors = []
-    if not code:
-        errors.append("code 必填")
-    elif len(code) > 32:
-        errors.append("code 最长 32 字符")
+    if doc_type not in C.DN_DOC_TYPES:
+        errors.append(f"doc_type 只能是 {'/'.join(C.DN_DOC_TYPES)}")
     try:
         owner_id = int(owner_id)
     except (TypeError, ValueError):
@@ -113,10 +121,34 @@ def create_dn():
         if math.isnan(qty) or qty <= 0:
             return jsonify({"ok": False, "errors": [f"lines[{i}] ordered_qty 必须为正数"]}), 400
         parsed_lines.append((pid, qty))
+    # 同一物料在明细中不可重复（dn_line 唯一约束 (dn_id, product_id)）
+    dup = {pid for pid, _ in parsed_lines}
+    if len(dup) != len(parsed_lines):
+        return jsonify({"ok": False, "errors": ["同一物料在明细中出现多次，请合并数量"]}), 400
 
     db = get_db()
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "errors": [f"货主不存在: id={owner_id}"]}), 400
+
+    # 来源仓库（多仓库）：存在且启用
+    wh_code = None
+    if source_warehouse not in (None, "", 0):
+        try:
+            source_warehouse = int(source_warehouse)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "errors": ["source_warehouse 必须为整数"]}), 400
+        wh = db.execute("SELECT code, status FROM warehouse WHERE id = ?", (source_warehouse,)).fetchone()
+        if wh is None:
+            return jsonify({"ok": False, "errors": [f"来源仓库不存在: id={source_warehouse}"]}), 400
+        if wh["status"] != "active":
+            return jsonify({"ok": False, "errors": [f"来源仓库已停用: {wh['code']}"]}), 400
+        wh_code = wh["code"]
+
+    # 单号：留空则自动生成 DN-YYYYMMDD-NNN（英文开头 + 日期流水）
+    if not code:
+        code = gen_doc_no(db, "dn", "DN")
+    elif len(code) > 32:
+        return jsonify({"ok": False, "errors": ["code 最长 32 字符"]}), 400
     if db.execute("SELECT id FROM dn WHERE code = ?", (code,)).fetchone() is not None:
         return jsonify({"ok": False, "errors": [f"DN 编码已存在: {code}"]}), 409
 
@@ -143,9 +175,16 @@ def create_dn():
                 f"物料 id={pid} 的货主与 DN 货主不一致（多货主隔离）"
             ]}), 400
 
+    # 明细汇总：订单总数量 = Σ 订购数量，品类数 = 不同物料数
+    total_qty = round(sum(q for _, q in parsed_lines), 6)
+    category_count = len({pid for pid, _ in parsed_lines})
+
     cur = db.execute(
-        "INSERT INTO dn (code, owner_id, customer_id, note) VALUES (?, ?, ?, ?)",
-        (code, owner_id, customer_id, note),
+        """INSERT INTO dn (code, owner_id, customer_id, doc_type, external_no, order_source,
+               source_warehouse, carrier_name, total_qty, category_count, extra1, extra2, extra3, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (code, owner_id, customer_id, doc_type, external_no, order_source,
+         source_warehouse, carrier_name, total_qty, category_count, extra1, extra2, extra3, note),
     )
     dn_id = cur.lastrowid
     db.executemany(
@@ -154,7 +193,9 @@ def create_dn():
     )
     db.commit()
     dn = _load_dn(db, dn_id)
-    return jsonify({"ok": True, "dn": dict(dn),
+    body = dict(dn)
+    body["source_warehouse_code"] = wh_code
+    return jsonify({"ok": True, "dn": body,
                     "lines": [_dict_line(l) for l in _load_lines(db, dn_id)]}), 201
 
 
@@ -184,10 +225,12 @@ def list_dns():
     ).fetchone()["n"]
     rows = db.execute(
         f"""SELECT d.*, o.code AS owner_code, o.name AS owner_name,
-                   c.code AS customer_code, c.name AS customer_name
+                   c.code AS customer_code, c.name AS customer_name,
+                   w.code AS source_warehouse_code, w.name AS source_warehouse_name
             FROM dn d
             JOIN owner o ON o.id = d.owner_id
-            LEFT JOIN customer c ON c.id = d.customer_id {where_sql}
+            LEFT JOIN customer c ON c.id = d.customer_id
+            LEFT JOIN warehouse w ON w.id = d.source_warehouse {where_sql}
             ORDER BY d.id DESC LIMIT ? OFFSET ?""",
         params + [page_size, (page - 1) * page_size],
     ).fetchall()
@@ -206,6 +249,8 @@ def get_dn(dn_id):
     body["owner_code"], body["owner_name"] = (o["code"], o["name"]) if o else (None, None)
     c = db.execute("SELECT code, name FROM customer WHERE id = ?", (dn["customer_id"],)).fetchone()
     body["customer_code"], body["customer_name"] = (c["code"], c["name"]) if c else (None, None)
+    wh = db.execute("SELECT code, name FROM warehouse WHERE id = ?", (dn["source_warehouse"],)).fetchone()
+    body["source_warehouse_code"], body["source_warehouse_name"] = (wh["code"], wh["name"]) if wh else (None, None)
     return jsonify({"ok": True, "dn": body,
                     "lines": [_dict_line(l) for l in _load_lines(db, dn_id)],
                     "picks": [dict(p) for p in _load_picks(db, dn_id)]})

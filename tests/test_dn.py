@@ -34,6 +34,8 @@ class DnApiTest(unittest.TestCase):
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")
             conn.execute("DELETE FROM asn")
+            conn.execute("DELETE FROM supplier")
+            conn.execute("DELETE FROM warehouse")
             conn.execute("DELETE FROM product")
             conn.execute("DELETE FROM owner")
             conn.execute("DELETE FROM location")
@@ -78,11 +80,16 @@ class DnApiTest(unittest.TestCase):
             "code": code, "name": code, "owner_id": owner_id,
         }).get_json()["customer"]["id"]
 
-    def _mk_dn(self, owner_id, product_id, ordered=5, code="DN-001", customer_id=None):
+    def _mk_warehouse(self, code="WH1"):
+        return self.client.post(
+            "/api/warehouses", json={"code": code, "name": f"仓{code}"}
+        ).get_json()["warehouse"]["id"]
+
+    def _mk_dn(self, owner_id, product_id, ordered=5, code="DN-001", customer_id=None, **extra):
         if customer_id is None:
             customer_id = self._mk_customer(owner_id, code=f"C-{code}")
         resp = self.client.post("/api/dns", json={
-            "code": code, "owner_id": owner_id, "customer_id": customer_id,
+            "code": code, "owner_id": owner_id, "customer_id": customer_id, **extra,
             "lines": [{"product_id": product_id, "ordered_qty": ordered}],
         })
         self.assertEqual(resp.status_code, 201, resp.get_json())
@@ -167,6 +174,84 @@ class DnApiTest(unittest.TestCase):
         body = self.client.get(f"/api/dns/{body['dn']['id']}").get_json()
         self.assertEqual(body["dn"]["customer_code"], "C-INFO")
         self.assertEqual(body["dn"]["customer_name"], "C-INFO")
+
+    # ---------- M16 单据字段 / 自动单号 / 多仓库 ----------
+    def test_create_auto_code(self):
+        """单号留空 → 自动生成 DN-YYYYMMDD-001。"""
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        cid = self._mk_customer(oid)
+        resp = self.client.post("/api/dns", json={
+            "owner_id": oid, "customer_id": cid,
+            "lines": [{"product_id": pid, "ordered_qty": 1}]})
+        self.assertEqual(resp.status_code, 201)
+        self.assertRegex(resp.get_json()["dn"]["code"], r"^DN-\d{8}-001$")
+
+    def test_create_invalid_doc_type(self):
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        cid = self._mk_customer(oid)
+        resp = self.client.post("/api/dns", json={
+            "code": "DN-T", "owner_id": oid, "customer_id": cid,
+            "doc_type": "外星单",
+            "lines": [{"product_id": pid, "ordered_qty": 1}]})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("doc_type", str(resp.get_json()["errors"]))
+
+    def test_create_totals_and_category(self):
+        oid = self._mk_owner()
+        p1 = self._mk_product(oid, sku="P1")
+        p2 = self._mk_product(oid, sku="P2")
+        cid = self._mk_customer(oid, code="C-M")
+        resp = self.client.post("/api/dns", json={
+            "code": "DN-MULTI", "owner_id": oid, "customer_id": cid,
+            "lines": [
+                {"product_id": p1, "ordered_qty": 3},
+                {"product_id": p2, "ordered_qty": 5},
+            ],
+        })
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        d = resp.get_json()["dn"]
+        self.assertEqual(d["total_qty"], 8)
+        self.assertEqual(d["category_count"], 2)
+
+    def test_create_duplicate_product_rejected(self):
+        oid = self._mk_owner()
+        p1 = self._mk_product(oid, sku="P1")
+        cid = self._mk_customer(oid, code="C-DUP")
+        resp = self.client.post("/api/dns", json={
+            "code": "DN-DUP", "owner_id": oid, "customer_id": cid,
+            "lines": [
+                {"product_id": p1, "ordered_qty": 3},
+                {"product_id": p1, "ordered_qty": 2},
+            ],
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("合并", resp.get_json()["errors"][0])
+
+    def test_create_with_source_warehouse(self):
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        cid = self._mk_customer(oid)
+        wh = self._mk_warehouse("WH-DN")
+        body = self._mk_dn(oid, pid, code="DN-WH", customer_id=cid, source_warehouse=wh)
+        self.assertEqual(body["dn"]["source_warehouse_code"], "WH-DN")
+        # 详情也返回仓库信息
+        body = self.client.get(f"/api/dns/{body['dn']['id']}").get_json()
+        self.assertEqual(body["dn"]["source_warehouse_name"], "仓WH-DN")
+        # 不存在的仓库被拒
+        resp = self.client.post("/api/dns", json={
+            "code": "DN-WHX", "owner_id": oid, "customer_id": cid,
+            "source_warehouse": 99999,
+            "lines": [{"product_id": pid, "ordered_qty": 1}]})
+        self.assertEqual(resp.status_code, 400)
+        # 停用仓库被拒
+        self.client.put(f"/api/warehouses/{wh}", json={"status": "inactive"})
+        resp = self.client.post("/api/dns", json={
+            "code": "DN-WHY", "owner_id": oid, "customer_id": cid,
+            "source_warehouse": wh,
+            "lines": [{"product_id": pid, "ordered_qty": 1}]})
+        self.assertEqual(resp.status_code, 400)
 
     # ---------- 拣货 ----------
     def test_pick_flow_only_allocates(self):

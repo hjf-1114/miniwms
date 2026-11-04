@@ -16,7 +16,7 @@ from flask import Blueprint, jsonify, request
 
 import constants as C
 from inventory_service import StockError, stock_move, stock_up
-from main import get_db, request_payload
+from main import get_db, gen_doc_no, request_payload
 
 asn_bp = Blueprint("asn", __name__, url_prefix="/api/asns")
 
@@ -76,11 +76,21 @@ def create_asn():
     lines = payload.get("lines")
     note = str(payload.get("note") or "")
 
+    # 单据字段（M16）：单据类型/外部单号/订单来源/来源仓库/供应商/客户名称/承运商/自定义字段
+    doc_type = str(payload.get("doc_type") or "").strip() or "采购"
+    external_no = str(payload.get("external_no") or "").strip()
+    order_source = str(payload.get("order_source") or "").strip()
+    source_warehouse = payload.get("source_warehouse")
+    supplier_id = payload.get("supplier_id")
+    customer_name = str(payload.get("customer_name") or "").strip()
+    carrier_name = str(payload.get("carrier_name") or "").strip()
+    extra1 = str(payload.get("extra1") or "").strip()
+    extra2 = str(payload.get("extra2") or "").strip()
+    extra3 = str(payload.get("extra3") or "").strip()
+
     errors = []
-    if not code:
-        errors.append("code 必填")
-    elif len(code) > 32:
-        errors.append("code 最长 32 字符")
+    if doc_type not in C.ASN_DOC_TYPES:
+        errors.append(f"doc_type 只能是 {'/'.join(C.ASN_DOC_TYPES)}")
     try:
         owner_id = int(owner_id)
     except (TypeError, ValueError):
@@ -100,10 +110,51 @@ def create_asn():
         if math.isnan(qty) or qty <= 0:
             return jsonify({"ok": False, "errors": [f"lines[{i}] expected_qty 必须为正数"]}), 400
         parsed_lines.append((pid, qty))
+    # 同一物料在明细中不可重复（asn_line 唯一约束 (asn_id, product_id)）
+    dup = {pid for pid, _ in parsed_lines}
+    if len(dup) != len(parsed_lines):
+        return jsonify({"ok": False, "errors": ["同一物料在明细中出现多次，请合并数量"]}), 400
 
     db = get_db()
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "errors": [f"货主不存在: id={owner_id}"]}), 400
+
+    # 来源仓库（多仓库）：存在且启用
+    wh_code = None
+    if source_warehouse not in (None, "", 0):
+        try:
+            source_warehouse = int(source_warehouse)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "errors": ["source_warehouse 必须为整数"]}), 400
+        wh = db.execute("SELECT code, status FROM warehouse WHERE id = ?", (source_warehouse,)).fetchone()
+        if wh is None:
+            return jsonify({"ok": False, "errors": [f"来源仓库不存在: id={source_warehouse}"]}), 400
+        if wh["status"] != "active":
+            return jsonify({"ok": False, "errors": [f"来源仓库已停用: {wh['code']}"]}), 400
+        wh_code = wh["code"]
+
+    # 供应商（多货主隔离：必须属本货主）；同时快照名称/联系人/电话/地址
+    sup = None
+    if supplier_id not in (None, "", 0):
+        try:
+            supplier_id = int(supplier_id)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "errors": ["supplier_id 必须为整数"]}), 400
+        sup = db.execute(
+            "SELECT * FROM supplier WHERE id = ?", (supplier_id,)
+        ).fetchone()
+        if sup is None:
+            return jsonify({"ok": False, "errors": [f"供应商不存在: id={supplier_id}"]}), 400
+        if sup["owner_id"] != owner_id:
+            return jsonify({"ok": False, "errors": [
+                f"供应商 {sup['name']} 不属于该货主（多货主隔离）"
+            ]}), 400
+
+    # 单号：留空则自动生成 ASN-YYYYMMDD-NNN（英文开头 + 日期流水）
+    if not code:
+        code = gen_doc_no(db, "asn", "ASN")
+    elif len(code) > 32:
+        return jsonify({"ok": False, "errors": ["code 最长 32 字符"]}), 400
     if db.execute("SELECT id FROM asn WHERE code = ?", (code,)).fetchone() is not None:
         return jsonify({"ok": False, "errors": [f"ASN 编码已存在: {code}"]}), 409
 
@@ -119,9 +170,21 @@ def create_asn():
                 f"物料 id={pid} 的货主与 ASN 货主不一致（多货主隔离）"
             ]}), 400
 
+    # 明细汇总：订单总数量 = Σ 预期数量，品类数 = 不同物料数
+    total_qty = round(sum(q for _, q in parsed_lines), 6)
+    category_count = len({pid for pid, _ in parsed_lines})
+
     cur = db.execute(
-        "INSERT INTO asn (code, owner_id, note) VALUES (?, ?, ?)",
-        (code, owner_id, note),
+        """INSERT INTO asn (code, owner_id, doc_type, external_no, order_source,
+               source_warehouse, supplier_id, customer_name, carrier_name,
+               supplier_name, supplier_contact, supplier_phone, supplier_address,
+               total_qty, category_count, extra1, extra2, extra3, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (code, owner_id, doc_type, external_no, order_source, source_warehouse,
+         supplier_id, customer_name, carrier_name,
+         sup["name"] if sup else "", sup["contact"] if sup else "",
+         sup["phone"] if sup else "", sup["address"] if sup else "",
+         total_qty, category_count, extra1, extra2, extra3, note),
     )
     asn_id = cur.lastrowid
     db.executemany(
@@ -131,7 +194,9 @@ def create_asn():
     db.commit()
     asn = _load_asn(db, asn_id)
     lines_out = [_dict_line(l) for l in _load_lines(db, asn_id)]
-    return jsonify({"ok": True, "asn": dict(asn), "lines": lines_out}), 201
+    body = dict(asn)
+    body["source_warehouse_code"] = wh_code
+    return jsonify({"ok": True, "asn": body, "lines": lines_out}), 201
 
 
 def _dict_line(l):
@@ -166,8 +231,13 @@ def list_asns():
         f"SELECT COUNT(*) AS n FROM asn a {where_sql}", params
     ).fetchone()["n"]
     rows = db.execute(
-        f"""SELECT a.*, o.code AS owner_code, o.name AS owner_name
-            FROM asn a JOIN owner o ON o.id = a.owner_id {where_sql}
+        f"""SELECT a.*, o.code AS owner_code, o.name AS owner_name,
+                   w.code AS source_warehouse_code, w.name AS source_warehouse_name,
+                   s.code AS supplier_code, s.name AS supplier_name
+            FROM asn a
+            JOIN owner o ON o.id = a.owner_id
+            LEFT JOIN warehouse w ON w.id = a.source_warehouse
+            LEFT JOIN supplier s ON s.id = a.supplier_id {where_sql}
             ORDER BY a.id DESC LIMIT ? OFFSET ?""",
         params + [page_size, (page - 1) * page_size],
     ).fetchall()
@@ -182,8 +252,12 @@ def get_asn(asn_id):
     if asn is None:
         return jsonify({"ok": False, "error": "ASN 不存在"}), 404
     o = db.execute("SELECT code, name FROM owner WHERE id = ?", (asn["owner_id"],)).fetchone()
+    wh = db.execute("SELECT code, name FROM warehouse WHERE id = ?", (asn["source_warehouse"],)).fetchone()
+    sp = db.execute("SELECT code, name FROM supplier WHERE id = ?", (asn["supplier_id"],)).fetchone()
     body = dict(asn)
     body["owner_code"], body["owner_name"] = (o["code"], o["name"]) if o else (None, None)
+    body["source_warehouse_code"], body["source_warehouse_name"] = (wh["code"], wh["name"]) if wh else (None, None)
+    body["supplier_code"], body["supplier_name"] = (sp["code"], sp["name"]) if sp else (None, None)
     return jsonify({"ok": True, "asn": body,
                     "lines": [_dict_line(l) for l in _load_lines(db, asn_id)]})
 
