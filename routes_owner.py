@@ -66,6 +66,12 @@ def _validate_owner_payload(payload, *, partial=False):
         if key in payload:
             cleaned[key] = str(payload.get(key) or "").strip()
 
+    # M15 合作起止时间
+    if "start_date" in payload:
+        cleaned["start_date"] = str(payload.get("start_date") or "").strip()
+    if "end_date" in payload:
+        cleaned["end_date"] = str(payload.get("end_date") or "").strip()
+
     return errors, cleaned
 
 
@@ -91,10 +97,10 @@ def create_owner():
     cur = db.execute(
         """INSERT INTO owner (code, name, contact, phone, email, address, status, note,
                               province, city, district, backup_address, authorized_warehouse,
-                              business_scope, extra1, extra2)
+                              business_scope, start_date, end_date, extra1, extra2)
            VALUES (:code, :name, :contact, :phone, :email, :address, :status, :note,
                    :province, :city, :district, :backup_address, :authorized_warehouse,
-                   :business_scope, :extra1, :extra2)""",
+                   :business_scope, :start_date, :end_date, :extra1, :extra2)""",
         {
             **cleaned,
             "contact": cleaned.get("contact", ""),
@@ -109,6 +115,8 @@ def create_owner():
             "backup_address": cleaned.get("backup_address", ""),
             "authorized_warehouse": cleaned.get("authorized_warehouse", ""),
             "business_scope": cleaned.get("business_scope", ""),
+            "start_date": cleaned.get("start_date", ""),
+            "end_date": cleaned.get("end_date", ""),
             "extra1": cleaned.get("extra1", ""),
             "extra2": cleaned.get("extra2", ""),
         },

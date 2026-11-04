@@ -39,6 +39,8 @@ function modalFieldHtml(f, val) {
       `<select name="province"><option value="">省/直辖市</option></select>` +
       `<select name="city"><option value="">市</option></select>` +
       `<input name="district" placeholder="区/县" value=""></div>`;
+  } else if (f.type === "date") {
+    control = `<input type="date" name="${f.name}" value="${esc(val)}">`;
   } else {
     const typ = f.type === "number" ? "number" : (f.type === "email" ? "email" : "text");
     const extra = f.type === "number" ? 'step="0.01"' : "";

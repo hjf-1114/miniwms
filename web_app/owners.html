@@ -66,6 +66,8 @@ const FIELDS = [
   { name: "business_scope", label: "经营范围", full: true },
   { name: "extra1", label: "备用字段1" },
   { name: "extra2", label: "备用字段2" },
+  { name: "start_date", label: "合作起始", type: "date", nullable: true },
+  { name: "end_date", label: "合作截止", type: "date", nullable: true },
   { name: "note", label: "备注", type: "textarea", full: true },
 ];
 
@@ -138,8 +140,8 @@ async function manageOwnerCerts(id) {
           <input id="cType" placeholder="证照类型" style="width:120px">
           <input id="cNo" placeholder="证号" style="width:120px">
           <input id="cIssuer" placeholder="发证机构" style="flex:1">
-          <input id="cFrom" placeholder="起始(YYYY-MM-DD)" style="width:120px">
-          <input id="cTo" placeholder="截止(YYYY-MM-DD)" style="width:120px">
+          <input id="cFrom" type="date" placeholder="起始" style="width:140px">
+          <input id="cTo" type="date" placeholder="截止" style="width:140px">
           <button class="btn sm" id="cAdd">+ 添加</button>
         </div>
       </div>

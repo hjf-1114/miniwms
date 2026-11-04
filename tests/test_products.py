@@ -286,7 +286,7 @@ class ProductApiTest(unittest.TestCase):
         pid = self._create().get_json()["product"]["id"]
         r = self.client.post(
             f"/api/products/{pid}/packages",
-            json={"pkg_level": "主箱", "length_cm": 10, "width_cm": 20, "height_cm": 5, "weight_kg": 2, "qty_per_package": 50},
+            json={"pkg_level": "1级", "length_cm": 10, "width_cm": 20, "height_cm": 5, "weight_kg": 2, "qty_per_package": 50},
         )
         self.assertEqual(r.status_code, 201)
         pkg = r.get_json()["package"]
@@ -301,6 +301,74 @@ class ProductApiTest(unittest.TestCase):
         pid = self._create().get_json()["product"]["id"]
         r = self.client.post(f"/api/products/{pid}/packages", json={"length_cm": -1})
         self.assertEqual(r.status_code, 400)
+
+    # ---------- M15 物料体积（手填/自动换算） ----------
+    def test_volume_autocalc_from_dims(self):
+        resp = self._create(length_cm=10, width_cm=20, height_cm=5)
+        self.assertEqual(resp.status_code, 201)
+        p = resp.get_json()["product"]
+        self.assertAlmostEqual(p["volume"], 10 * 20 * 5, places=4)  # cm³ 自动换算
+
+    def test_volume_handfilled_overrides(self):
+        resp = self._create(length_cm=10, width_cm=20, height_cm=5, volume=999)
+        self.assertEqual(resp.status_code, 201)
+        self.assertAlmostEqual(resp.get_json()["product"]["volume"], 999)  # 手填优先
+
+    def test_update_dims_recalculates_volume(self):
+        pid = self._create().get_json()["product"]["id"]
+        # 改长宽高 → 体积按新值重算
+        resp = self.client.put(f"/api/products/{pid}", json={"length_cm": 2, "width_cm": 3, "height_cm": 4})
+        self.assertEqual(resp.status_code, 200)
+        self.assertAlmostEqual(resp.get_json()["product"]["volume"], 2 * 3 * 4, places=4)
+        # 显式给体积 → 用之
+        resp2 = self.client.put(f"/api/products/{pid}", json={"volume": 7.5})
+        self.assertEqual(resp2.status_code, 200)
+        self.assertAlmostEqual(resp2.get_json()["product"]["volume"], 7.5)
+
+    # ---------- M15 条码可编辑 ----------
+    def test_barcode_update(self):
+        pid = self._create().get_json()["product"]["id"]
+        b = self.client.post(f"/api/products/{pid}/barcodes", json={"barcode": "BC1"}).get_json()["barcode"]
+        resp = self.client.put(f"/api/products/{pid}/barcodes/{b['id']}", json={"barcode": "BC1-NEW", "is_primary": True})
+        self.assertEqual(resp.status_code, 200)
+        up = resp.get_json()["barcode"]
+        self.assertEqual(up["barcode"], "BC1-NEW")
+        self.assertEqual(up["is_primary"], 1)
+        # 设为其他主条码时，旧主自动取消
+        b2 = self.client.post(f"/api/products/{pid}/barcodes", json={"barcode": "BC2", "is_primary": True}).get_json()["barcode"]
+        self.client.put(f"/api/products/{pid}/barcodes/{b['id']}", json={"barcode": "BC1-NEW", "is_primary": True})
+        lst = self.client.get(f"/api/products/{pid}/barcodes").get_json()["barcodes"]
+        prim = [x for x in lst if x["is_primary"]]
+        self.assertEqual(len(prim), 1)
+        self.assertEqual(prim[0]["barcode"], "BC1-NEW")
+
+    def test_barcode_update_missing(self):
+        pid = self._create().get_json()["product"]["id"]
+        b = self.client.post(f"/api/products/{pid}/barcodes", json={"barcode": "BC1"}).get_json()["barcode"]
+        self.assertEqual(self.client.put(f"/api/products/{pid}/barcodes/{b['id']}", json={}).status_code, 400)
+
+    # ---------- M15 包装可编辑 + 等级 1-6 ----------
+    def test_package_update_and_level(self):
+        pid = self._create().get_json()["product"]["id"]
+        q = self.client.post(
+            f"/api/products/{pid}/packages",
+            json={"pkg_level": "1级", "length_cm": 10, "width_cm": 20, "height_cm": 5, "weight_kg": 2, "qty_per_package": 50},
+        ).get_json()["package"]
+        # 改等级与重量
+        resp = self.client.put(f"/api/products/{pid}/packages/{q['id']}",
+                               json={"pkg_level": "3级", "weight_kg": 3.5})
+        self.assertEqual(resp.status_code, 200)
+        up = resp.get_json()["package"]
+        self.assertEqual(up["pkg_level"], "3级")
+        self.assertEqual(up["weight_kg"], 3.5)
+        self.assertAlmostEqual(up["volume"], 10 * 20 * 5, places=4)  # 长宽高未变，体积沿用
+
+    def test_package_level_validation(self):
+        pid = self._create().get_json()["product"]["id"]
+        r = self.client.post(f"/api/products/{pid}/packages", json={"pkg_level": "特大专属", "length_cm": 1})
+        self.assertEqual(r.status_code, 400)
+        r2 = self.client.put(f"/api/products/{pid}/packages/9999", json={"pkg_level": "2级"})
+        self.assertEqual(r2.status_code, 404)
 
 
 if __name__ == "__main__":

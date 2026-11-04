@@ -74,6 +74,18 @@ CUSTOMERS = [
     ("C-JD", "京东渠道客户", "OW-JD", "郑采购", "13300004444", "北京市朝阳区建国路 88 号", "jd@buyer-demo.com", "普通", "全国"),
 ]
 
+# 承运商（全系统共享的物流资源目录；后续发快递/零担/整车等业务的基础参照）
+CARRIERS = [
+    {"code": "SF", "name": "顺丰速运", "carrier_type": "快递", "contact": "顺丰客服", "phone": "95338", "api_code": "SF_EXPRESS", "address": "全国"},
+    {"code": "JD", "name": "京东物流", "carrier_type": "快递", "contact": "京东客服", "phone": "950616", "api_code": "JD_LOGISTICS", "address": "全国"},
+    {"code": "JT", "name": "跨越速运", "carrier_type": "快递", "contact": "跨越客服", "phone": "95324", "api_code": "KYE", "address": "全国"},
+    {"code": "HLL", "name": "货拉拉", "carrier_type": "整车", "contact": "货拉拉", "phone": "10103636", "api_code": "HUOLALA", "address": "全国"},
+    {"code": "DB", "name": "德邦快递", "carrier_type": "零担", "contact": "德邦客服", "phone": "95353", "api_code": "DEPPON", "address": "全国"},
+    {"code": "ZTO", "name": "中通快递", "carrier_type": "快递", "contact": "中通客服", "phone": "95311", "api_code": "ZTO", "address": "全国"},
+    {"code": "YTO", "name": "圆通速递", "carrier_type": "快递", "contact": "圆通客服", "phone": "95554", "api_code": "YTO", "address": "全国"},
+    {"code": "ANE", "name": "安能物流", "carrier_type": "零担", "contact": "安能客服", "phone": "400-104-0088", "api_code": "ANE", "address": "全国"},
+]
+
 # 收货上架计划：sku -> 上架目标库位（按 sku 归入对应品类存储位）
 PUTAWAY_PLAN = {
     "SKU-001": "A-01-01",
@@ -125,7 +137,7 @@ def _reset(db_path):
         conn.execute("PRAGMA foreign_keys = OFF")
         for t in ("dn_pick", "dn_line", "dn", "asn_line", "asn",
                   "stock_movement", "stock", "customer", "product",
-                  "location", "owner"):
+                  "location", "owner", "carrier"):
             conn.execute(f"DELETE FROM {t}")
         conn.commit()
     finally:
@@ -191,6 +203,13 @@ def seed(reset):
         })
         cust_ids[code] = body["customer"]["id"]
     print(f"  客户：{len(cust_ids)} 个（含等级/地区/邮箱）")
+
+    # 4.5) 承运商（全系统共享的物流资源目录）
+    carrier_count = 0
+    for car in CARRIERS:
+        _post(c, "/api/carriers", car)
+        carrier_count += 1
+    print(f"  承运商：{carrier_count} 个（顺丰/京东/跨越/货拉拉/德邦/中通/圆通/安能）")
 
     # 5) 跑通 收货上架 → 拣货发货 动线
     flow_count = 0

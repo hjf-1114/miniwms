@@ -181,6 +181,22 @@ class OwnerApiTest(unittest.TestCase):
         r = self.client.get("/api/owners/9999/certs")
         self.assertEqual(r.status_code, 404)
 
+    # ---------- M15 合作起止时间 ----------
+    def test_create_accepts_start_end_date(self):
+        resp = self._create(start_date="2026-01-01", end_date="2026-12-31")
+        self.assertEqual(resp.status_code, 201)
+        o = resp.get_json()["owner"]
+        self.assertEqual(o["start_date"], "2026-01-01")
+        self.assertEqual(o["end_date"], "2026-12-31")
+
+    def test_update_start_end_date(self):
+        oid = self._create().get_json()["owner"]["id"]
+        resp = self.client.put(f"/api/owners/{oid}", json={"start_date": "2025-06-01", "end_date": ""})
+        self.assertEqual(resp.status_code, 200)
+        o = resp.get_json()["owner"]
+        self.assertEqual(o["start_date"], "2025-06-01")
+        self.assertEqual(o["end_date"], "")  # 清空截止时间
+
 
 if __name__ == "__main__":
     unittest.main()

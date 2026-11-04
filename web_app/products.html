@@ -49,6 +49,16 @@
 let page = 1, pageSize = 20;
 let ownerOptions = [{ value: "", label: "自营" }];
 
+// 体积：未手填但填了长宽高时，前端先做 cm³ 估算（后端为权威口径，会再算一次）
+function autoVolume(p) {
+  if (p.volume === "" || p.volume === null || p.volume === undefined) {
+    if (p.length_cm && p.width_cm && p.height_cm) {
+      p.volume = Math.round(Number(p.length_cm) * Number(p.width_cm) * Number(p.height_cm) * 10000) / 10000;
+    }
+  }
+  return p;
+}
+
 function productFields() {
   const yesno = [{ value: 0, label: "否" }, { value: 1, label: "是" }];
   return [
@@ -85,6 +95,7 @@ function productFields() {
     { name: "length_cm", label: "长(cm)", type: "number" },
     { name: "width_cm", label: "宽(cm)", type: "number" },
     { name: "height_cm", label: "高(cm)", type: "number" },
+    { name: "volume", label: "体积(cm³)", type: "number" },
     { name: "shelf_life_days", label: "保质期(天)", type: "number" },
     { name: "purchase_price", label: "采购价", type: "number" },
     { name: "sale_price", label: "销售价", type: "number" },
@@ -140,7 +151,7 @@ function openCreate() {
   openForm({
     title: "新建物料", submitText: "创建", width: 760, fields: productFields(),
     onSubmit: async (p) => {
-      await api("POST", "/api/products", p);
+      await api("POST", "/api/products", autoVolume(p));
       showMsg(document.getElementById("msg"), "创建成功", "success");
       load();
     },
@@ -152,7 +163,7 @@ async function openEdit(id) {
   openForm({
     title: "编辑物料", submitText: "保存", width: 760, fields: productFields(), values: data.product,
     onSubmit: async (p) => {
-      await api("PUT", "/api/products/" + id, p);
+      await api("PUT", "/api/products/" + id, autoVolume(p));
       showMsg(document.getElementById("msg"), "已保存", "success");
       load();
     },
@@ -186,7 +197,10 @@ async function manageProductAttrs(id) {
           <tbody id="pkgBody"></tbody>
         </table></div>
         <div class="toolbar" style="margin-top:8px">
-          <input id="pkLevel" placeholder="层级" value="主箱" style="width:110px">
+          <select id="pkLevel" style="width:110px">
+            <option value="1级">1级</option><option value="2级">2级</option><option value="3级">3级</option>
+            <option value="4级">4级</option><option value="5级">5级</option><option value="6级">6级</option>
+          </select>
           <input id="pkL" placeholder="长" type="number" step="0.01" style="width:64px">
           <input id="pkW" placeholder="宽" type="number" step="0.01" style="width:64px">
           <input id="pkH" placeholder="高" type="number" step="0.01" style="width:64px">
@@ -210,7 +224,11 @@ async function manageProductAttrs(id) {
     const d = await api("GET", `/api/products/${id}/barcodes`);
     bcBody.innerHTML = d.barcodes.map((b) =>
       `<tr><td>${esc(b.barcode)}</td><td>${b.is_primary ? "★" : ""}</td>` +
-      `<td><button class="btn danger sm" data-delbc="${b.id}">删</button></td></tr>`).join("");
+      `<td><button class="btn secondary sm" data-editbc="${b.id}" data-bc="${esc(b.barcode)}" data-prim="${b.is_primary}">编辑</button> ` +
+      `<button class="btn danger sm" data-delbc="${b.id}">删</button></td></tr>`).join("");
+    bcBody.querySelectorAll("[data-editbc]").forEach((btn) => btn.addEventListener("click", () => {
+      editBarcode(Number(btn.dataset.editbc), btn.dataset.bc, btn.dataset.prim === "1");
+    }));
     bcBody.querySelectorAll("[data-delbc]").forEach((btn) => btn.addEventListener("click", async () => {
       await api("DELETE", `/api/products/${id}/barcodes/${btn.dataset.delbc}`); refreshBc();
     }));
@@ -220,7 +238,12 @@ async function manageProductAttrs(id) {
     pkgBody.innerHTML = d.packages.map((q) =>
       `<tr><td>${esc(q.pkg_level)}</td><td>${q.length_cm}</td><td>${q.width_cm}</td><td>${q.height_cm}</td>` +
       `<td>${q.volume}</td><td>${q.weight_kg}</td><td>${q.qty_per_package}</td>` +
-      `<td><button class="btn danger sm" data-delpk="${q.id}">删</button></td></tr>`).join("");
+      `<td><button class="btn secondary sm" data-editpk="${q.id}">编辑</button> ` +
+      `<button class="btn danger sm" data-delpk="${q.id}">删</button></td></tr>`).join("");
+    pkgBody.querySelectorAll("[data-editpk]").forEach((btn) => btn.addEventListener("click", () => {
+      const q = d.packages.find((x) => String(x.id) === btn.dataset.editpk);
+      editPackage(q.id, q);
+    }));
     pkgBody.querySelectorAll("[data-delpk]").forEach((btn) => btn.addEventListener("click", async () => {
       await api("DELETE", `/api/products/${id}/packages/${btn.dataset.delpk}`); refreshPkg();
     }));
@@ -246,6 +269,41 @@ async function manageProductAttrs(id) {
     ["#pkL", "#pkW", "#pkH", "#pkWt", "#pkQty"].forEach((s) => { ov.querySelector(s).value = ""; });
     refreshPkg();
   });
+  async function editBarcode(bid, curVal, curPrim) {
+    openForm({
+      title: "编辑条码", submitText: "保存", width: 420,
+      fields: [
+        { name: "barcode", label: "条码 *", required: true },
+        { name: "is_primary", label: "设为主条码", type: "select",
+          options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+      ],
+      values: { barcode: curVal, is_primary: curPrim ? 1 : 0 },
+      onSubmit: async (p) => {
+        await api("PUT", `/api/products/${id}/barcodes/${bid}`,
+          { barcode: p.barcode, is_primary: p.is_primary ? 1 : 0 });
+        refreshBc();
+      },
+    });
+  }
+  async function editPackage(pkid, pkg) {
+    openForm({
+      title: "编辑包装层级", submitText: "保存", width: 560,
+      fields: [
+        { name: "pkg_level", label: "等级", type: "select",
+          options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: `${n}级`, label: `${n}级` })) },
+        { name: "length_cm", label: "长(cm)", type: "number" },
+        { name: "width_cm", label: "宽(cm)", type: "number" },
+        { name: "height_cm", label: "高(cm)", type: "number" },
+        { name: "weight_kg", label: "重(kg)", type: "number" },
+        { name: "qty_per_package", label: "每箱数量", type: "number" },
+      ],
+      values: pkg,
+      onSubmit: async (p) => {
+        await api("PUT", `/api/products/${id}/packages/${pkid}`, p);
+        refreshPkg();
+      },
+    });
+  }
   await refreshBc();
   await refreshPkg();
 }

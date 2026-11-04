@@ -92,6 +92,8 @@ def init_db():
                 phone       TEXT    NOT NULL DEFAULT '',
                 email       TEXT    NOT NULL DEFAULT '',
                 address     TEXT    NOT NULL DEFAULT '',
+                start_date  TEXT    NOT NULL DEFAULT '',
+                end_date    TEXT    NOT NULL DEFAULT '',
                 status      TEXT    NOT NULL DEFAULT 'active',
                 note        TEXT    NOT NULL DEFAULT '',
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -111,6 +113,7 @@ def init_db():
                 length_cm       REAL    NOT NULL DEFAULT 0,
                 width_cm        REAL    NOT NULL DEFAULT 0,
                 height_cm       REAL    NOT NULL DEFAULT 0,
+                volume          REAL    NOT NULL DEFAULT 0,
                 shelf_life_days INTEGER NOT NULL DEFAULT 0,
                 purchase_price  REAL    NOT NULL DEFAULT 0,
                 sale_price      REAL    NOT NULL DEFAULT 0,
@@ -311,6 +314,8 @@ def init_db():
                 ("backup_address", "ALTER TABLE owner ADD COLUMN backup_address TEXT NOT NULL DEFAULT ''"),
                 ("authorized_warehouse", "ALTER TABLE owner ADD COLUMN authorized_warehouse TEXT NOT NULL DEFAULT ''"),
                 ("business_scope", "ALTER TABLE owner ADD COLUMN business_scope TEXT NOT NULL DEFAULT ''"),
+                ("start_date", "ALTER TABLE owner ADD COLUMN start_date TEXT NOT NULL DEFAULT ''"),
+                ("end_date", "ALTER TABLE owner ADD COLUMN end_date TEXT NOT NULL DEFAULT ''"),
                 ("extra1", "ALTER TABLE owner ADD COLUMN extra1 TEXT NOT NULL DEFAULT ''"),
                 ("extra2", "ALTER TABLE owner ADD COLUMN extra2 TEXT NOT NULL DEFAULT ''"),
             ):
@@ -397,6 +402,10 @@ def init_db():
             ):
                 if col not in prod_cols:
                     conn.execute(ddl)
+        # M15 物料体积（可手填；未填则按长宽高自动换算 cm³）
+        if "product" in tables:
+            if "volume" not in {r[1] for r in conn.execute("PRAGMA table_info(product)")}:
+                conn.execute("ALTER TABLE product ADD COLUMN volume REAL NOT NULL DEFAULT 0")
         # M10 物料条码/包装子表（多条码扫码、多层级包装规格；新库 CREATE IF NOT EXISTS 自带，旧库执行一次）
         conn.executescript(
             """

@@ -13,6 +13,7 @@ from main import get_db, request_payload
 product_bp = Blueprint("product", __name__, url_prefix="/api/products")
 
 VALID_STATUS = ("active", "inactive")
+VALID_PKG_LEVELS = ("1级", "2级", "3级", "4级", "5级", "6级")
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
@@ -82,6 +83,18 @@ def _validate_product_payload(payload, *, partial=False):
                 errors.append(f"{key} 不能为负数")
             else:
                 cleaned[key] = val
+
+    # 体积：显式填写则用之；否则在 create/update 中按长宽高自动换算（cm³）
+    if has("volume"):
+        try:
+            val = float(payload.get("volume"))
+        except (TypeError, ValueError):
+            errors.append("volume 必须为数字")
+        else:
+            if math.isnan(val) or val < 0:
+                errors.append("volume 不能为负数")
+            else:
+                cleaned["volume"] = val
 
     if has("shelf_life_days"):
         try:
@@ -188,6 +201,13 @@ def create_product():
     if owner_err:
         return jsonify({"ok": False, "errors": [owner_err]}), 400
 
+    # 体积：未显式填写则按长宽高自动换算 cm³（长×宽×高）
+    if "volume" not in cleaned:
+        l = cleaned.get("length_cm", 0) or 0
+        w = cleaned.get("width_cm", 0) or 0
+        h = cleaned.get("height_cm", 0) or 0
+        cleaned["volume"] = round(l * w * h, 4) if (l and w and h) else 0.0
+
     # 未显式提供的字段落默认值（与建表 DDL 一致）
     params = {
         "sku": cleaned["sku"],
@@ -201,6 +221,7 @@ def create_product():
         "length_cm": cleaned.get("length_cm", 0),
         "width_cm": cleaned.get("width_cm", 0),
         "height_cm": cleaned.get("height_cm", 0),
+        "volume": cleaned["volume"],
         "shelf_life_days": cleaned.get("shelf_life_days", 0),
         "purchase_price": cleaned.get("purchase_price", 0),
         "sale_price": cleaned.get("sale_price", 0),
@@ -235,7 +256,7 @@ def create_product():
     cur = db.execute(
         """
         INSERT INTO product (sku, name, category, unit, barcode, brand, spec,
-                             weight_kg, length_cm, width_cm, height_cm, shelf_life_days,
+                             weight_kg, length_cm, width_cm, height_cm, volume, shelf_life_days,
                              purchase_price, sale_price, stock_qty, min_stock, status, note, owner_id,
                              article_no, category_l1, category_l2, category_l3, category_l4,
                              product_type, origin, business_scope, reg_cert_no, registrant,
@@ -243,7 +264,7 @@ def create_product():
                              temp_range, humidity_range, hazard_type, is_serial, is_shelf_control,
                              extra1, extra2, extra3)
         VALUES (:sku, :name, :category, :unit, :barcode, :brand, :spec,
-                :weight_kg, :length_cm, :width_cm, :height_cm, :shelf_life_days,
+                :weight_kg, :length_cm, :width_cm, :height_cm, :volume, :shelf_life_days,
                 :purchase_price, :sale_price, :stock_qty, :min_stock, :status, :note, :owner_id,
                 :article_no, :category_l1, :category_l2, :category_l3, :category_l4,
                 :product_type, :origin, :business_scope, :reg_cert_no, :registrant,
@@ -339,6 +360,19 @@ def update_product(product_id):
         if owner_err:
             return jsonify({"ok": False, "errors": [owner_err]}), 400
 
+    # 体积联动：改了长宽高且无显式体积时，按新值重算；都没动则保持原值
+    if "volume" not in cleaned and any(
+        k in cleaned for k in ("length_cm", "width_cm", "height_cm")
+    ):
+        row0 = db.execute(
+            "SELECT length_cm, width_cm, height_cm, volume FROM product WHERE id = ?",
+            (product_id,),
+        ).fetchone()
+        l = cleaned.get("length_cm", row0["length_cm"]) or 0
+        w = cleaned.get("width_cm", row0["width_cm"]) or 0
+        h = cleaned.get("height_cm", row0["height_cm"]) or 0
+        cleaned["volume"] = round(l * w * h, 4) if (l and w and h) else row0["volume"]
+
     set_sql = ", ".join(f"{k} = :{k}" for k in cleaned)
     cleaned["id"] = product_id
     db.execute(
@@ -411,6 +445,30 @@ def delete_product_barcode(product_id, barcode_id):
     return jsonify({"ok": True})
 
 
+@product_bp.route("/<int:product_id>/barcodes/<int:barcode_id>", methods=["PUT"])
+def update_product_barcode(product_id, barcode_id):
+    db = get_db()
+    if db.execute(
+        "SELECT id FROM product_barcode WHERE id = ? AND product_id = ?",
+        (barcode_id, product_id),
+    ).fetchone() is None:
+        return jsonify({"ok": False, "error": "条码不存在"}), 404
+    payload = request_payload()
+    barcode = str(payload.get("barcode") or "").strip()
+    if not barcode:
+        return jsonify({"ok": False, "errors": ["barcode 必填"]}), 400
+    is_primary = 1 if payload.get("is_primary") else 0
+    if is_primary:
+        db.execute("UPDATE product_barcode SET is_primary = 0 WHERE product_id = ?", (product_id,))
+    db.execute(
+        "UPDATE product_barcode SET barcode = ?, is_primary = ? WHERE id = ?",
+        (barcode, is_primary, barcode_id),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM product_barcode WHERE id = ?", (barcode_id,)).fetchone()
+    return jsonify({"ok": True, "barcode": dict(row)})
+
+
 # ── M10 物料包装层级（多层级规格：主箱/内箱/中箱，含长宽高体积重量）──
 @product_bp.route("/<int:product_id>/packages", methods=["GET"])
 def list_product_packages(product_id):
@@ -437,7 +495,9 @@ def add_product_package(product_id):
     if min(length_cm, width_cm, height_cm, weight_kg, qty_per_package) < 0:
         return jsonify({"ok": False, "errors": ["数值不能为负数"]}), 400
     volume = round(length_cm * width_cm * height_cm, 6)
-    pkg_level = str(payload.get("pkg_level") or "主箱").strip() or "主箱"
+    pkg_level = str(payload.get("pkg_level") or "1级").strip() or "1级"
+    if pkg_level not in VALID_PKG_LEVELS:
+        return jsonify({"ok": False, "errors": [f"pkg_level 只能是 {'/'.join(VALID_PKG_LEVELS)}"]}), 400
     db = get_db()
     if db.execute("SELECT id FROM product WHERE id = ?", (product_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "商品不存在"}), 404
@@ -463,3 +523,43 @@ def delete_product_package(product_id, package_id):
     db.execute("DELETE FROM product_package WHERE id = ?", (package_id,))
     db.commit()
     return jsonify({"ok": True})
+
+
+@product_bp.route("/<int:product_id>/packages/<int:package_id>", methods=["PUT"])
+def update_product_package(product_id, package_id):
+    db = get_db()
+    row0 = db.execute(
+        "SELECT * FROM product_package WHERE id = ? AND product_id = ?",
+        (package_id, product_id),
+    ).fetchone()
+    if row0 is None:
+        return jsonify({"ok": False, "error": "包装层级不存在"}), 404
+    payload = request_payload()
+    fields = {}
+    for key in ("length_cm", "width_cm", "height_cm", "weight_kg", "qty_per_package"):
+        if key in payload:
+            try:
+                val = float(payload.get(key))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "errors": [f"{key} 必须为数字"]}), 400
+            if val < 0:
+                return jsonify({"ok": False, "errors": [f"{key} 不能为负数"]}), 400
+            fields[key] = val
+    if "pkg_level" in payload:
+        lvl = str(payload.get("pkg_level") or "").strip()
+        if lvl not in VALID_PKG_LEVELS:
+            return jsonify({"ok": False, "errors": [f"pkg_level 只能是 {'/'.join(VALID_PKG_LEVELS)}"]}), 400
+        fields["pkg_level"] = lvl
+    # 长宽高任一变动则重算体积（cm³），否则沿用原值
+    if any(k in fields for k in ("length_cm", "width_cm", "height_cm")):
+        l = fields.get("length_cm", row0["length_cm"]) or 0
+        w = fields.get("width_cm", row0["width_cm"]) or 0
+        h = fields.get("height_cm", row0["height_cm"]) or 0
+        fields["volume"] = round(l * w * h, 6)
+    if not fields:
+        return jsonify({"ok": False, "errors": ["没有可更新的字段"]}), 400
+    set_sql = ", ".join(f"{k} = :{k}" for k in fields)
+    db.execute(f"UPDATE product_package SET {set_sql} WHERE id = :id", {**fields, "id": package_id})
+    db.commit()
+    row = db.execute("SELECT * FROM product_package WHERE id = ?", (package_id,)).fetchone()
+    return jsonify({"ok": True, "package": dict(row)})
