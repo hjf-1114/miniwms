@@ -103,6 +103,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **M18 盘点单（Stocktake）**（`routes_stocktake.py` + `inventory_service.adjust_stock`）：账实核对——冻结快照账存 → 盲盘录入实盘 → 差异生成 adjustment 调整流水 → 解冻结案，全程余额仍可由流水核对；含未盘行拦截、负数拦截、状态机守卫
 - **Web demo**（`web_app/`）
   - 首页导航 + 货主/物料/库位/客户/供应商/承运商/仓库/收货/出库/移库/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
+  - **工作台（`/app.html`）**：可折叠内嵌导航（图标条，hover/点按展开）+ 多标签页，多个页面在同一窗口以 iframe 标签并存；单据「明细」按钮在工作台内以新标签打开，独立打开页面时回退为页内展开（详见 `app.html`）
 
 ### 规划中（见 DEVELOPMENT.md）
 

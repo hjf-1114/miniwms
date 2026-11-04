@@ -21,9 +21,20 @@
     { href: "/users.html", label: "用户", ico: "🧑" },
   ];
 
+  // 暴露给工作台（app.html）复用同一份导航
+  window.MWS_NAV = NAV;
+
+  // 内嵌模式：页面被工作台 iframe 加载时（?embed=1）隐藏自身侧边栏，仅保留内容
+  const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+
   function render() {
     const el = document.getElementById("sidebar");
     if (!el) return;
+    if (EMBED) {
+      el.style.display = "none";
+      document.body.classList.add("embed");
+      return;
+    }
     const path = location.pathname;
     let html = '<div class="brand"><span class="logo">📦</span>MiniWMS</div><nav class="nav">';
     for (const item of NAV) {

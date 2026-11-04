@@ -74,6 +74,7 @@ let ownerOptions = [];
 let productOptions = [];
 let allSupplierOptions = [];
 let warehouseOptions = [];
+let asnList = [];
 
 async function loadOptions() {
   const [ow, pr, sp, wh] = await Promise.all([
@@ -118,6 +119,7 @@ async function load() {
   if (st) qs.set("status", st);
   try {
     const data = await api("GET", "/api/asns?" + qs);
+    asnList = data.asns;
     document.getElementById("tbody").innerHTML = data.asns.map((a) =>
       `<tr>
         <td>${a.id}</td><td>${esc(a.code)}</td>
@@ -130,7 +132,7 @@ async function load() {
         <td>${asnStatusTag(a.status)}</td>
         <td class="muted">${esc(a.created_at)}</td>
         <td>
-          <button class="btn secondary sm" onclick="showDetail(${a.id})">明细</button>
+          <button class="btn secondary sm" onclick="openAsnDetail(${a.id})">明细</button>
           ${a.status === "open" ? `<button class="btn danger sm" onclick="cancelAsn(${a.id})">取消</button>` : ""}
         </td>
       </tr>`).join("");
@@ -278,7 +280,15 @@ async function openCreate() {
   }
 }
 
-loadOptions().then(load);
+function openAsnDetail(id) {
+  const r = asnList.find((x) => x.id === id);
+  openDetail("收货 " + (r ? r.code : id), "/asns.html?detail=" + id);
+}
+
+loadOptions().then(load).then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
 </script>
 </body>
 </html>

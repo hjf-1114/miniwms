@@ -79,6 +79,7 @@ let ownerOptions = [];
 let productOptions = [];
 let allCustomerOptions = [];
 let warehouseOptions = [];
+let dnList = [];
 
 async function loadOptions() {
   const [ow, pr, cu, wh] = await Promise.all([
@@ -116,6 +117,7 @@ async function load() {
   if (st) qs.set("status", st);
   try {
     const data = await api("GET", "/api/dns?" + qs);
+    dnList = data.dns;
     document.getElementById("tbody").innerHTML = data.dns.map((d) =>
       `<tr>
         <td>${d.id}</td><td>${esc(d.code)}</td>
@@ -128,7 +130,7 @@ async function load() {
         <td>${dnStatusTag(d.status)}</td>
         <td class="muted">${esc(d.created_at)}</td>
         <td>
-          <button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button>
+          <button class="btn secondary sm" onclick="openDnDetail(${d.id})">明细</button>
           ${d.status === "open" ? `<button class="btn danger sm" onclick="cancelDn(${d.id})">取消</button>` : ""}
         </td>
       </tr>`).join("");
@@ -271,7 +273,15 @@ async function openCreate() {
   }
 }
 
-loadOptions().then(load);
+function openDnDetail(id) {
+  const r = dnList.find((x) => x.id === id);
+  openDetail("出库 " + (r ? r.code : id), "/dns.html?detail=" + id);
+}
+
+loadOptions().then(load).then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
 </script>
 </body>
 </html>

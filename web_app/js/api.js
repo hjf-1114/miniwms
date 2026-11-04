@@ -60,6 +60,23 @@ function esc(v) {
   }[c]));
 }
 
+/**
+ * 打开单据/记录明细。
+ * 若当前页面运行在工作台（父窗口提供了 openTab），则在新的标签页中打开明细；
+ * 否则退回页内展开，保证独立打开页面时体验一致。
+ * @param {string} title 标签标题（如 "收货 ASN-001"）
+ * @param {string} url   目标页地址（含 ?detail=ID，不含 embed）
+ */
+function openDetail(title, url) {
+  if (window.parent && window.parent !== window &&
+      typeof window.parent.openTab === "function") {
+    window.parent.openTab(title, url);
+  } else {
+    const m = /[?&]detail=(\d+)/.exec(url || "");
+    if (m && typeof showDetail === "function") showDetail(parseInt(m[1], 10));
+  }
+}
+
 /** 渲染状态标签。 */
 function statusTag(s) {
   return s === "active"

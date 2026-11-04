@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniWMS 工作台</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="ws">
+  <aside class="ws-side" id="wsSide">
+    <button class="ws-pin" onclick="togglePin()" title="固定 / 收起导航">⤢</button>
+    <div class="brand"><span class="logo">📦</span><span class="nav-label">MiniWMS 工作台</span></div>
+    <nav class="nav" id="wsNav"></nav>
+    <div class="side-foot nav-label">轻量多货主 WMS · 本地演示</div>
+  </aside>
+  <div class="ws-main">
+    <div class="ws-tabs" id="wsTabs"></div>
+    <div class="ws-stage" id="wsStage">
+      <div class="ws-empty"><div><span class="ico">🗂️</span>从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+const NAV = window.MWS_NAV || [];
+const side = document.getElementById("wsSide");
+const navEl = document.getElementById("wsNav");
+const tabsEl = document.getElementById("wsTabs");
+const stageEl = document.getElementById("wsStage");
+
+// ── 构建可折叠侧边栏 ──
+let navHtml = "";
+for (const it of NAV) {
+  if (it.group) {
+    navHtml += `<div class="nav-group">${it.group}</div>`;
+  } else {
+    navHtml += `<a class="nav-item" href="#" data-href="${it.href}" title="${it.label}">` +
+      `<span class="nav-ico">${it.ico}</span><span class="nav-label">${it.label}</span></a>`;
+  }
+}
+navEl.innerHTML = navHtml;
+navEl.querySelectorAll(".nav-item").forEach((a) => {
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    openTab(a.querySelector(".nav-label").textContent, a.dataset.href);
+  });
+});
+
+function togglePin() { side.classList.toggle("pinned"); }
+
+// ── 标签页管理 ──
+let tabs = [];
+let seq = 0;
+let activeId = null;
+
+function ensureEmbed(url) {
+  if (url.indexOf("embed=1") !== -1) return url;
+  return url + (url.indexOf("?") === -1 ? "?" : "&") + "embed=1";
+}
+
+function openTab(title, url) {
+  const key = url;
+  const existing = tabs.find((x) => x.key === key);
+  if (existing) { activate(existing.id); return; }
+  const id = "tab" + (++seq);
+  const iframe = document.createElement("iframe");
+  iframe.className = "ws-iframe";
+  iframe.src = ensureEmbed(url);
+  iframe.style.display = "none";
+  stageEl.appendChild(iframe);
+  tabs.push({ id, title, url, key, iframe });
+  activate(id);
+  highlightNav(url);
+}
+
+function activate(id) {
+  activeId = id;
+  tabs.forEach((t) => { t.iframe.style.display = t.id === id ? "" : "none"; });
+  renderTabs();
+}
+
+function closeTab(id) {
+  const i = tabs.findIndex((t) => t.id === id);
+  if (i < 0) return;
+  tabs[i].iframe.remove();
+  const wasActive = activeId === id;
+  tabs.splice(i, 1);
+  if (wasActive) {
+    if (tabs.length) activate(tabs[tabs.length - 1].id);
+    else { activeId = null; renderEmpty(); }
+  }
+  renderTabs();
+}
+
+function highlightNav(url) {
+  const base = url.split("?")[0];
+  navEl.querySelectorAll(".nav-item").forEach((a) => {
+    a.classList.toggle("active", a.dataset.href === base && url.indexOf("detail=") === -1);
+  });
+}
+
+function renderTabs() {
+  tabsEl.innerHTML = tabs.map((t) =>
+    `<div class="ws-tab${t.id === activeId ? " active" : ""}" data-id="${t.id}">` +
+    `<span>${esc(t.title)}</span>` +
+    `<span class="ws-tab-close" data-close="${t.id}" title="关闭">×</span></div>`).join("");
+  tabsEl.querySelectorAll(".ws-tab").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.target.dataset.close) { closeTab(e.target.dataset.close); return; }
+      activate(el.dataset.id);
+    });
+  });
+  if (!tabs.length) renderEmpty();
+}
+
+function renderEmpty() {
+  stageEl.innerHTML =
+    '<div class="ws-empty"><div><span class="ico">🗂️</span>' +
+    "从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>";
+}
+
+// 供 iframe 内页面调用：openDetail(...) 在明细按钮处打开新标签
+window.openTab = openTab;
+
+// 默认打开概览
+openTab("概览", "/index.html");
+</script>
+</body>
+</html>

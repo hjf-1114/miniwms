@@ -263,3 +263,85 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .sidebar .nav-item { margin-bottom: 0; }
   .content { padding: 16px; }
 }
+
+/* ── 工作台内嵌模式（页面被工作台 iframe 加载时）── */
+body.embed .sidebar { display: none !important; }
+body.embed .app { min-height: 100vh; }
+body.embed .main { min-height: 100vh; }
+
+/* ── 工作台（app.html）：可折叠内嵌导航 + 多标签页 ── */
+.ws { display: flex; height: 100vh; overflow: hidden; }
+
+.ws-side {
+  width: 64px; flex-shrink: 0; background: var(--sidebar-bg); color: var(--sidebar-fg);
+  display: flex; flex-direction: column; transition: width .18s ease; overflow: hidden;
+  border-right: 1px solid rgba(255,255,255,.06); position: relative;
+}
+.ws-pin {
+  position: absolute; top: 16px; right: 8px; z-index: 3;
+  width: 26px; height: 26px; display: grid; place-items: center;
+  background: rgba(255,255,255,.08); border: none; color: #cbd5e1;
+  border-radius: 6px; cursor: pointer; font-size: 15px; line-height: 1;
+}
+.ws-pin:hover { background: rgba(255,255,255,.18); color: #fff; }
+.ws-side .brand { padding-right: 40px; }
+.ws-side:hover, .ws-side.pinned { width: 232px; }
+.ws-side .brand {
+  height: 58px; display: flex; align-items: center; gap: 10px; padding: 0 16px;
+  font-size: 17px; font-weight: 700; color: #fff; white-space: nowrap;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.ws-side .brand .logo {
+  width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px; background: var(--primary);
+  display: grid; place-items: center; font-size: 16px;
+}
+.ws-side .nav { padding: 10px 8px; flex: 1; overflow-y: auto; }
+.ws-side .nav-group {
+  font-size: 11px; color: var(--sidebar-fg-dim); padding: 12px 12px 6px; letter-spacing: .5px;
+  white-space: nowrap;
+}
+.ws-side .nav-item {
+  display: flex; align-items: center; gap: 12px; padding: 9px 12px; margin-bottom: 2px;
+  color: var(--sidebar-fg); text-decoration: none; border-radius: 8px; font-size: 13.5px;
+  white-space: nowrap; transition: background .15s, color .15s;
+}
+.ws-side .nav-item .nav-ico { width: 20px; flex-shrink: 0; text-align: center; font-size: 15px; }
+.ws-side .nav-item .nav-label { opacity: 0; transition: opacity .15s; }
+.ws-side:hover .nav-item .nav-label, .ws-side.pinned .nav-item .nav-label { opacity: 1; }
+.ws-side .nav-item:hover { background: rgba(255,255,255,.06); color: #fff; }
+.ws-side .nav-item.active { background: var(--sidebar-active); color: #fff; font-weight: 600; }
+.ws-side .side-foot { padding: 12px 16px; font-size: 11.5px; color: var(--sidebar-fg-dim); white-space: nowrap; }
+
+.ws-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+
+.ws-tabs {
+  height: 44px; flex-shrink: 0; display: flex; align-items: stretch; background: var(--surface);
+  border-bottom: 1px solid var(--border); overflow-x: auto; padding: 0 8px; gap: 2px;
+}
+.ws-tab {
+  display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 44px;
+  font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap;
+  border-bottom: 2px solid transparent; transition: color .15s, background .15s;
+}
+.ws-tab:hover { background: var(--bg); color: var(--text); }
+.ws-tab.active { color: var(--primary-d); border-bottom-color: var(--primary); font-weight: 600; }
+.ws-tab .ws-tab-close {
+  width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%;
+  font-size: 14px; color: var(--muted); line-height: 1;
+}
+.ws-tab .ws-tab-close:hover { background: #e2e8f0; color: var(--warn); }
+
+.ws-stage { flex: 1; min-height: 0; position: relative; background: var(--bg); }
+.ws-iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.ws-empty {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted);
+}
+.ws-empty .ico { font-size: 42px; opacity: .5; display: block; margin-bottom: 10px; }
+
+@media (max-width: 760px) {
+  .ws { flex-direction: column; }
+  .ws-side, .ws-side:hover, .ws-side.pinned { width: 100%; height: auto; }
+  .ws-side .nav { display: flex; overflow-x: auto; }
+  .ws-side .nav-group, .ws-side .side-foot { display: none; }
+  .ws-side .nav-item .nav-label { opacity: 1; }
+}

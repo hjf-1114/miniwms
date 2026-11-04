@@ -63,6 +63,7 @@ let currentTf = null;
 let ownerOptions = [];
 let productOptions = [];
 let locationOptions = [];
+let tfList = [];
 
 async function loadOptions() {
   const [ow, pr, lo] = await Promise.all([
@@ -84,6 +85,7 @@ async function load() {
   if (st) qs.set("status", st);
   try {
     const data = await api("GET", "/api/transfers?" + qs);
+    tfList = data.transfers;
     document.getElementById("tbody").innerHTML = data.transfers.map((d) =>
       `<tr>
         <td>${d.id}</td><td>${esc(d.code)}</td>
@@ -91,7 +93,7 @@ async function load() {
         <td>${tfStatusTag(d.status)}</td>
         <td class="muted">${esc(d.created_at)}</td>
         <td>
-          <button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button>
+          <button class="btn secondary sm" onclick="openTfDetail(${d.id})">明细</button>
           ${d.status === "open" ? `<button class="btn danger sm" onclick="cancelTf(${d.id})">取消</button>` : ""}
         </td>
       </tr>`).join("");
@@ -175,7 +177,15 @@ async function openCreate() {
   });
 }
 
-loadOptions().then(load);
+function openTfDetail(id) {
+  const r = tfList.find((x) => x.id === id);
+  openDetail("移库 " + (r ? r.code : id), "/transfers.html?detail=" + id);
+}
+
+loadOptions().then(load).then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
 </script>
 </body>
 </html>

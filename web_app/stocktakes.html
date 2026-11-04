@@ -60,6 +60,7 @@
 <script>
 let currentSt = null;
 let ownerOptions = [];
+let stList = [];
 
 async function loadOptions() {
   const o = await api("GET", "/api/owners?page_size=100");
@@ -74,6 +75,7 @@ async function load() {
   if (st) qs.set("status", st);
   try {
     const data = await api("GET", "/api/stocktakes?" + qs);
+    stList = data.stocktakes;
     document.getElementById("tbody").innerHTML = data.stocktakes.map((d) =>
       `<tr>
         <td>${d.id}</td><td>${esc(d.code)}</td>
@@ -81,7 +83,7 @@ async function load() {
         <td>${stTag(d.status)}</td>
         <td class="muted">${esc(d.created_at)}</td>
         <td>
-          <button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button>
+          <button class="btn secondary sm" onclick="openStDetail(${d.id})">明细</button>
         </td>
       </tr>`).join("");
   } catch (e) {
@@ -201,7 +203,15 @@ async function openCreate() {
   });
 }
 
-loadOptions().then(load);
+function openStDetail(id) {
+  const r = stList.find((x) => x.id === id);
+  openDetail("盘点 " + (r ? r.code : id), "/stocktakes.html?detail=" + id);
+}
+
+loadOptions().then(load).then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
 </script>
 </body>
 </html>
