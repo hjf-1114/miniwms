@@ -98,14 +98,15 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **M13 库位主数据深化**（`routes_location.py`）：库位组（手工维护或按编码前缀自动生成）+ 长宽高 + 体积库容（按长×宽×高自动计算）+ 库位组筛选
 - **M14 承运商模块**（`routes_carrier.py`，新增子系统）：编码唯一/类型(快递·零担·整车·其他)/外部编码等，供后续发快递/零担/整车
 - **M15 主数据体验增强**（2026-11-04）：物料体积手填/自动换算 · 条码与包装可编辑+包装等级(1-6) · 承运商演示数据(顺丰/京东/跨越/货拉拉等) · 货主合作起止时间(date 选择器)
-- **M16 移库单（Stock Transfer）**（`routes_transfer.py` + `inventory_service.stock_move`）：单据驱动库位间转移——创建移库单（货主×物料×来源位×目标位×数量，含归属/启停/来源≠目标校验），执行时在同一事务内源位扣减、目标位增加，落 move_out/move_in 两条流水且余额始终可由流水核对；仅未执行单可取消
+- **M16 供应链与单据主数据增强**（2026-11-04）：供应商主数据(归属货主/多货主隔离) + 多仓库主数据(全系统共享，此前仅支持多货主) + ASN/DN 自动单号(英文开头+日期流水，留空自动生成) + ASN/DN 单据字段增强(单据类型/外部单号/订单来源/来源仓库/供应商快照/承运商/自定义字段/订单总数量·品类数汇总)
+- **M17 移库单（Stock Transfer）**（`routes_transfer.py` + `inventory_service.stock_move`）：单据驱动库位间转移——创建移库单（货主×物料×来源位×目标位×数量，含归属/启停/来源≠目标校验），执行时在同一事务内源位扣减、目标位增加，落 move_out/move_in 两条流水且余额始终可由流水核对；仅未执行单可取消
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/客户/承运商/收货/出库/移库/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/客户/供应商/承运商/仓库/收货/出库/移库/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 盘点（M17）、补货预警（M18）、报表统计（M19）
-- **外部对接（M20）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
+- 盘点（M18）、补货预警（M19）、报表统计（M20）
+- **外部对接（M21）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
 - CSV 导入导出（M21）
 
 ## API 概览
@@ -118,12 +119,12 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/locations` | 创建库位（编码必填唯一） |
 | GET | `/api/locations` | 列表，支持 `keyword`/`zone`/`loc_type`/`status`/分页 |
 | GET/PUT/DELETE | `/api/locations/<id>` | 详情/更新/删除（有库存时拒绝） |
-| POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性） |
-| GET | `/api/asns` | 收货单列表，支持 `keyword`/`status`/分页 |
+| POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性；单号留空自动生成 `ASN-日期-流水`；支持 单据类型/外部单号/订单来源/来源仓库/供应商/承运商/自定义字段，自动算 总数量·品类数） |
+| GET | `/api/asns` | 收货单列表，支持 `keyword`/`status`/分页（返回 来源仓库/供应商/总数量/品类数） |
 | POST | `/api/asns/<id>/receive` | 收货到收货区位（部分收货，状态自动推进） |
 | POST | `/api/asns/<id>/putaway` | 上架：暂存位 → 存储/拣货位（同事务一减一增） |
 | POST | `/api/asns/<id>/cancel` | 取消（仅未收货） |
-| POST | `/api/dns` | 创建出库单（行 = 物料×订购数量，校验货主一致性） |
+| POST | `/api/dns` | 创建出库单（行 = 物料×订购数量，校验货主一致性；单号留空自动生成 `DN-日期-流水`；支持 单据类型/外部单号/订单来源/来源仓库/承运商/自定义字段，自动算 总数量·品类数） |
 | GET | `/api/dns` | 出库单列表，支持 `keyword`/`status`/分页 |
 | POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库） |
 | POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存） |
@@ -136,6 +137,12 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/customers` | 创建客户（归属货主，code 必填唯一） |
 | GET | `/api/customers` | 客户列表，支持 `keyword`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/customers/<id>` | 详情/更新/删除（被出库单引用时拒绝） |
+| POST | `/api/suppliers` | 创建供应商（归属货主，code 必填唯一） |
+| GET | `/api/suppliers` | 供应商列表，支持 `keyword`/`owner_id`/`status`/分页 |
+| GET/PUT/DELETE | `/api/suppliers/<id>` | 详情/更新/删除（被收货单引用时拒绝） |
+| POST | `/api/warehouses` | 创建仓库（全系统共享，code 必填唯一） |
+| GET | `/api/warehouses` | 仓库列表，支持 `keyword`/`status`/分页 |
+| GET/PUT/DELETE | `/api/warehouses/<id>` | 详情/更新/删除（被 ASN/DN 引用时拒绝） |
 | GET | `/api/stock` | 库存余额列表，支持 `owner_id`/`product_id`/`location_id`/`has_stock`/分页 |
 | GET | `/api/stock/reconcile` | 余额核对（余额 = 流水累加，返回不一致明细） |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |

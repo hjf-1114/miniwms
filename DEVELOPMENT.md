@@ -50,12 +50,13 @@
 - M13 库位主数据深化（库位组 + 长宽高 + 体积库容）✅
 - M14 承运商模块（新增子系统，供发快递/零担/整车）✅
 - M15 主数据体验增强（2026-11-04 用户需求）：物料体积手填/自动换算 · 条码与包装可编辑+包装等级(1-6) · 承运商演示数据播种 · 货主合作起止时间+日期选择器
-- M16 移库（库位间转移：同数量一减一增两条流水，原子事务）
-- M17 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
-- M18 补货预警（min_stock 对比 + 拣货位缺料提示）
-- M19 报表统计（按货主的收发汇总、周转率、库位利用率）
-- M20 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）
-- M21 CSV 导入导出
+- M16 供应链与单据主数据增强（2026-11-04）：供应商主数据(归属货主/多货主隔离) + 多仓库主数据(全系统共享) + ASN/DN 自动单号(英文开头+日期流水) + ASN/DN 单据字段增强(单据类型/外部单号/订单来源/来源仓库/供应商快照/承运商/自定义字段/订单总数量·品类数汇总) ✅
+- M17 移库（库位间转移：同数量一减一增两条流水，原子事务）
+- M18 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）
+- M19 补货预警（min_stock 对比 + 拣货位缺料提示）
+- M20 报表统计（按货主的收发汇总、周转率、库位利用率）
+- M21 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）
+- M22 CSV 导入导出
 
 ## 外部对接设计（规划中，2026-11-03 用户提出）
 
@@ -252,7 +253,25 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
 
 **可验证结果**：全量 148 绿；演示库 reseed 后含 8 承运商、物料体积按尺寸自动落值。
 
-## M16 移库单（Stock Transfer，2026-11-04）
+## M16 供应链与单据主数据增强（2026-11-04）
+
+**目标（用户三项需求）**：① 收货单(ASN)/出库单(DN) 默认单号规则＝英文开头 + 日期流水号；收货需要供应商，供应商资料要建好并给基础数据；② ASN 需包含单据类型/外部单号/订单来源/订单总数量(明细汇总)/品类数(明细汇总)/来源仓库/客户名称/供应商名称·联系人·电话·地址/承运商/备注/自定义字段；③ 系统此前只支持多货主、未支持多仓库，需新增仓库主数据并让 ASN/DN 关联来源仓库。
+
+**改动清单**：
+- `main.py`：新增 `supplier` 表（code 唯一/name/owner_id 归属货主/contact/phone/address/status）+ `warehouse` 表（code 唯一/name/address/contact/phone/status，全系统共享不绑货主）；`asn`/`dn` 表扩展列 `doc_type`/`external_no`/`order_source`/`source_warehouse`(→warehouse)/`customer_name`/`carrier_name`/`total_qty`/`category_count`/`extra1~3`（dn 无 supplier 列；asn 另含 `supplier_id` 及 `supplier_name/contact/phone/address` 快照）；新增 `gen_doc_no(db, table, prefix)`（前缀-YYYYMMDD-NNN，当日前缀计数+1）；旧库 ALTER 幂等迁移上述列；注册 `supplier_bp`/`warehouse_bp`
+- `constants.py`：新增 `ASN_DOC_TYPES`（调拨/销退/采购/期初/其他）、`DN_DOC_TYPES`（销售/调拨/退货/其他）
+- `routes_supplier.py`（新增）：供应商 CRUD + 编码去重 409 + 货主归属校验 + 被 ASN 引用禁删 409 + 列表 keyword/owner_id/status 过滤 + 分页
+- `routes_warehouse.py`（新增）：仓库 CRUD + 编码去重 409 + 被 ASN/DN 引用禁删 409 + 列表 keyword/status 过滤 + 分页（仓库全局共享，无货主隔离）
+- `routes_asn.py`：`create_asn` 接受新字段；单号留空自动生成 `ASN-YYYYMMDD-NNN`（传入则用传入值）；校验 doc_type；source_warehouse 存在且启用；supplier_id 须属本货主（多货主隔离）并快照名称/联系人/电话/地址；total_qty=Σ预期、category_count=不同物料数；明细同物料重复拒绝 400；`list/get` 联表返回 `source_warehouse_code/name`、`supplier_code/name`
+- `routes_dn.py`：对称增强（DN 无 supplier 维度；含 carrier_name）；自动单号 `DN-YYYYMMDD-NNN`
+- `web_app/suppliers.html`/`warehouses.html`（新增）：CRUD 页（suppliers 含货主下拉并随货主过滤，warehouses 全局）；`layout.js` 侧边栏「基础主数据」新增「供应商」「仓库」入口
+- `web_app/asns.html`/`dns.html`：新建表单加 单据类型/外部单号/订单来源/来源仓库(select 仓库)/供应商(随货主联动)/客户名称/承运商/自定义字段1~3；列表加 单据类型/总数量/品类数/来源仓库/供应商(ASN) 列；详情加字段展示块
+- `tools/seed_demo.py`：新增 3 仓库（深圳/上海/北京）、4 供应商（各货主常用供货方）；FLOWS 的 ASN/DN 引用来源仓库与供应商；清空范围纳入 supplier/warehouse
+- `tests/test_supplier.py`/`tests/test_warehouse.py`（新增）：各 12 例；`tests/test_asn.py`/`tests/test_dn.py` 补 自动单号/单据类型校验/汇总字段/供应商快照·隔离/仓库校验/明细重复拒绝 等
+
+**可验证结果**：全量 197 绿（原 148 + 新增 49）；演示库 reseed 后含 3 仓库、4 供应商、2 张 ASN（closed，带供应商快照与来源仓库）、2 张 DN（shipped，带来源仓库）；单号留空自动生成如 `ASN-20261104-001`；前端 supplier/warehouse 页可访问。
+
+## M17 移库单（Stock Transfer，2026-11-04，规划）
 
 **目标**：落实 D6 首条里程碑——把"库位间库存转移"做成单据驱动（与 ASN/DN 对称），
 保证转移在单一事务内原子完成：来源位减少、目标位增加、两条流水（move_out/move_in）

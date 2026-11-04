@@ -33,9 +33,9 @@
       </select>
       <button class="btn secondary" onclick="load()">查询</button>
     </div>
-    <div class="table-wrap">
+      <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>单号</th><th>单据类型</th><th>货主</th><th>来源仓库</th><th>供应商</th><th>总数量</th><th>品类数</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -48,6 +48,11 @@
       <select id="fromLocSel"></select><span class="muted">← 来源暂存位（上架用）</span>
       <select id="toLocSel"></select><span class="muted">← 目标存储/拣货位（上架用）</span>
       <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <tbody id="asnMeta"></tbody>
+    </table>
     </div>
     <div class="table-wrap">
       <table>
@@ -67,14 +72,27 @@
 let currentAsn = null;
 let ownerOptions = [];
 let productOptions = [];
+let allSupplierOptions = [];
+let warehouseOptions = [];
 
 async function loadOptions() {
-  const [ow, pr] = await Promise.all([
+  const [ow, pr, sp, wh] = await Promise.all([
     api("GET", "/api/owners?page_size=100"),
     api("GET", "/api/products?page_size=100"),
+    api("GET", "/api/suppliers?page_size=100"),
+    api("GET", "/api/warehouses?page_size=100"),
   ]);
   ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
   productOptions = pr.products.map((p) => ({ value: p.id, label: `${p.sku} · ${p.name}` }));
+  allSupplierOptions = sp.suppliers.map((s) => ({
+    value: s.id, label: `${s.code} · ${s.name}`, owner_id: s.owner_id,
+  }));
+  warehouseOptions = wh.warehouses.map((w) => ({ value: w.id, label: `${w.code} · ${w.name}` }));
+}
+
+function suppliersForOwner(ownerId) {
+  if (!ownerId) return allSupplierOptions;
+  return allSupplierOptions.filter((s) => String(s.owner_id) === String(ownerId));
 }
 
 async function loadLocs() {
@@ -103,7 +121,12 @@ async function load() {
     document.getElementById("tbody").innerHTML = data.asns.map((a) =>
       `<tr>
         <td>${a.id}</td><td>${esc(a.code)}</td>
+        <td>${esc(a.doc_type || "")}</td>
         <td>${esc(a.owner_code || "")} · ${esc(a.owner_name || "")}</td>
+        <td>${esc(a.source_warehouse_code || "-")}</td>
+        <td>${esc(a.supplier_name || "-")}</td>
+        <td>${a.total_qty ?? 0}</td>
+        <td>${a.category_count ?? 0}</td>
         <td>${asnStatusTag(a.status)}</td>
         <td class="muted">${esc(a.created_at)}</td>
         <td>
@@ -128,6 +151,19 @@ async function showDetail(id) {
   document.getElementById("detailCard").style.display = "";
   document.getElementById("detailTitle").textContent =
     `收货单明细：${data.asn.code}（${data.asn.status}）`;
+  const a = data.asn;
+  document.getElementById("asnMeta").innerHTML = [
+    ["单据类型", a.doc_type || "-", "外部单号", a.external_no || "-"],
+    ["来源仓库", a.source_warehouse_name || (a.source_warehouse_code || "-"), "订单来源", a.order_source || "-"],
+    ["供应商", a.supplier_name || "-", "客户名称", a.customer_name || "-"],
+    ["供应商联系人", a.supplier_contact || "-", "供应商电话", a.supplier_phone || "-"],
+    ["供应商地址", a.supplier_address || "-", "承运商", a.carrier_name || "-"],
+    ["订单总数量", a.total_qty ?? 0, "品类数", a.category_count ?? 0],
+    ["自定义1", a.extra1 || "-", "自定义2", a.extra2 || "-"],
+    ["自定义3", a.extra3 || "-", "备注", a.note || "-"],
+  ].map(([k1, v1, k2, v2]) =>
+    `<tr><td class="muted">${k1}</td><td>${esc(v1)}</td><td class="muted">${k2}</td><td>${esc(v2)}</td></tr>`
+  ).join("");
   await loadLocs();
   renderLines();
 }
@@ -192,10 +228,23 @@ async function cancelAsn(id) {
 async function openCreate() {
   await loadOptions();
   openForm({
-    title: "新建收货单（ASN）", submitText: "创建", width: 720,
+    title: "新建收货单（ASN）", submitText: "创建", width: 760,
     fields: [
-      { name: "code", label: "单号 *", required: true, autocode: true, autocodePrefix: "ASN" },
+      { name: "code", label: "单号 *（留空自动生成 ASN-日期-流水）", required: false, autocode: true, autocodePrefix: "ASN" },
       { name: "owner_id", label: "货主 *", type: "select", required: true, options: ownerOptions },
+      { name: "doc_type", label: "单据类型", type: "select", options: [
+        { value: "调拨", label: "调拨" }, { value: "销退", label: "销退" },
+        { value: "采购", label: "采购" }, { value: "期初", label: "期初" }, { value: "其他", label: "其他" },
+      ] },
+      { name: "external_no", label: "外部单号（主单号）" },
+      { name: "order_source", label: "订单来源" },
+      { name: "source_warehouse", label: "来源仓库", type: "select", options: warehouseOptions },
+      { name: "supplier_id", label: "供应商", type: "select", options: allSupplierOptions },
+      { name: "customer_name", label: "客户名称" },
+      { name: "carrier_name", label: "承运商名称" },
+      { name: "extra1", label: "自定义字段1" },
+      { name: "extra2", label: "自定义字段2" },
+      { name: "extra3", label: "自定义字段3" },
       { name: "note", label: "备注", type: "textarea", full: true },
       {
         name: "lines", label: "收货明细", type: "lines", full: true,
@@ -211,6 +260,22 @@ async function openCreate() {
       load();
     },
   });
+  // 选择货主后联动过滤供应商（多货主隔离）
+  const ov = document.querySelector(".modal-overlay");
+  if (ov) {
+    const ownerSel = ov.querySelector('[name="owner_id"]');
+    const supSel = ov.querySelector('[name="supplier_id"]');
+    if (ownerSel && supSel) {
+      const sync = () => {
+        const list = suppliersForOwner(ownerSel.value);
+        const cur = supSel.value;
+        supSel.innerHTML = list.map((s) =>
+          `<option value="${esc(s.value)}" ${String(s.value) === String(cur) ? "selected" : ""}>${esc(s.label)}</option>`).join("");
+      };
+      sync();
+      ownerSel.addEventListener("change", sync);
+    }
+  }
 }
 
 loadOptions().then(load);

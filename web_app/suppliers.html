@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>供应商管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>供应商管理</h1><div class="crumb">MiniWMS / 基础主数据</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>供应商列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建供应商</button>
+    </div>
+    <div class="toolbar">
+      <input id="kw" placeholder="编码/名称/联系人搜索">
+      <select id="ownerFilter"></select>
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="active">启用</option>
+        <option value="inactive">停用</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>所属货主</th><th>联系人</th><th>电话</th><th>地址</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+      <span id="pageInfo"></span>
+      <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
+    <script src="/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+let ownerOptions = [];
+
+const FIELDS = [
+  { name: "code", label: "编码 *", required: true, autocode: true, autocodePrefix: "SUP" },
+  { name: "name", label: "名称 *", required: true },
+  { name: "owner_id", label: "所属货主 *", type: "select", required: true, options: () => ownerOptions },
+  { name: "contact", label: "联系人" },
+  { name: "phone", label: "电话" },
+  { name: "address", label: "地址", full: true },
+  { name: "note", label: "备注", type: "textarea", full: true },
+];
+
+async function loadOptions() {
+  const data = await api("GET", "/api/owners?page_size=100");
+  ownerOptions = data.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  document.getElementById("ownerFilter").innerHTML =
+    `<option value="">全部货主</option>` +
+    ownerOptions.map((o) => `<option value="${o.value}">${esc(o.label)}</option>`).join("");
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const oid = document.getElementById("ownerFilter").value;
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (oid) qs.set("owner_id", oid);
+  if (st) qs.set("status", st);
+  try {
+    const data = await api("GET", "/api/suppliers?" + qs);
+    document.getElementById("tbody").innerHTML = data.suppliers.map((s) =>
+      `<tr>
+        <td>${s.id}</td><td>${esc(s.code)}</td><td>${esc(s.name)}</td>
+        <td>${esc(s.owner_code || "")} · ${esc(s.owner_name || "")}</td>
+        <td>${esc(s.contact)}</td><td>${esc(s.phone)}</td><td>${esc(s.address)}</td>
+        <td>${statusTag(s.status)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${s.id})">编辑</button>
+          <button class="btn secondary sm" onclick="toggle(${s.id},'${s.status}')">${s.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger sm" onclick="del(${s.id})">删除</button>
+        </td>
+      </tr>`).join("");
+    document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+
+function openCreate() {
+  openForm({
+    title: "新建供应商", submitText: "创建", width: 680, fields: FIELDS,
+    onSubmit: async (p) => {
+      await api("POST", "/api/suppliers", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/suppliers/" + id);
+  openForm({
+    title: "编辑供应商", submitText: "保存", width: 680, fields: FIELDS, values: data.supplier,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/suppliers/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/suppliers/" + id, { status: status === "active" ? "inactive" : "active" });
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "操作失败：" + e.message, "error");
+  }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该供应商？")) return;
+  try {
+    await api("DELETE", "/api/suppliers/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+loadOptions().then(load);
+</script>
+</body>
+</html>
