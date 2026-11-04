@@ -454,6 +454,60 @@ class AsnApiTest(unittest.TestCase):
         plain = self._mk_asn(oid, pid, code="ASN-FALLBACK")
         self.assertEqual(plain["lines"][0]["spec"], "10mg×24片")
 
+    # ---------- M19：明细字段可人工编辑 + 新增 7 个医疗器械字段 + 验收入库批次 ----------
+    def test_line_snapshot_is_human_editable(self):
+        """自动带出只是默认值：人工改过的档案/批次字段必须原样留档，不被物料主数据覆盖。"""
+        oid = self._mk_owner()
+        pid = self.client.post("/api/products", json={
+            "sku": "MED-2", "name": "档案原名", "owner_id": oid,
+            "spec": "档案规格", "mfg_enterprise": "档案厂家", "origin": "档案产地",
+        }).get_json()["product"]["id"]
+        edited = {
+            "product_id": pid, "expected_qty": 3,
+            "product_name": "人工改过的名称", "spec": "人工改过的规格",
+            "article_no": "ART-EDIT", "unit": "箱", "brand": "人工品牌",
+            "mfg_enterprise": "人工厂家", "production_enterprise": "人工生产企业",
+            "origin": "人工产地", "udi": "UDI-EDIT-001",
+            "reg_cert_no": "人工注册证", "registrant": "人工注册人",
+            "mfg_license": "人工许可证", "shelf_life_days": 365,
+            "batch_no": "LOT-EDIT", "sterilization_batch_no": "ST-EDIT",
+            "production_date": "2026-02-01", "expiry_date": "2028-02-01",
+            "internal_batch_no": "IB-EDIT", "goods_property": "不合格",
+            "patient_name": "李四",
+        }
+        resp = self.client.post("/api/asns", json={
+            "code": "ASN-EDIT", "owner_id": oid, "source_warehouse": self.wh_id,
+            "lines": [edited]})
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        detail = self.client.get(
+            f"/api/asns/{resp.get_json()['asn']['id']}").get_json()["lines"][0]
+        for key in ("product_name", "spec", "article_no", "unit", "brand",
+                    "mfg_enterprise", "production_enterprise", "origin", "udi",
+                    "reg_cert_no", "registrant", "mfg_license", "shelf_life_days",
+                    "batch_no", "sterilization_batch_no", "production_date",
+                    "expiry_date", "internal_batch_no", "goods_property",
+                    "patient_name"):
+            self.assertEqual(str(detail[key]), str(edited[key]),
+                             f"字段 {key} 被覆盖，人工编辑未留档")
+
+    def test_receive_returns_unique_batch_no(self):
+        """每次收货都返回唯一批次号；首次入库内部批次号与批次号一致。"""
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        loc = self._mk_location("RCV-BAT", "receiving")
+        body = self._mk_asn(oid, pid, expected=8)
+        r1 = self.client.post(f"/api/asns/{body['asn']['id']}/receive", json={
+            "line_id": body["lines"][0]["id"], "location_id": loc, "qty": 3})
+        self.assertEqual(r1.status_code, 200, r1.get_json())
+        b1 = r1.get_json()["batch"]
+        self.assertTrue(b1["batch_no"].startswith("BAT-"))
+        self.assertEqual(b1["internal_batch_no"], b1["batch_no"])
+        r2 = self.client.post(f"/api/asns/{body['asn']['id']}/receive", json={
+            "line_id": body["lines"][0]["id"], "location_id": loc, "qty": 3})
+        b2 = r2.get_json()["batch"]
+        self.assertNotEqual(b1["batch_no"], b2["batch_no"])
+        self.assertEqual(b1["batch_id"], b2["batch_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

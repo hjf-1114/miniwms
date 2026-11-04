@@ -669,6 +669,62 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_stocktake_line_st ON stocktake_line(stocktake_id);
             """
         )
+        # M19 批次（医疗器械/GSP 口径）：批次字段配置 / 批次档案 / 每次入库唯一批次流水
+        # 级联删除仅用于保持历史数据一致性；批次流水本身只能由收货单验收写入，不提供手工新增接口
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS batch_config (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                field_name    TEXT    NOT NULL UNIQUE,
+                label         TEXT    NOT NULL DEFAULT '',
+                input_type    TEXT    NOT NULL DEFAULT 'text',
+                is_key        INTEGER NOT NULL DEFAULT 0,
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                default_value TEXT    NOT NULL DEFAULT '',
+                sort_order    INTEGER NOT NULL DEFAULT 0,
+                note          TEXT    NOT NULL DEFAULT '',
+                updated_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE TABLE IF NOT EXISTS batch (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                code          TEXT    NOT NULL UNIQUE,
+                batch_key     TEXT    NOT NULL UNIQUE,
+                owner_id      INTEGER NOT NULL REFERENCES owner(id) ON DELETE CASCADE,
+                product_id    INTEGER NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+                key_info      TEXT    NOT NULL DEFAULT '{}',
+                info          TEXT    NOT NULL DEFAULT '{}',
+                receipt_count INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_batch_owner   ON batch(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_batch_product ON batch(product_id);
+            CREATE TABLE IF NOT EXISTS batch_receipt (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_no          TEXT    NOT NULL UNIQUE,
+                batch_id          INTEGER NOT NULL REFERENCES batch(id) ON DELETE CASCADE,
+                internal_batch_no TEXT    NOT NULL DEFAULT '',
+                internal_source   TEXT    NOT NULL DEFAULT 'first_in',
+                owner_id          INTEGER NOT NULL REFERENCES owner(id) ON DELETE CASCADE,
+                product_id        INTEGER NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+                location_id       INTEGER NOT NULL REFERENCES location(id) ON DELETE CASCADE,
+                asn_id            INTEGER NOT NULL REFERENCES asn(id) ON DELETE CASCADE,
+                asn_line_id       INTEGER NOT NULL REFERENCES asn_line(id) ON DELETE CASCADE,
+                qty               REAL    NOT NULL,
+                doc_type          TEXT    NOT NULL DEFAULT '',
+                goods_property    TEXT    NOT NULL DEFAULT '',
+                info              TEXT    NOT NULL DEFAULT '{}',
+                created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_batch_receipt_batch    ON batch_receipt(batch_id);
+            CREATE INDEX IF NOT EXISTS idx_batch_receipt_asn      ON batch_receipt(asn_id);
+            CREATE INDEX IF NOT EXISTS idx_batch_receipt_line     ON batch_receipt(asn_line_id);
+            CREATE INDEX IF NOT EXISTS idx_batch_receipt_internal ON batch_receipt(internal_batch_no);
+            """
+        )
+        # 批次字段配置播种（幂等，不覆盖用户已改的配置）
+        from batch_fields import seed_batch_config  # noqa: E402
+        seed_batch_config(conn)
         # 用户与角色（M9 基础：后续功能通过 require_permission 联动）
         conn.executescript(
             """
@@ -724,6 +780,7 @@ else:
     from routes_warehouse import warehouse_bp  # noqa: E402
     from routes_transfer import transfer_bp  # noqa: E402
     from routes_stocktake import stocktake_bp  # noqa: E402
+    from routes_batch import batch_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -738,3 +795,4 @@ else:
     app.register_blueprint(warehouse_bp)
     app.register_blueprint(transfer_bp)
     app.register_blueprint(stocktake_bp)
+    app.register_blueprint(batch_bp)

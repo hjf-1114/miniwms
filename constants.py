@@ -46,3 +46,16 @@ STOCKTAKE_FROZEN = "frozen"      # 已冻结并快照账存（盲盘阶段）
 STOCKTAKE_ADJUSTED = "adjusted"  # 已按盘点差异生成调整流水
 STOCKTAKE_CLOSED = "closed"      # 已解冻结案
 STOCKTAKE_STATUSES = (STOCKTAKE_OPEN, STOCKTAKE_FROZEN, STOCKTAKE_ADJUSTED, STOCKTAKE_CLOSED)
+
+# 批次（M19，医疗器械 / GSP 口径）：每次验收入库生成唯一批次号
+BATCH_RECEIPT_PREFIX = "BAT"          # 入库批次流水号：BAT-YYYYMMDD-NNN
+BATCH_PROFILE_PREFIX = "BP"           # 批次档案号（关键批次信息主档）
+GOODS_PROPERTIES = ("合格", "不合格")  # 收货明细 / 批次流水「货品属性」枚举
+
+# 内部批次号来源（用户口径：首次入库=批次号；销退=出库内部批次号；一般为数据传入）
+INTERNAL_BATCH_FIRST_IN = "first_in"
+INTERNAL_BATCH_RETURN = "return_trace"
+INTERNAL_BATCH_EXTERNAL = "external"
+INTERNAL_BATCH_SOURCES = (
+    INTERNAL_BATCH_FIRST_IN, INTERNAL_BATCH_RETURN, INTERNAL_BATCH_EXTERNAL,
+)

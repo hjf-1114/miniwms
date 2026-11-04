@@ -158,10 +158,13 @@ def _reset(db_path):
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
-        for t in ("dn_pick", "dn_line", "dn", "asn_line", "asn",
+        for t in ("batch_receipt", "batch",
+                  "dn_pick", "dn_line", "dn", "asn_line", "asn",
+                  "transfer_line", "transfer", "stocktake_line", "stocktake",
                   "stock_movement", "stock", "customer", "product",
                   "supplier", "location", "warehouse", "owner", "carrier"):
             conn.execute(f"DELETE FROM {t}")
+        # 注意：batch_config 是用户配置，不属于业务数据，重置时保留
         conn.commit()
     finally:
         conn.close()

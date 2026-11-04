@@ -73,6 +73,48 @@ class FreshDbSchemaTest(unittest.TestCase):
             if os.path.exists(db):
                 os.remove(db)
 
+    def test_fresh_db_batch_tables_and_config(self):
+        """M19 批次三张表 + 默认字段配置必须在全新库一次性建齐。"""
+        db = os.path.join(tempfile.gettempdir(), "miniwms_fresh_schema3.db")
+        if os.path.exists(db):
+            os.remove(db)
+        env = os.environ.copy()
+        env["MINIWMS_DB"] = db
+        code = (
+            "import os, sys, sqlite3, json\n"
+            f"sys.path.insert(0, {_ROOT!r})\n"
+            "import main\n"
+            "main.init_db()\n"
+            "c = sqlite3.connect(os.environ['MINIWMS_DB'])\n"
+            "tabs = [r[0] for r in c.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")]\n"
+            "print(json.dumps({\n"
+            "  'tables': tabs,\n"
+            "  'batch': [r[1] for r in c.execute('PRAGMA table_info(batch)')],\n"
+            "  'receipt': [r[1] for r in c.execute('PRAGMA table_info(batch_receipt)')],\n"
+            "  'config_n': c.execute('SELECT COUNT(*) FROM batch_config').fetchone()[0],\n"
+            "  'key_n': c.execute('SELECT COUNT(*) FROM batch_config WHERE is_key=1').fetchone()[0],\n"
+            "}))\n"
+        )
+        try:
+            out = subprocess.check_output(
+                [sys.executable, "-c", code], env=env, cwd=_ROOT,
+                stderr=subprocess.STDOUT, timeout=60,
+            )
+            data = json.loads(out.decode("utf-8").strip().splitlines()[-1])
+            for t in ("batch_config", "batch", "batch_receipt"):
+                self.assertIn(t, data["tables"], f"全新库缺表: {t}")
+            for col in ("code", "batch_key", "owner_id", "product_id",
+                        "key_info", "info", "receipt_count"):
+                self.assertIn(col, data["batch"], f"全新库 batch 缺列: {col}")
+            for col in ("batch_no", "batch_id", "internal_batch_no", "internal_source",
+                        "asn_id", "asn_line_id", "qty", "goods_property"):
+                self.assertIn(col, data["receipt"], f"全新库 batch_receipt 缺列: {col}")
+            self.assertEqual(data["config_n"], 20)
+            self.assertEqual(data["key_n"], 7)
+        finally:
+            if os.path.exists(db):
+                os.remove(db)
+
 
 if __name__ == "__main__":
     unittest.main()

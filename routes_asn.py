@@ -16,17 +16,30 @@ import math
 from flask import Blueprint, jsonify, request
 
 import constants as C
+from batch_service import record_receipt
 from inventory_service import StockError, stock_move, stock_up
 from main import get_db, gen_doc_no, request_payload
 
 asn_bp = Blueprint("asn", __name__, url_prefix="/api/asns")
 
-# 收货明细随行落库的商品档案快照字段（选商品时前端自动带出，单据留存历史值）
+# 收货明细随行落库的商品档案 + 批次信息快照字段。
+# 全部字段在表单里均可人工编辑（自动带出只是默认值），单据留存用户最终填写的历史值。
 LINE_SNAPSHOT_FIELDS = (
     "product_name", "spec", "article_no", "unit", "brand", "mfg_enterprise",
-    "reg_cert_no", "registrant", "mfg_license", "shelf_life_days",
-    "batch_no", "production_date", "expiry_date",
+    "production_enterprise", "origin", "udi", "reg_cert_no", "registrant",
+    "mfg_license", "shelf_life_days",
+    "batch_no", "sterilization_batch_no", "production_date", "expiry_date",
+    "internal_batch_no", "goods_property", "patient_name",
 )
+
+
+def _line_snapshot(line):
+    """解析 asn_line.extra（JSON 明细快照）；老单据返回空字典。"""
+    try:
+        snap = json.loads(line["extra"] or "") if line["extra"] else {}
+    except (ValueError, TypeError, KeyError):
+        snap = {}
+    return snap if isinstance(snap, dict) else {}
 
 
 def _load_asn(db, asn_id):
@@ -39,7 +52,8 @@ def _load_lines(db, asn_id):
                   p.spec AS p_spec, p.article_no AS p_article_no, p.unit AS p_unit,
                   p.brand AS p_brand, p.mfg_enterprise AS p_mfg_enterprise,
                   p.reg_cert_no AS p_reg_cert_no, p.registrant AS p_registrant,
-                  p.mfg_license AS p_mfg_license, p.shelf_life_days AS p_shelf_life_days
+                  p.mfg_license AS p_mfg_license, p.shelf_life_days AS p_shelf_life_days,
+                  p.origin AS p_origin
            FROM asn_line al JOIN product p ON p.id = al.product_id
            WHERE al.asn_id = ? ORDER BY al.id""",
         (asn_id,),
@@ -130,6 +144,11 @@ def create_asn():
             return jsonify({"ok": False, "errors": [f"lines[{i}] 字段不合法"]}), 400
         if math.isnan(qty) or qty <= 0:
             return jsonify({"ok": False, "errors": [f"lines[{i}] expected_qty 必须为正数"]}), 400
+        gp = str(snap.get("goods_property") or "").strip()
+        if gp and gp not in C.GOODS_PROPERTIES:
+            return jsonify({"ok": False, "errors": [
+                f"lines[{i}] goods_property 只能是 {'/'.join(C.GOODS_PROPERTIES)}"
+            ]}), 400
         parsed_lines.append((pid, qty, snap))
     # 同一物料在明细中不可重复（asn_line 唯一约束 (asn_id, product_id)）
     dup = {pid for pid, _, _ in parsed_lines}
@@ -258,30 +277,37 @@ def _dict_line(l):
     d = dict(l)
     d["remaining_receive"] = max(0, l["expected_qty"] - l["received_qty"])
     d["remaining_putaway"] = max(0, l["received_qty"] - l["putaway_qty"])
-    # 行快照优先；老单据未存快照时回退到物料主数据当前值
-    raw = d.pop("extra", "") or ""
-    try:
-        snap = json.loads(raw) if raw else {}
-    except (ValueError, TypeError):
-        snap = {}
-    if not isinstance(snap, dict):
-        snap = {}
+    snap = _line_snapshot(l)
+    d.pop("extra", None)
+    # 行快照优先；老单据未存快照时回退到物料主数据当前值（人工编辑过的字段不会被覆盖）
+    p_mfg = d.pop("p_mfg_enterprise", "")
+    p_origin = d.pop("p_origin", "")
     fallbacks = {
         "product_name": d.get("product_name"),
         "spec": d.pop("p_spec", ""),
         "article_no": d.pop("p_article_no", ""),
         "unit": d.pop("p_unit", ""),
         "brand": d.pop("p_brand", ""),
-        "mfg_enterprise": d.pop("p_mfg_enterprise", ""),
+        "mfg_enterprise": p_mfg,
+        "production_enterprise": p_mfg,
+        "origin": p_origin,
+        "udi": "",
         "reg_cert_no": d.pop("p_reg_cert_no", ""),
         "registrant": d.pop("p_registrant", ""),
         "mfg_license": d.pop("p_mfg_license", ""),
         "shelf_life_days": d.pop("p_shelf_life_days", ""),
+        "batch_no": "",
+        "sterilization_batch_no": "",
+        "production_date": "",
+        "expiry_date": "",
+        "internal_batch_no": "",
+        "goods_property": "合格",
+        "patient_name": "",
     }
     for k, fallback in fallbacks.items():
         v = snap.get(k, "")
         d[k] = v if v not in ("", None) else (fallback or "")
-    # 批次类字段（批号/生产日期/失效日期）无主数据兜底，直接取快照
+    # 兼容后续新增的快照字段（不在字典里也原样返回）
     for k, v in snap.items():
         if k not in d:
             d[k] = v
@@ -344,14 +370,29 @@ def get_asn(asn_id):
     # 名称保留单据快照（下单时允许覆盖主数据），仅补充编码
     body["supplier_code"] = sp["code"] if sp else None
     body["customer_code"] = cu["code"] if cu else None
-    return jsonify({"ok": True, "asn": body,
-                    "lines": [_dict_line(l) for l in _load_lines(db, asn_id)]})
+    lines_out = [_dict_line(l) for l in _load_lines(db, asn_id)]
+    # 明细行带出本行已生成的验收入库批次（每次收货一个唯一批次号）
+    if db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='batch_receipt'"
+    ).fetchone():
+        for ln in lines_out:
+            ln["batch_receipts"] = [dict(r) for r in db.execute(
+                "SELECT id, batch_no, internal_batch_no, internal_source, qty, "
+                "goods_property, batch_id, created_at FROM batch_receipt "
+                "WHERE asn_line_id = ? ORDER BY id", (ln["id"],)
+            ).fetchall()]
+    return jsonify({"ok": True, "asn": body, "lines": lines_out})
 
 
 @asn_bp.route("/<int:asn_id>/receive", methods=["POST"])
 def receive(asn_id):
-    """收货：line_id + receiving 库位 + 数量 → 库存 +，单据状态推进。"""
+    """收货：line_id + receiving 库位 + 数量 → 库存 +、批次信息落库、单据状态推进。
+
+    批次写入与库存增加处于同一 BEGIN IMMEDIATE 事务：要么都成功，要么一起回滚。
+    `internal_batch_no` 可由外部数据/退货场景传入；留空时按首次入库或销退规则确定。
+    """
     payload = request_payload()
+    internal_batch_no = str(payload.get("internal_batch_no") or "").strip()
     try:
         line_id = int(payload.get("line_id"))
         location_id = int(payload.get("location_id"))
@@ -360,6 +401,7 @@ def receive(asn_id):
         return jsonify({"ok": False, "errors": ["line_id/location_id/qty 必填且合法"]}), 400
 
     db = get_db()
+    batch = None
     try:
         db.execute("BEGIN IMMEDIATE")
         asn = _load_asn(db, asn_id)
@@ -378,6 +420,13 @@ def receive(asn_id):
 
         stock_up(db, asn["owner_id"], line["product_id"], location_id, qty,
                  C.MOVEMENT_ASN_RECEIVE, asn_id, note=f"ASN {asn['code']} 收货")
+        # 验收入库 → 写入批次信息（批次档案按关键批次信息去重，每次收货一个唯一批次号）
+        batch = record_receipt(
+            db, owner_id=asn["owner_id"], product_id=line["product_id"],
+            location_id=location_id, asn_id=asn_id, asn_line_id=line_id,
+            qty=qty, doc_type=asn["doc_type"] or "",
+            line_info=_line_snapshot(line), internal_batch_no=internal_batch_no,
+        )
         db.execute(
             "UPDATE asn_line SET received_qty = received_qty + ? WHERE id = ?",
             (qty, line_id),
@@ -388,8 +437,11 @@ def receive(asn_id):
     except (ValueError, StockError) as e:
         db.rollback()
         return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception:
+        db.rollback()
+        raise
 
-    return jsonify({"ok": True, "status": status,
+    return jsonify({"ok": True, "status": status, "batch": batch,
                     "lines": [_dict_line(l) for l in _load_lines(db, asn_id)]})
 
 
