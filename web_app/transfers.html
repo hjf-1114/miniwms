@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>移库管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>移库作业</h1><div class="crumb">MiniWMS / 出入库作业</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>移库单列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建移库单</button>
+    </div>
+    <div class="toolbar">
+      <input id="kw" placeholder="单号搜索">
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="open">待执行</option>
+        <option value="done">已执行</option>
+        <option value="cancelled">已取消</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none">
+    <h2 id="detailTitle">移库单明细</h2>
+    <div class="toolbar">
+      <button class="btn" onclick="doMove()">执行移库（同事务一减一增）</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>行</th><th>SKU</th><th>物料</th><th>来源库位</th><th>目标库位</th><th>数量</th></tr></thead>
+      <tbody id="lineBody"></tbody>
+    </table>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
+    <script src="/js/layout.js"></script>
+<script>
+let currentTf = null;
+let ownerOptions = [];
+let productOptions = [];
+let locationOptions = [];
+
+async function loadOptions() {
+  const [ow, pr, lo] = await Promise.all([
+    api("GET", "/api/owners?page_size=100"),
+    api("GET", "/api/products?page_size=100"),
+    api("GET", "/api/locations?status=active&page_size=200"),
+  ]);
+  ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  productOptions = pr.products.map((p) => ({ value: p.id, label: `${p.sku} · ${p.name}` }));
+  locationOptions = lo.locations.map((l) =>
+    ({ value: l.id, label: `${l.code}（${l.loc_type_label}）` }));
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page_size: 50 });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  try {
+    const data = await api("GET", "/api/transfers?" + qs);
+    document.getElementById("tbody").innerHTML = data.transfers.map((d) =>
+      `<tr>
+        <td>${d.id}</td><td>${esc(d.code)}</td>
+        <td>${esc(d.owner_code || "")} · ${esc(d.owner_name || "")}</td>
+        <td>${tfStatusTag(d.status)}</td>
+        <td class="muted">${esc(d.created_at)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button>
+          ${d.status === "open" ? `<button class="btn danger sm" onclick="cancelTf(${d.id})">取消</button>` : ""}
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function tfStatusTag(s) {
+  const map = { open: "待执行", done: "已执行", cancelled: "已取消" };
+  const cls = s === "done" ? "ok" : (s === "cancelled" ? "off" : "warn");
+  return `<span class="tag ${cls}">${map[s] || s}</span>`;
+}
+
+async function showDetail(id) {
+  const data = await api("GET", "/api/transfers/" + id);
+  currentTf = data;
+  document.getElementById("detailCard").style.display = "";
+  document.getElementById("detailTitle").textContent =
+    `移库单明细：${data.transfer.code}（${data.transfer.status}）`;
+  renderLines();
+}
+
+function renderLines() {
+  const d = currentTf;
+  document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
+    `<tr>
+      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.product_name)}</td>
+      <td>${esc(l.from_location_code)}</td><td>${esc(l.to_location_code)}</td>
+      <td><b>${l.qty}</b></td>
+    </tr>`).join("");
+}
+
+async function doMove() {
+  if (!currentTf) return;
+  if (!confirm("确认执行移库？来源位按可用量转出，库存同事务一减一增。")) return;
+  try {
+    const r = await api("POST", `/api/transfers/${currentTf.transfer.id}/move`);
+    showMsg(document.getElementById("msg"), `移库成功，单据状态：${r.status}`, "success");
+    await showDetail(currentTf.transfer.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "移库失败：" + e.message, "error");
+  }
+}
+
+async function cancelTf(id) {
+  if (!confirm("确认取消该移库单？（仅未执行可取消）")) return;
+  try {
+    await api("POST", `/api/transfers/${id}/cancel`);
+    showMsg(document.getElementById("msg"), "已取消", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "取消失败：" + e.message, "error");
+  }
+}
+
+async function openCreate() {
+  await loadOptions();
+  openForm({
+    title: "新建移库单（Transfer）", submitText: "创建", width: 820,
+    fields: [
+      { name: "code", label: "单号 *", required: true, autocode: true, autocodePrefix: "TF" },
+      { name: "owner_id", label: "货主 *", type: "select", required: true, options: ownerOptions },
+      { name: "note", label: "备注", type: "textarea", full: true },
+      {
+        name: "lines", label: "移库明细", type: "lines", full: true,
+        lineFields: [
+          { name: "product_id", label: "物料", type: "select", options: productOptions },
+          { name: "from_location_id", label: "来源库位", type: "select", options: locationOptions },
+          { name: "to_location_id", label: "目标库位", type: "select", options: locationOptions },
+          { name: "qty", label: "数量", type: "number" },
+        ],
+      },
+    ],
+    onSubmit: async (p) => {
+      await api("POST", "/api/transfers", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+loadOptions().then(load);
+</script>
+</body>
+</html>

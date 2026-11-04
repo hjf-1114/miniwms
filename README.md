@@ -17,8 +17,8 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 ```
 
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
-货主/物料/库位/收货/出库/库存六个管理页，创建、搜索、启停、删除与
-收货/上架/拣货/发货/账目核对均直接调用后端 API。
+货主/物料/库位/收货/出库/移库/库存等多个管理页，创建、搜索、启停、删除与
+收货/上架/拣货/发货/移库/账目核对均直接调用后端 API。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
 想直接体验完整流程，可先灌一套演示数据再启动：
@@ -98,12 +98,13 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **M13 库位主数据深化**（`routes_location.py`）：库位组（手工维护或按编码前缀自动生成）+ 长宽高 + 体积库容（按长×宽×高自动计算）+ 库位组筛选
 - **M14 承运商模块**（`routes_carrier.py`，新增子系统）：编码唯一/类型(快递·零担·整车·其他)/外部编码等，供后续发快递/零担/整车
 - **M15 主数据体验增强**（2026-11-04）：物料体积手填/自动换算 · 条码与包装可编辑+包装等级(1-6) · 承运商演示数据(顺丰/京东/跨越/货拉拉等) · 货主合作起止时间(date 选择器)
+- **M16 移库单（Stock Transfer）**（`routes_transfer.py` + `inventory_service.stock_move`）：单据驱动库位间转移——创建移库单（货主×物料×来源位×目标位×数量，含归属/启停/来源≠目标校验），执行时在同一事务内源位扣减、目标位增加，落 move_out/move_in 两条流水且余额始终可由流水核对；仅未执行单可取消
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/客户/承运商/收货/出库/库存/角色/用户 九个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/客户/承运商/收货/出库/移库/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 移库（M16）、盘点（M17）、补货预警（M18）、报表统计（M19）
+- 盘点（M17）、补货预警（M18）、报表统计（M19）
 - **外部对接（M20）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
 - CSV 导入导出（M21）
 
@@ -127,6 +128,11 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库） |
 | POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存） |
 | POST | `/api/dns/<id>/cancel` | 取消（仅未拣货） |
+| POST | `/api/transfers` | 创建移库单（行 = 物料×来源位×目标位×数量，校验货主/库位一致性） |
+| GET | `/api/transfers` | 移库单列表，支持 `keyword`/`status`/分页 |
+| GET | `/api/transfers/<id>` | 移库单详情（联表带出来源/目标库位编码） |
+| POST | `/api/transfers/<id>/move` | 执行移库（同事务一减一增，写 move_out/move_in 流水） |
+| POST | `/api/transfers/<id>/cancel` | 取消（仅未执行） |
 | POST | `/api/customers` | 创建客户（归属货主，code 必填唯一） |
 | GET | `/api/customers` | 客户列表，支持 `keyword`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/customers/<id>` | 详情/更新/删除（被出库单引用时拒绝） |

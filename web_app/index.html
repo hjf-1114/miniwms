@@ -21,9 +21,9 @@
       <p class="muted" style="line-height:1.9">
       轻量多货主 WMS（Flask + SQLite）。本页为前后端一体的本地 demo：
       通过左侧导航管理<b>货主 → 物料 → 库位 → 客户</b>四类主数据，
-      完成<b>收货上架</b>与<b>拣货发货</b>的完整出入库流程（出库单关联客户），
+      完成<b>收货上架</b>、<b>拣货发货</b>与<b>库位间移库</b>的完整出入库流程（出库单关联客户、移库单单据驱动原子转移），
       并在<b>库存</b>页查询余额、流水与账实核对。系统管理下已提供<b>角色 / 用户</b>与登录鉴权。
-      已完成主数据深化（产品/货主/客户/库位字段增强 + 承运商模块），后续将逐步提供移库、盘点、预警、报表、外部对接与 CSV 等操作与分析能力。
+      已完成主数据深化（产品/货主/客户/库位字段增强 + 承运商模块），后续将逐步提供盘点、预警、报表、外部对接与 CSV 等操作与分析能力。
     </p>
     <p class="muted" style="margin-top:10px">
       服务地址：<code>http://localhost:5100</code> ·
@@ -51,7 +51,8 @@
       <tr><td>M12</td><td>客户主数据深化（省市区 + 详细地址 + 经营范围）</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M13</td><td>库位主数据深化（库位组 + 长宽高 + 体积库容）</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M14</td><td>承运商模块（新增子系统，供发快递/零担/整车）</td><td><span class="tag ok">已完成</span></td></tr>
-      <tr><td>M15+</td><td>移库 / 盘点 / 预警 / 报表 / 外部对接 / CSV</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>M16</td><td>移库单（库位间一减一增、同事务原子转移、余额可核对）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M17+</td><td>盘点 / 预警 / 报表 / 外部对接 / CSV</td><td><span class="tag off">规划中</span></td></tr>
     </table>
     </div>
   </div>
