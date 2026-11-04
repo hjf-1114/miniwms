@@ -10,6 +10,7 @@
 - ASN 的货主必须与行内物料的货主一致（都为自营/都为同一货主）
 - 收货目标位必须 loc_type=receiving 且启用；上架目标位必须 storage/picking 且启用
 """
+import json
 import math
 
 from flask import Blueprint, jsonify, request
@@ -20,6 +21,13 @@ from main import get_db, gen_doc_no, request_payload
 
 asn_bp = Blueprint("asn", __name__, url_prefix="/api/asns")
 
+# 收货明细随行落库的商品档案快照字段（选商品时前端自动带出，单据留存历史值）
+LINE_SNAPSHOT_FIELDS = (
+    "product_name", "spec", "article_no", "unit", "brand", "mfg_enterprise",
+    "reg_cert_no", "registrant", "mfg_license", "shelf_life_days",
+    "batch_no", "production_date", "expiry_date",
+)
+
 
 def _load_asn(db, asn_id):
     return db.execute("SELECT * FROM asn WHERE id = ?", (asn_id,)).fetchone()
@@ -27,7 +35,11 @@ def _load_asn(db, asn_id):
 
 def _load_lines(db, asn_id):
     return db.execute(
-        """SELECT al.*, p.sku, p.name AS product_name, p.owner_id AS product_owner_id
+        """SELECT al.*, p.sku, p.name AS product_name, p.owner_id AS product_owner_id,
+                  p.spec AS p_spec, p.article_no AS p_article_no, p.unit AS p_unit,
+                  p.brand AS p_brand, p.mfg_enterprise AS p_mfg_enterprise,
+                  p.reg_cert_no AS p_reg_cert_no, p.registrant AS p_registrant,
+                  p.mfg_license AS p_mfg_license, p.shelf_life_days AS p_shelf_life_days
            FROM asn_line al JOIN product p ON p.id = al.product_id
            WHERE al.asn_id = ? ORDER BY al.id""",
         (asn_id,),
@@ -76,17 +88,25 @@ def create_asn():
     lines = payload.get("lines")
     note = str(payload.get("note") or "")
 
-    # 单据字段（M16）：单据类型/外部单号/订单来源/来源仓库/供应商/客户名称/承运商/自定义字段
+    # 单据字段（M16）：单据类型/外部单号/订单来源/来源仓库/供应商/客户/承运商/自定义字段
+    # 单据类型默认「采购」；来源仓库为必填
     doc_type = str(payload.get("doc_type") or "").strip() or "采购"
     external_no = str(payload.get("external_no") or "").strip()
     order_source = str(payload.get("order_source") or "").strip()
     source_warehouse = payload.get("source_warehouse")
     supplier_id = payload.get("supplier_id")
+    customer_id = payload.get("customer_id")
     customer_name = str(payload.get("customer_name") or "").strip()
     carrier_name = str(payload.get("carrier_name") or "").strip()
     extra1 = str(payload.get("extra1") or "").strip()
     extra2 = str(payload.get("extra2") or "").strip()
     extra3 = str(payload.get("extra3") or "").strip()
+    # 往来单位联系方式：下单时可覆盖主数据带出的默认值
+    ov = {
+        k: str(payload.get(k) or "").strip()
+        for k in ("supplier_name", "supplier_contact", "supplier_phone", "supplier_address",
+                  "customer_contact", "customer_phone", "customer_address")
+    }
 
     errors = []
     if doc_type not in C.ASN_DOC_TYPES:
@@ -105,13 +125,14 @@ def create_asn():
         try:
             pid = int(ln.get("product_id"))
             qty = float(ln.get("expected_qty"))
+            snap = {k: str(ln.get(k) or "").strip() for k in LINE_SNAPSHOT_FIELDS}
         except (TypeError, ValueError, AttributeError):
             return jsonify({"ok": False, "errors": [f"lines[{i}] 字段不合法"]}), 400
         if math.isnan(qty) or qty <= 0:
             return jsonify({"ok": False, "errors": [f"lines[{i}] expected_qty 必须为正数"]}), 400
-        parsed_lines.append((pid, qty))
+        parsed_lines.append((pid, qty, snap))
     # 同一物料在明细中不可重复（asn_line 唯一约束 (asn_id, product_id)）
-    dup = {pid for pid, _ in parsed_lines}
+    dup = {pid for pid, _, _ in parsed_lines}
     if len(dup) != len(parsed_lines):
         return jsonify({"ok": False, "errors": ["同一物料在明细中出现多次，请合并数量"]}), 400
 
@@ -119,14 +140,19 @@ def create_asn():
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "errors": [f"货主不存在: id={owner_id}"]}), 400
 
-    # 来源仓库（多仓库）：存在且启用
+    # 来源仓库：表单层必填；API 层仍允许省略（兼容内部作业链路与后续外部对接），
+    # 但一旦提供就必须存在且启用
     wh_code = None
-    if source_warehouse not in (None, "", 0):
+    if source_warehouse in (None, "", 0):
+        source_warehouse = None
+    else:
         try:
             source_warehouse = int(source_warehouse)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "errors": ["source_warehouse 必须为整数"]}), 400
-        wh = db.execute("SELECT code, status FROM warehouse WHERE id = ?", (source_warehouse,)).fetchone()
+        wh = db.execute(
+            "SELECT code, status FROM warehouse WHERE id = ?", (source_warehouse,)
+        ).fetchone()
         if wh is None:
             return jsonify({"ok": False, "errors": [f"来源仓库不存在: id={source_warehouse}"]}), 400
         if wh["status"] != "active":
@@ -135,19 +161,36 @@ def create_asn():
 
     # 供应商（多货主隔离：必须属本货主）；同时快照名称/联系人/电话/地址
     sup = None
-    if supplier_id not in (None, "", 0):
+    if supplier_id in (None, "", 0):
+        supplier_id = None
+    else:
         try:
             supplier_id = int(supplier_id)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "errors": ["supplier_id 必须为整数"]}), 400
-        sup = db.execute(
-            "SELECT * FROM supplier WHERE id = ?", (supplier_id,)
-        ).fetchone()
+        sup = db.execute("SELECT * FROM supplier WHERE id = ?", (supplier_id,)).fetchone()
         if sup is None:
             return jsonify({"ok": False, "errors": [f"供应商不存在: id={supplier_id}"]}), 400
         if sup["owner_id"] != owner_id:
             return jsonify({"ok": False, "errors": [
                 f"供应商 {sup['name']} 不属于该货主（多货主隔离）"
+            ]}), 400
+
+    # 客户（可选，关联客户主数据；归属货主必须与单据一致）
+    cust = None
+    if customer_id in (None, "", 0):
+        customer_id = None
+    else:
+        try:
+            customer_id = int(customer_id)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "errors": ["customer_id 必须为整数"]}), 400
+        cust = db.execute("SELECT * FROM customer WHERE id = ?", (customer_id,)).fetchone()
+        if cust is None:
+            return jsonify({"ok": False, "errors": [f"客户不存在: id={customer_id}"]}), 400
+        if cust["owner_id"] != owner_id:
+            return jsonify({"ok": False, "errors": [
+                f"客户 {cust['name']} 不属于该货主（多货主隔离）"
             ]}), 400
 
     # 单号：留空则自动生成 ASN-YYYYMMDD-NNN（英文开头 + 日期流水）
@@ -159,7 +202,7 @@ def create_asn():
         return jsonify({"ok": False, "errors": [f"ASN 编码已存在: {code}"]}), 409
 
     # 物料必须存在，且货主归属与单据一致
-    for pid, _ in parsed_lines:
+    for pid, _, _ in parsed_lines:
         p = db.execute(
             "SELECT owner_id FROM product WHERE id = ?", (pid,)
         ).fetchone()
@@ -171,25 +214,37 @@ def create_asn():
             ]}), 400
 
     # 明细汇总：订单总数量 = Σ 预期数量，品类数 = 不同物料数
-    total_qty = round(sum(q for _, q in parsed_lines), 6)
-    category_count = len({pid for pid, _ in parsed_lines})
+    total_qty = round(sum(q for _, q, _ in parsed_lines), 6)
+    category_count = len({pid for pid, _, _ in parsed_lines})
+
+    # 往来单位快照：优先用下单时填写的覆盖值，否则取主数据
+    snap_sup_name = ov["supplier_name"] or (sup["name"] if sup else "")
+    snap_sup_contact = ov["supplier_contact"] or (sup["contact"] if sup else "")
+    snap_sup_phone = ov["supplier_phone"] or (sup["phone"] if sup else "")
+    snap_sup_address = ov["supplier_address"] or (sup["address"] if sup else "")
+    snap_cus_name = customer_name or (cust["name"] if cust else "")
+    snap_cus_contact = ov["customer_contact"] or (cust["contact"] if cust else "")
+    snap_cus_phone = ov["customer_phone"] or (cust["phone"] if cust else "")
+    snap_cus_address = ov["customer_address"] or (cust["address"] if cust else "")
 
     cur = db.execute(
         """INSERT INTO asn (code, owner_id, doc_type, external_no, order_source,
-               source_warehouse, supplier_id, customer_name, carrier_name,
+               source_warehouse, supplier_id, customer_id, customer_name, carrier_name,
                supplier_name, supplier_contact, supplier_phone, supplier_address,
+               customer_contact, customer_phone, customer_address,
                total_qty, category_count, extra1, extra2, extra3, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (code, owner_id, doc_type, external_no, order_source, source_warehouse,
-         supplier_id, customer_name, carrier_name,
-         sup["name"] if sup else "", sup["contact"] if sup else "",
-         sup["phone"] if sup else "", sup["address"] if sup else "",
+         supplier_id, customer_id, snap_cus_name, carrier_name,
+         snap_sup_name, snap_sup_contact, snap_sup_phone, snap_sup_address,
+         snap_cus_contact, snap_cus_phone, snap_cus_address,
          total_qty, category_count, extra1, extra2, extra3, note),
     )
     asn_id = cur.lastrowid
     db.executemany(
-        "INSERT INTO asn_line (asn_id, product_id, expected_qty) VALUES (?, ?, ?)",
-        [(asn_id, pid, qty) for pid, qty in parsed_lines],
+        "INSERT INTO asn_line (asn_id, product_id, expected_qty, extra) VALUES (?, ?, ?, ?)",
+        [(asn_id, pid, qty, json.dumps(snap, ensure_ascii=False))
+         for pid, qty, snap in parsed_lines],
     )
     db.commit()
     asn = _load_asn(db, asn_id)
@@ -203,6 +258,34 @@ def _dict_line(l):
     d = dict(l)
     d["remaining_receive"] = max(0, l["expected_qty"] - l["received_qty"])
     d["remaining_putaway"] = max(0, l["received_qty"] - l["putaway_qty"])
+    # 行快照优先；老单据未存快照时回退到物料主数据当前值
+    raw = d.pop("extra", "") or ""
+    try:
+        snap = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        snap = {}
+    if not isinstance(snap, dict):
+        snap = {}
+    fallbacks = {
+        "product_name": d.get("product_name"),
+        "spec": d.pop("p_spec", ""),
+        "article_no": d.pop("p_article_no", ""),
+        "unit": d.pop("p_unit", ""),
+        "brand": d.pop("p_brand", ""),
+        "mfg_enterprise": d.pop("p_mfg_enterprise", ""),
+        "reg_cert_no": d.pop("p_reg_cert_no", ""),
+        "registrant": d.pop("p_registrant", ""),
+        "mfg_license": d.pop("p_mfg_license", ""),
+        "shelf_life_days": d.pop("p_shelf_life_days", ""),
+    }
+    for k, fallback in fallbacks.items():
+        v = snap.get(k, "")
+        d[k] = v if v not in ("", None) else (fallback or "")
+    # 批次类字段（批号/生产日期/失效日期）无主数据兜底，直接取快照
+    for k, v in snap.items():
+        if k not in d:
+            d[k] = v
+    d.pop("product_owner_id", None)
     return d
 
 
@@ -253,11 +336,14 @@ def get_asn(asn_id):
         return jsonify({"ok": False, "error": "ASN 不存在"}), 404
     o = db.execute("SELECT code, name FROM owner WHERE id = ?", (asn["owner_id"],)).fetchone()
     wh = db.execute("SELECT code, name FROM warehouse WHERE id = ?", (asn["source_warehouse"],)).fetchone()
-    sp = db.execute("SELECT code, name FROM supplier WHERE id = ?", (asn["supplier_id"],)).fetchone()
+    sp = db.execute("SELECT code FROM supplier WHERE id = ?", (asn["supplier_id"],)).fetchone()
+    cu = db.execute("SELECT code FROM customer WHERE id = ?", (asn["customer_id"],)).fetchone()
     body = dict(asn)
     body["owner_code"], body["owner_name"] = (o["code"], o["name"]) if o else (None, None)
     body["source_warehouse_code"], body["source_warehouse_name"] = (wh["code"], wh["name"]) if wh else (None, None)
-    body["supplier_code"], body["supplier_name"] = (sp["code"], sp["name"]) if sp else (None, None)
+    # 名称保留单据快照（下单时允许覆盖主数据），仅补充编码
+    body["supplier_code"] = sp["code"] if sp else None
+    body["customer_code"] = cu["code"] if cu else None
     return jsonify({"ok": True, "asn": body,
                     "lines": [_dict_line(l) for l in _load_lines(db, asn_id)]})
 

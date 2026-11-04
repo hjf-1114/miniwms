@@ -243,6 +243,10 @@ def init_db():
                 source_warehouse INTEGER REFERENCES warehouse(id),
                 supplier_id     INTEGER REFERENCES supplier(id),
                 customer_name   TEXT    NOT NULL DEFAULT '',
+                customer_id     INTEGER REFERENCES customer(id),
+                customer_contact TEXT   NOT NULL DEFAULT '',
+                customer_phone  TEXT    NOT NULL DEFAULT '',
+                customer_address TEXT   NOT NULL DEFAULT '',
                 carrier_name    TEXT    NOT NULL DEFAULT '',
                 supplier_name   TEXT    NOT NULL DEFAULT '',
                 supplier_contact TEXT   NOT NULL DEFAULT '',
@@ -267,6 +271,7 @@ def init_db():
                 expected_qty REAL    NOT NULL,
                 received_qty REAL    NOT NULL DEFAULT 0,
                 putaway_qty  REAL    NOT NULL DEFAULT 0,
+                extra        TEXT    NOT NULL DEFAULT '',
                 UNIQUE(asn_id, product_id)
             );
             CREATE INDEX IF NOT EXISTS idx_asn_line_asn ON asn_line(asn_id);
@@ -392,9 +397,21 @@ def init_db():
                 ("extra1", "ALTER TABLE asn ADD COLUMN extra1 TEXT NOT NULL DEFAULT ''"),
                 ("extra2", "ALTER TABLE asn ADD COLUMN extra2 TEXT NOT NULL DEFAULT ''"),
                 ("extra3", "ALTER TABLE asn ADD COLUMN extra3 TEXT NOT NULL DEFAULT ''"),
+                # 收货单往来单位联系方式（可在下单时覆盖主数据快照）
+                ("customer_id", "ALTER TABLE asn ADD COLUMN customer_id INTEGER REFERENCES customer(id)"),
+                ("customer_contact", "ALTER TABLE asn ADD COLUMN customer_contact TEXT NOT NULL DEFAULT ''"),
+                ("customer_phone", "ALTER TABLE asn ADD COLUMN customer_phone TEXT NOT NULL DEFAULT ''"),
+                ("customer_address", "ALTER TABLE asn ADD COLUMN customer_address TEXT NOT NULL DEFAULT ''"),
             ):
                 if col not in asn_cols:
                     conn.execute(ddl)
+        # 收货明细商品档案快照（JSON：规格/货号/批号/效期/注册证等，选商品时自动带出）
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='asn_line'"
+        ).fetchone():
+            line_cols = {r[1] for r in conn.execute("PRAGMA table_info(asn_line)")}
+            if "extra" not in line_cols:
+                conn.execute("ALTER TABLE asn_line ADD COLUMN extra TEXT NOT NULL DEFAULT ''")
         if "dn" in tables:
             dn_cols = {r[1] for r in conn.execute("PRAGMA table_info(dn)")}
             for col, ddl in (
@@ -454,7 +471,11 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_owner_cert_owner ON owner_cert(owner_id);
             """
         )
-        if "customer" in tables:
+        # 注意：customer 表在本函数稍早才创建，不能用函数开头的 tables 快照判断，
+        # 否则全新库会跳过列迁移导致 /api/customers 插入缺列（实测新库 bug）。
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer'"
+        ).fetchone():
             cust_cols = {r[1] for r in conn.execute("PRAGMA table_info(customer)")}
             for col, ddl in (
                 ("email", "ALTER TABLE customer ADD COLUMN email TEXT NOT NULL DEFAULT ''"),
@@ -463,8 +484,10 @@ def init_db():
             ):
                 if col not in cust_cols:
                     conn.execute(ddl)
-        # M12 客户主数据深化：省市区 + 详细地址 + 经营范围
-        if "customer" in tables:
+        # M12 客户主数据深化：省市区 + 详细地址 + 经营范围（同样用实时表判断）
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer'"
+        ).fetchone():
             cust_cols = {r[1] for r in conn.execute("PRAGMA table_info(customer)")}
             for col, ddl in (
                 ("province", "ALTER TABLE customer ADD COLUMN province TEXT NOT NULL DEFAULT ''"),
@@ -685,7 +708,8 @@ if __name__ == "__main__":
     from main import app as _app, init_db as _init_db  # noqa: E402
 
     _init_db()
-    _app.run(host="0.0.0.0", port=5100, debug=False)
+    # 端口可用 MINIWMS_PORT 覆盖，便于本机多实例/端到端测试（默认仍为 5100）
+    _app.run(host="0.0.0.0", port=int(os.environ.get("MINIWMS_PORT", "5100")), debug=False)
 else:
     from routes_location import location_bp  # noqa: E402
     from routes_owner import owner_bp  # noqa: E402

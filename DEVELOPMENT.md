@@ -323,6 +323,28 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
   盲盘负数 400、有未盘行调整 400、非 adjusted 结案 409
 - 无差异（实盘=账存）仍正常置 adjusted，账存不变
 
+## 工作台与收货单体验增强（2026-11-04 用户 4 点反馈，非里程碑）
+
+**目标**：① 修「进入工作台」可无限点击导致页面嵌套错乱；② 左侧菜单改垂直一级 + 内嵌可折叠子菜单；
+③ 收货单默认不填货主，选货主后客户/供应商/商品联动，但不再「只让选合规数据」，而是**全量可选 + 选错即时报错**；
+④ 单据类型默认采购、仓库必填且默认有内容、下单可改供应商/客户联系方式、明细带出商品档案与批次信息、布局优化。
+
+**改动清单**：
+- `web_app/index.html`：工作台入口标记 `data-embed-hide`，embed 模式由 `layout.js` 隐藏；即便被点击也改为顶层跳转
+- `web_app/app.html`：embed 守卫（工作台自身不被塞进 iframe，`openTab` 也拒绝以 `/app.html` 为标签内容）；侧边栏由扁平分组改为垂直一级菜单 + 内嵌子菜单（accordion），图标条状态点击一级自动固定展开
+- `web_app/js/modal.js`：新增 `section` 分节、`select.default`/空选项/`required`、`setFieldError()` 实时报错、`lines.autoFill + optionData + onLineChange/onLineAdd + cardLayout`；`openForm()` 返回 overlay 供页面做联动
+- `web_app/asns.html`：表单按「单据信息 / 往来单位 / 收货明细 / 其他」分节（宽 1000）；货主默认空，选定后三处下拉按归属排前打 ✓ 但保留全部选项，选错即时红字；选供应商/客户自动带出联系方式（仍可改）；选商品自动带出商品档案并留快照；明细表格 17 列展示规格/货号/批号/效期/注册证号等
+- `main.py`：`asn` 增 `customer_id`/`customer_contact`/`customer_phone`/`customer_address`；`asn_line` 增 `extra`（JSON 明细快照）；均含旧库幂等 ALTER；`MINIWMS_PORT` 可覆盖监听端口
+- `routes_asn.py`：`customer_id` 归属校验（选错 400 明确报错）、供应商/客户联系方式允许下单覆盖、明细快照落库并在详情返回（老单据回退物料主数据）、详情保留名称快照并补 `customer_code`
+- **顺带修复真实 bug**：全新库 `customer` 表缺 `province`/`city`/`district`/`detail_address`/`business_scope` —— 该表在 `init_db()` 中段才创建，而 M8/M12 迁移用函数开头的 `tables` 快照判断 `if "customer" in tables`，导致全新库跳过迁移、`/api/customers` 插入报 `no column named province`。改为实时 `sqlite_master` 判断，并新增 `tests/test_fresh_db_schema.py` 回归
+- `tests/test_asn.py`：+5（仓库/客户/联系方式覆盖/明细快照/默认采购），夹具同步；新增 `tests/test_fresh_db_schema.py` +2
+
+**口径说明**：来源仓库在**表单层必填**（`required` + 默认选中第一个；无仓库时自动播种 `WH-DEFAULT`），API 层仍允许省略以保持内部作业链路与后续外部对接兼容；一旦提供则严格校验存在且启用。
+
+**可验证结果**：
+- `python -m unittest discover -s tests` **219 例全绿**（原 212 + ASN 5 + 全新库 schema 2）
+- Playwright 端到端 **31/31 通过**：默认采购/仓库有值/货主默认空、全量可选与 ✓ 标记、选错即时报错且改回清除、商品档案自动带出、创建成功、明细 17 列与档案/批号/联系人展示、工作台 3 组一级菜单与折叠、概览标签隐藏工作台入口、重复点击不重复开标签、防嵌套守卫
+
 ## M6 库存账与流水查询（2026-11-03）
 
 **目标**：交付只读「库存账房」——余额查询、全部动作流水查询、余额与流水累加的

@@ -50,13 +50,16 @@
       <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
     </div>
     <div class="table-wrap">
-      <table>
-      <tbody id="asnMeta"></tbody>
-    </table>
+      <table><tbody id="asnMeta"></tbody></table>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap mt12">
       <table>
-      <thead><tr><th>行</th><th>SKU</th><th>物料</th><th>预期</th><th>已收</th><th>已上架</th><th>收货</th><th>上架</th></tr></thead>
+      <thead><tr>
+        <th>行</th><th>货品名称</th><th>规格</th><th>货号</th><th>数量</th><th>单位</th>
+        <th>厂家</th><th>批号</th><th>生产日期</th><th>失效日期</th>
+        <th>注册证号</th><th>注册人/备案人</th><th>生产许可证</th>
+        <th>已收</th><th>已上架</th><th>收货</th><th>上架</th>
+      </tr></thead>
       <tbody id="lineBody"></tbody>
     </table>
     </div>
@@ -70,30 +73,167 @@
     <script src="/js/layout.js"></script>
 <script>
 let currentAsn = null;
-let ownerOptions = [];
-let productOptions = [];
-let allSupplierOptions = [];
-let warehouseOptions = [];
+let ownerOptions = [], productOptions = [], allSupplierOptions = [];
+let allCustomerOptions = [], warehouseOptions = [];
+let productMap = {}, supplierMap = {}, customerMap = {};
 let asnList = [];
+let modalEl = null;
+
+// 商品档案字段（选商品时自动带出、随单据留快照）
+const SNAP_FIELDS = [
+  { name: "product_name", label: "货品名称", readonly: true },
+  { name: "spec", label: "规格", readonly: true },
+  { name: "article_no", label: "货号", readonly: true },
+  { name: "unit", label: "单位", readonly: true },
+  { name: "brand", label: "品牌", readonly: true },
+  { name: "mfg_enterprise", label: "厂家", readonly: true },
+  { name: "reg_cert_no", label: "注册证号", readonly: true },
+  { name: "registrant", label: "注册人/备案人", readonly: true },
+  { name: "mfg_license", label: "生产许可证", readonly: true },
+  { name: "shelf_life_days", label: "效期(天)", readonly: true },
+];
+const BATCH_FIELDS = [
+  { name: "batch_no", label: "批号" },
+  { name: "production_date", label: "生产日期", type: "date" },
+  { name: "expiry_date", label: "失效日期", type: "date" },
+];
 
 async function loadOptions() {
-  const [ow, pr, sp, wh] = await Promise.all([
+  let [ow, pr, sp, cu, wh] = await Promise.all([
     api("GET", "/api/owners?page_size=100"),
     api("GET", "/api/products?page_size=100"),
     api("GET", "/api/suppliers?page_size=100"),
+    api("GET", "/api/customers?page_size=100"),
     api("GET", "/api/warehouses?page_size=100"),
   ]);
+  // 仓库默认没有内容时，自动播种一个默认仓库，保证表单可直接选
+  if (!wh.warehouses.length) {
+    try {
+      await api("POST", "/api/warehouses", { code: "WH-DEFAULT", name: "默认仓库" });
+      wh = await api("GET", "/api/warehouses?page_size=100");
+    } catch (e) { /* 无权限时由表单提示手动创建 */ }
+  }
   ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
-  productOptions = pr.products.map((p) => ({ value: p.id, label: `${p.sku} · ${p.name}` }));
+  const ownerCode = (id) => {
+    const o = ownerOptions.find((x) => String(x.value) === String(id));
+    return o ? o.label.split(" · ")[0] : "—";
+  };
   allSupplierOptions = sp.suppliers.map((s) => ({
-    value: s.id, label: `${s.code} · ${s.name}`, owner_id: s.owner_id,
+    value: s.id, label: `${s.code} · ${s.name}〔${ownerCode(s.owner_id)}〕`, owner_id: s.owner_id,
   }));
+  supplierMap = Object.fromEntries(sp.suppliers.map((s) => [s.id, s]));
+  allCustomerOptions = cu.customers.map((c) => ({
+    value: c.id, label: `${c.code} · ${c.name}〔${ownerCode(c.owner_id)}〕`, owner_id: c.owner_id,
+  }));
+  customerMap = Object.fromEntries(cu.customers.map((c) => [c.id, c]));
   warehouseOptions = wh.warehouses.map((w) => ({ value: w.id, label: `${w.code} · ${w.name}` }));
+  productOptions = pr.products.map((p) => ({
+    value: p.id, label: `${p.sku} · ${p.name}〔${ownerCode(p.owner_id)}〕`, owner_id: p.owner_id,
+  }));
+  productMap = Object.fromEntries(pr.products.map((p) => [p.id, p]));
 }
 
-function suppliersForOwner(ownerId) {
-  if (!ownerId) return allSupplierOptions;
-  return allSupplierOptions.filter((s) => String(s.owner_id) === String(ownerId));
+function productData() {
+  const out = {};
+  Object.keys(productMap).forEach((id) => {
+    const p = productMap[id];
+    out[id] = {
+      name: p.name || "", spec: p.spec || "", article_no: p.article_no || "",
+      unit: p.unit || "", brand: p.brand || "", mfg_enterprise: p.mfg_enterprise || "",
+      reg_cert_no: p.reg_cert_no || "", registrant: p.registrant || "",
+      mfg_license: p.mfg_license || "", shelf_life_days: p.shelf_life_days || "",
+    };
+  });
+  return out;
+}
+
+/** 联动：把符合当前货主的选项排前并打 ✓，但保留全部选项（选错要能报错）。 */
+function reorderScoped(sel, opts, oid) {
+  if (!sel) return;
+  const cur = sel.value;
+  const match = (o) => oid && o.owner_id && String(o.owner_id) === String(oid);
+  const sorted = opts.slice().sort((a, b) => (match(a) ? 0 : 1) - (match(b) ? 0 : 1));
+  sel.innerHTML = `<option value="">请选择…</option>` + sorted.map((o) =>
+    `<option value="${esc(o.value)}"${String(o.value) === String(cur) ? " selected" : ""}>${esc(o.label)}${match(o) ? " ✓" : ""}</option>`
+  ).join("");
+}
+
+function validateLinesOwner(ov, oid) {
+  ov.querySelectorAll(".line-row").forEach((row) => {
+    const sel = row.querySelector('[name="product_id"]');
+    const box = row.querySelector(".line-err");
+    if (!sel || !box) return;
+    const p = productMap[sel.value];
+    if (oid && p && p.owner_id && String(p.owner_id) !== String(oid)) {
+      box.textContent = `⚠ 商品归属货主 ${ownerCodeOf(p.owner_id)}，与单据货主 ${ownerCodeOf(oid)} 不一致，提交将被拒绝`;
+      box.classList.add("show");
+    } else {
+      box.textContent = "";
+      box.classList.remove("show");
+    }
+  });
+}
+
+function ownerCodeOf(id) {
+  const o = ownerOptions.find((x) => String(x.value) === String(id));
+  return o ? o.label.split(" · ")[0] : "—";
+}
+
+function validateScoped(ov) {
+  const oid = ov.querySelector('[name="owner_id"]').value;
+  [["supplier_id", allSupplierOptions, "供应商"],
+   ["customer_id", allCustomerOptions, "客户"]].forEach(([name, opts, label]) => {
+    const sel = ov.querySelector(`[name="${name}"]`);
+    if (!sel || !sel.value) { setFieldError(ov, name, ""); return; }
+    const item = opts.find((x) => String(x.value) === String(sel.value));
+    if (oid && item && item.owner_id && String(item.owner_id) !== String(oid)) {
+      setFieldError(ov, name,
+        `⚠ ${label}归属货主 ${ownerCodeOf(item.owner_id)}，与当前货主 ${ownerCodeOf(oid)} 不一致，提交将被拒绝`);
+    } else {
+      setFieldError(ov, name, "");
+    }
+  });
+  validateLinesOwner(ov, oid);
+}
+
+function fillIfEmpty(ov, name, val) {
+  const el = ov.querySelector(`[name="${name}"]`);
+  if (el && !el.value && val) el.value = val;
+}
+
+function bindLinkage(ov) {
+  const ownerSel = ov.querySelector('[name="owner_id"]');
+  const supSel = ov.querySelector('[name="supplier_id"]');
+  const cusSel = ov.querySelector('[name="customer_id"]');
+  const sync = () => {
+    const oid = ownerSel.value;
+    reorderScoped(supSel, allSupplierOptions, oid);
+    reorderScoped(cusSel, allCustomerOptions, oid);
+    ov.querySelectorAll('.line-row [name="product_id"]').forEach(
+      (sel) => reorderScoped(sel, productOptions, oid));
+    validateScoped(ov);
+  };
+  ownerSel.addEventListener("change", sync);
+  supSel.addEventListener("change", () => {
+    const s = supplierMap[supSel.value];
+    if (s) {
+      fillIfEmpty(ov, "supplier_contact", s.contact);
+      fillIfEmpty(ov, "supplier_phone", s.phone);
+      fillIfEmpty(ov, "supplier_address", s.address);
+    }
+    validateScoped(ov);
+  });
+  cusSel.addEventListener("change", () => {
+    const c = customerMap[cusSel.value];
+    if (c) {
+      fillIfEmpty(ov, "customer_name", c.name);
+      fillIfEmpty(ov, "customer_contact", c.contact);
+      fillIfEmpty(ov, "customer_phone", c.phone);
+      fillIfEmpty(ov, "customer_address", c.address);
+    }
+    validateScoped(ov);
+  });
+  sync();
 }
 
 async function loadLocs() {
@@ -112,12 +252,12 @@ async function loadLocs() {
 }
 
 async function load() {
-  const kw = document.getElementById("kw").value.trim();
-  const st = document.getElementById("statusFilter").value;
-  const qs = new URLSearchParams({ page_size: 50 });
-  if (kw) qs.set("keyword", kw);
-  if (st) qs.set("status", st);
   try {
+    const kw = document.getElementById("kw").value.trim();
+    const st = document.getElementById("statusFilter").value;
+    const qs = new URLSearchParams({ page_size: 50 });
+    if (kw) qs.set("keyword", kw);
+    if (st) qs.set("status", st);
     const data = await api("GET", "/api/asns?" + qs);
     asnList = data.asns;
     document.getElementById("tbody").innerHTML = data.asns.map((a) =>
@@ -157,12 +297,14 @@ async function showDetail(id) {
   document.getElementById("asnMeta").innerHTML = [
     ["单据类型", a.doc_type || "-", "外部单号", a.external_no || "-"],
     ["来源仓库", a.source_warehouse_name || (a.source_warehouse_code || "-"), "订单来源", a.order_source || "-"],
-    ["供应商", a.supplier_name || "-", "客户名称", a.customer_name || "-"],
+    ["供应商", a.supplier_name || "-", "客户", a.customer_name || "-"],
     ["供应商联系人", a.supplier_contact || "-", "供应商电话", a.supplier_phone || "-"],
-    ["供应商地址", a.supplier_address || "-", "承运商", a.carrier_name || "-"],
-    ["订单总数量", a.total_qty ?? 0, "品类数", a.category_count ?? 0],
-    ["自定义1", a.extra1 || "-", "自定义2", a.extra2 || "-"],
-    ["自定义3", a.extra3 || "-", "备注", a.note || "-"],
+    ["供应商地址", a.supplier_address || "-", "客户联系人", a.customer_contact || "-"],
+    ["客户电话", a.customer_phone || "-", "客户地址", a.customer_address || "-"],
+    ["承运商", a.carrier_name || "-", "订单总数量", a.total_qty ?? 0],
+    ["品类数", a.category_count ?? 0, "自定义1", a.extra1 || "-"],
+    ["自定义2", a.extra2 || "-", "自定义3", a.extra3 || "-"],
+    ["备注", a.note || "-", "", ""],
   ].map(([k1, v1, k2, v2]) =>
     `<tr><td class="muted">${k1}</td><td>${esc(v1)}</td><td class="muted">${k2}</td><td>${esc(v2)}</td></tr>`
   ).join("");
@@ -172,10 +314,17 @@ async function showDetail(id) {
 
 function renderLines() {
   const d = currentAsn;
+  const cell = (v) => esc(v === 0 || v ? v : "-");
   document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
     `<tr>
-      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.product_name)}</td>
-      <td>${l.expected_qty}</td><td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
+      <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td>
+      <td>${cell(l.spec)}</td><td>${cell(l.article_no)}</td>
+      <td>${l.expected_qty}</td><td>${cell(l.unit)}</td>
+      <td>${cell(l.mfg_enterprise)}</td><td>${cell(l.batch_no)}</td>
+      <td>${cell(l.production_date)}</td><td>${cell(l.expiry_date)}</td>
+      <td>${cell(l.reg_cert_no)}</td><td>${cell(l.registrant)}</td>
+      <td>${cell(l.mfg_license)}</td>
+      <td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
       <td>
         <input id="rq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
         <button class="btn sm" onclick="doReceive(${l.id})">收货</button>
@@ -229,55 +378,77 @@ async function cancelAsn(id) {
 
 async function openCreate() {
   await loadOptions();
-  openForm({
-    title: "新建收货单（ASN）", submitText: "创建", width: 760,
-    fields: [
-      { name: "code", label: "单号 *（留空自动生成 ASN-日期-流水）", required: false, autocode: true, autocodePrefix: "ASN" },
-      { name: "owner_id", label: "货主 *", type: "select", required: true, options: ownerOptions },
-      { name: "doc_type", label: "单据类型", type: "select", options: [
-        { value: "调拨", label: "调拨" }, { value: "销退", label: "销退" },
-        { value: "采购", label: "采购" }, { value: "期初", label: "期初" }, { value: "其他", label: "其他" },
-      ] },
-      { name: "external_no", label: "外部单号（主单号）" },
-      { name: "order_source", label: "订单来源" },
-      { name: "source_warehouse", label: "来源仓库", type: "select", options: warehouseOptions },
-      { name: "supplier_id", label: "供应商", type: "select", options: allSupplierOptions },
-      { name: "customer_name", label: "客户名称" },
-      { name: "carrier_name", label: "承运商名称" },
-      { name: "extra1", label: "自定义字段1" },
-      { name: "extra2", label: "自定义字段2" },
-      { name: "extra3", label: "自定义字段3" },
-      { name: "note", label: "备注", type: "textarea", full: true },
-      {
-        name: "lines", label: "收货明细", type: "lines", full: true,
-        lineFields: [
-          { name: "product_id", label: "物料", type: "select", options: productOptions },
-          { name: "expected_qty", label: "预期数量", type: "number" },
-        ],
+  const whDefault = warehouseOptions.length ? warehouseOptions[0].value : "";
+  const fields = [
+    { type: "section", label: "① 单据信息" },
+    { name: "code", label: "单号（留空自动生成 ASN-日期-流水）", autocode: true, autocodePrefix: "ASN" },
+    { name: "owner_id", label: "货主 *", type: "select", required: true,
+      placeholder: "请选择货主", options: ownerOptions,
+      help: "选择货主后，客户/供应商/商品会标记归属并排前；仍可任选，选错会即时报错" },
+    { name: "doc_type", label: "单据类型", type: "select", default: "采购", options: [
+      { value: "采购", label: "采购" }, { value: "调拨", label: "调拨" },
+      { value: "销退", label: "销退" }, { value: "期初", label: "期初" },
+      { value: "其他", label: "其他" },
+    ] },
+    { name: "external_no", label: "外部单号" },
+    { name: "order_source", label: "订单来源" },
+    { name: "source_warehouse", label: "来源仓库 *", type: "select", required: true,
+      placeholder: "请选择仓库", default: whDefault, options: warehouseOptions,
+      help: warehouseOptions.length ? "已默认选中第一个仓库，可更换" : "尚无仓库，请到「基础主数据 → 仓库」创建" },
+
+    { type: "section", label: "② 往来单位（联系方式可在下单时修改）" },
+    { name: "supplier_id", label: "供应商", type: "select", placeholder: "请选择供应商", options: allSupplierOptions },
+    { name: "supplier_contact", label: "供应商联系人" },
+    { name: "supplier_phone", label: "供应商电话" },
+    { name: "supplier_address", label: "供应商地址" },
+    { name: "customer_id", label: "客户", type: "select", placeholder: "请选择客户", options: allCustomerOptions },
+    { name: "customer_name", label: "客户名称（可覆盖）" },
+    { name: "customer_contact", label: "客户联系人" },
+    { name: "customer_phone", label: "客户电话" },
+    { name: "customer_address", label: "客户地址" },
+    { name: "carrier_name", label: "承运商" },
+
+    { type: "section", label: "③ 收货明细（选择商品自动带出档案，批号/效期可补录）" },
+    {
+      name: "lines", label: "收货明细", type: "lines", full: true, cardLayout: true,
+      lineFields: [
+        { name: "product_id", label: "商品 *", type: "select", placeholder: "选择商品",
+          required: true, options: productOptions, optionData: productData() },
+        { name: "expected_qty", label: "数量 *", type: "number", required: true },
+        ...SNAP_FIELDS, ...BATCH_FIELDS,
+      ],
+      autoFill: { product_id: {
+        product_name: "name", spec: "spec", article_no: "article_no", unit: "unit",
+        brand: "brand", mfg_enterprise: "mfg_enterprise", reg_cert_no: "reg_cert_no",
+        registrant: "registrant", mfg_license: "mfg_license", shelf_life_days: "shelf_life_days",
+      } },
+      onLineChange: () => {
+        if (modalEl) validateLinesOwner(modalEl, modalEl.querySelector('[name="owner_id"]').value);
       },
-    ],
+      onLineAdd: (row) => {
+        if (!modalEl) return;
+        const oid = modalEl.querySelector('[name="owner_id"]').value;
+        reorderScoped(row.querySelector('[name="product_id"]'), productOptions, oid);
+        validateLinesOwner(modalEl, oid);
+      },
+    },
+
+    { type: "section", label: "④ 其他" },
+    { name: "extra1", label: "自定义字段1" },
+    { name: "extra2", label: "自定义字段2" },
+    { name: "extra3", label: "自定义字段3" },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+
+  modalEl = openForm({
+    title: "新建收货单（ASN）", submitText: "创建", width: 1000, fields,
     onSubmit: async (p) => {
       await api("POST", "/api/asns", p);
       showMsg(document.getElementById("msg"), "创建成功", "success");
       load();
     },
   });
-  // 选择货主后联动过滤供应商（多货主隔离）
-  const ov = document.querySelector(".modal-overlay");
-  if (ov) {
-    const ownerSel = ov.querySelector('[name="owner_id"]');
-    const supSel = ov.querySelector('[name="supplier_id"]');
-    if (ownerSel && supSel) {
-      const sync = () => {
-        const list = suppliersForOwner(ownerSel.value);
-        const cur = supSel.value;
-        supSel.innerHTML = list.map((s) =>
-          `<option value="${esc(s.value)}" ${String(s.value) === String(cur) ? "selected" : ""}>${esc(s.label)}</option>`).join("");
-      };
-      sync();
-      ownerSel.addEventListener("change", sync);
-    }
-  }
+  bindLinkage(modalEl);
 }
 
 function openAsnDetail(id) {

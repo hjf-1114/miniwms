@@ -1,16 +1,16 @@
 /* MiniWMS 通用弹窗表单组件（零依赖，需先于本文件加载 api.js 以使用 esc）。
  *
- * openForm(cfg):
- *   cfg = {
- *     title:      弹窗标题
- *     fields:     [{ name, label, type:'text'|'email'|'number'|'select'|'textarea'|'lines',
- *                    required, autocode:true, autocodePrefix:'OWN', nullable:true,
- *                    coerce:'int', options:[{value,label}], placeholder, full:true,
- *                    lineFields:[...] (仅 type==='lines') }]
- *     values:     预填对象（编辑时）
- *     onSubmit:   async (payload) => void  成功关闭弹窗；失败抛出 Error 显示
- *     submitText: 提交按钮文案（默认"保存"）
- *   }
+ * openForm(cfg) -> overlay DOM（返回弹窗节点，便于页面脚本做字段联动/实时校验）
+ *   cfg.fields: [{ name, label, type, required, default, placeholder, help,
+ *                  options, values, full, readonly, ... }]
+ *   type: text | email | number | select | textarea | date | region | lines | section
+ *     - section: 仅渲染分节标题，不产生 payload
+ *     - select: 支持 placeholder 空选项、default 默认值、required
+ *     - lines:  lineFields 支持 placeholder/readonly/required；
+ *               支持 optionData + autoFill 实现「选商品自动带出档案」，
+ *               支持 onLineChange(row) 回调做行内实时校验，
+ *               cardLayout=true 时改为带标签的网格卡片布局
+ *   cfg.values / cfg.width / cfg.submitText / cfg.onSubmit
  */
 
 function genCode(prefix) {
@@ -20,16 +20,36 @@ function genCode(prefix) {
   return `${prefix}-${ymd}-${rnd}`;
 }
 
+/** 在指定字段下方显示/清除实时校验错误。 */
+function setFieldError(overlay, name, msg) {
+  const el = overlay.querySelector(`[name="${name}"]`);
+  if (!el) return;
+  const wrap = el.parentElement;
+  let box = wrap.querySelector(".field-err");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "field-err";
+    wrap.appendChild(box);
+  }
+  box.textContent = msg || "";
+  box.classList.toggle("show", !!msg);
+}
+
 function modalFieldHtml(f, val) {
+  if (f.type === "section") {
+    return `<div class="form-section full"><span>${esc(f.label)}</span></div>`;
+  }
   const req = f.required ? "required" : "";
   const ph = f.placeholder ? `placeholder="${esc(f.placeholder)}"` : "";
   let control;
   if (f.type === "select") {
+    const emptyOpt = f.placeholder ? `<option value="">${esc(f.placeholder)}</option>` : "";
     const opts = (f.options || []).map((o) => {
-      const sel = (o.value === "" && (val === "" || val === null || val === undefined)) || String(o.value) === String(val);
+      const sel = (o.value === "" && (val === "" || val === null || val === undefined)) ||
+        String(o.value) === String(val);
       return `<option value="${esc(o.value)}" ${sel ? "selected" : ""}>${esc(o.label)}</option>`;
     }).join("");
-    control = `<select name="${f.name}">${opts}</select>`;
+    control = `<select name="${f.name}" ${req}>${emptyOpt}${opts}</select>`;
   } else if (f.type === "textarea") {
     control = `<textarea name="${f.name}" ${ph} ${req}>${esc(val)}</textarea>`;
   } else if (f.type === "lines") {
@@ -40,14 +60,16 @@ function modalFieldHtml(f, val) {
       `<select name="city"><option value="">市</option></select>` +
       `<input name="district" placeholder="区/县" value=""></div>`;
   } else if (f.type === "date") {
-    control = `<input type="date" name="${f.name}" value="${esc(val)}">`;
+    control = `<input type="date" name="${f.name}" value="${esc(val)}" ${req}>`;
   } else {
     const typ = f.type === "number" ? "number" : (f.type === "email" ? "email" : "text");
     const extra = f.type === "number" ? 'step="0.01"' : "";
-    control = `<input name="${f.name}" type="${typ}" ${ph} ${req} ${extra} value="${esc(val)}">`;
+    const ro = f.readonly ? "readonly" : "";
+    control = `<input name="${f.name}" type="${typ}" ${ph} ${req} ${extra} ${ro} value="${esc(val)}">`;
   }
   const hint = f.autocode ? '<span class="muted text-sm">留空自动生成</span>' : "";
-  return `<div class="${f.full ? "full" : ""}"><label>${esc(f.label)}${f.required ? " *" : ""}</label>${control}${hint}</div>`;
+  const help = f.help ? `<div class="field-help">${esc(f.help)}</div>` : "";
+  return `<div class="${f.full ? "full" : ""}"><label>${esc(f.label)}${f.required ? " *" : ""}</label>${control}${hint}${help}</div>`;
 }
 
 function collectLines(container, lineFields) {
@@ -56,7 +78,9 @@ function collectLines(container, lineFields) {
   rows.forEach((row) => {
     const obj = {};
     lineFields.forEach((lf) => {
-      let v = row.querySelector(`[name="${lf.name}"]`).value;
+      const node = row.querySelector(`[name="${lf.name}"]`);
+      if (!node) return;
+      let v = node.value;
       if (lf.coerce === "int" || lf.type === "number") v = v === "" ? "" : Number(v);
       obj[lf.name] = v;
     });
@@ -65,29 +89,72 @@ function collectLines(container, lineFields) {
   return out;
 }
 
-function renderLinesEditor(container, lineFields, initial) {
+function renderLinesEditor(container, lineFields, initial, cfg) {
+  cfg = cfg || {};
   container.innerHTML = "";
-  const head = document.createElement("div");
-  head.className = "lines-head";
-  head.innerHTML = lineFields.map((lf) => `<span>${esc(lf.label)}</span>`).join("") + "<span></span>";
-  container.appendChild(head);
+  const card = !!cfg.cardLayout;
+  if (!card) {
+    const head = document.createElement("div");
+    head.className = "lines-head";
+    head.innerHTML = lineFields.map((lf) => `<span>${esc(lf.label)}</span>`).join("") + "<span></span>";
+    container.appendChild(head);
+  }
+  const autoFill = cfg.autoFill || {};
+
   const addRow = (vals) => {
     const row = document.createElement("div");
-    row.className = "line-row";
+    row.className = "line-row" + (card ? " card-row" : "");
     row.innerHTML = lineFields.map((lf) => {
       const val = vals ? vals[lf.name] : "";
+      let control;
       if (lf.type === "select") {
+        const emptyOpt = lf.placeholder ? `<option value="">${esc(lf.placeholder)}</option>` : "";
         const opts = (lf.options || []).map((o) => {
-          const sel = (o.value === "" && (val === "" || val === null || val === undefined)) || String(o.value) === String(val);
+          const sel = (o.value === "" && (val === "" || val === null || val === undefined)) ||
+            String(o.value) === String(val);
           return `<option value="${esc(o.value)}" ${sel ? "selected" : ""}>${esc(o.label)}</option>`;
         }).join("");
-        return `<select name="${lf.name}">${opts}</select>`;
+        control = `<select name="${lf.name}" title="${esc(lf.label)}" ${lf.required ? "required" : ""}>${emptyOpt}${opts}</select>`;
+      } else {
+        const typ = lf.type === "number" ? "number" : (lf.type === "date" ? "date" : "text");
+        const step = lf.type === "number" ? 'step="0.01"' : "";
+        control = `<input name="${lf.name}" type="${typ}" ${step} value="${esc(val)}" ` +
+          `placeholder="${esc(lf.label)}" title="${esc(lf.label)}" ` +
+          `${lf.required ? "required" : ""} ${lf.readonly ? "readonly" : ""}>`;
       }
-      return `<input name="${lf.name}" type="${lf.type === "number" ? "number" : "text"}" ${lf.type === "number" ? 'step="0.01"' : ""} value="${esc(val)}" placeholder="${esc(lf.label)}">`;
-    }).join("") + `<button type="button" class="btn danger sm" data-del>删</button>`;
+      return card
+        ? `<label class="lf"><span>${esc(lf.label)}</span>${control}</label>`
+        : control;
+    }).join("") +
+      `<button type="button" class="btn danger sm" data-del title="删除本行">删</button>` +
+      (card ? `<div class="line-err"></div>` : `<div class="line-err"></div>`);
     row.querySelector("[data-del]").addEventListener("click", () => row.remove());
+
+    // 选商品 → 自动带出商品档案字段
+    Object.keys(autoFill).forEach((trigger) => {
+      const lf = lineFields.find((x) => x.name === trigger);
+      const sel = row.querySelector(`[name="${trigger}"]`);
+      if (!sel || !lf) return;
+      sel.addEventListener("change", () => {
+        const src = (lf.optionData || {})[sel.value] || {};
+        const map = autoFill[trigger];
+        Object.keys(map).forEach((target) => {
+          const input = row.querySelector(`[name="${target}"]`);
+          if (input) input.value = src[map[target]] ?? "";
+        });
+        if (typeof cfg.onLineChange === "function") cfg.onLineChange(row);
+      });
+    });
+    // 其余控件变化也触发回调（用于归属实时校验）
+    row.querySelectorAll("input, select").forEach((node) => {
+      node.addEventListener("change", () => {
+        if (typeof cfg.onLineChange === "function") cfg.onLineChange(row);
+      });
+    });
     container.appendChild(row);
+    if (typeof cfg.onLineAdd === "function") cfg.onLineAdd(row);
   };
+
   (initial && initial.length ? initial : [null]).forEach((v) => addRow(v));
   const addBtn = document.createElement("button");
   addBtn.type = "button";
@@ -100,7 +167,9 @@ function renderLinesEditor(container, lineFields, initial) {
 function openForm(cfg) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
-  const body = (cfg.fields || []).map((f) => modalFieldHtml(f, cfg.values ? cfg.values[f.name] : "")).join("");
+  const body = (cfg.fields || []).map((f) =>
+    modalFieldHtml(f, cfg.values ? cfg.values[f.name] : (f.default !== undefined ? f.default : ""))
+  ).join("");
   const widthStyle = cfg.width ? ` style="width:min(${cfg.width}px,100%)"` : "";
   overlay.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true"${widthStyle}>
@@ -125,11 +194,11 @@ function openForm(cfg) {
   const onKey = (e) => { if (e.key === "Escape") { closeModal(overlay); document.removeEventListener("keydown", onKey); } };
   document.addEventListener("keydown", onKey);
 
-  // 行编辑型字段初始化
+  // 行编辑型 / 地区复合字段初始化
   (cfg.fields || []).forEach((f) => {
     if (f.type === "lines") {
       const c = form.querySelector(`.lines-editor[data-name="${f.name}"]`);
-      renderLinesEditor(c, f.lineFields, cfg.values ? cfg.values[f.name] : null);
+      renderLinesEditor(c, f.lineFields, cfg.values ? cfg.values[f.name] : null, f);
     }
     if (f.type === "region" && typeof bindRegionSelects === "function") {
       const c = form.querySelector(`.region-field[data-name="${f.name}"]`);
@@ -154,6 +223,7 @@ function openForm(cfg) {
     const fd = new FormData(form);
     const payload = {};
     for (const f of cfg.fields) {
+      if (f.type === "section") continue;
       if (f.type === "lines") {
         payload[f.name] = collectLines(form.querySelector(`.lines-editor[data-name="${f.name}"]`), f.lineFields);
         continue;
@@ -186,6 +256,7 @@ function openForm(cfg) {
 
   const first = form.querySelector("input, select, textarea");
   if (first) first.focus();
+  return overlay;
 }
 
 function closeModal(overlay) {

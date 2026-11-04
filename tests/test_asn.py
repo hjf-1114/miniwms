@@ -28,6 +28,7 @@ class AsnApiTest(unittest.TestCase):
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")
             conn.execute("DELETE FROM asn")
+            conn.execute("DELETE FROM customer")
             conn.execute("DELETE FROM supplier")
             conn.execute("DELETE FROM warehouse")
             conn.execute("DELETE FROM product")
@@ -36,6 +37,8 @@ class AsnApiTest(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+        # 来源仓库为必填项：每个用例预置一个默认仓库
+        self.wh_id = self._mk_warehouse("WH-DEFAULT")
 
     # ---------- 夹具 ----------
     def _mk_owner(self, code="OW1"):
@@ -66,7 +69,16 @@ class AsnApiTest(unittest.TestCase):
                   "contact": "陈先生", "phone": "13800000000", "address": "深圳"},
         ).get_json()["supplier"]["id"]
 
+    def _mk_customer(self, owner_id, code="C1", name="客户1"):
+        return self.client.post(
+            "/api/customers",
+            json={"code": code, "name": name, "owner_id": owner_id,
+                  "contact": "林女士", "phone": "13900000000", "address": "广州"},
+        ).get_json()["customer"]["id"]
+
     def _mk_asn(self, owner_id, product_id, expected=10, code="ASN-001", **extra):
+        if "source_warehouse" not in extra:
+            extra["source_warehouse"] = self.wh_id
         resp = self.client.post("/api/asns", json={
             "code": code, "owner_id": owner_id, **extra,
             "lines": [{"product_id": product_id, "expected_qty": expected}],
@@ -99,7 +111,7 @@ class AsnApiTest(unittest.TestCase):
         pid = self._mk_product(oid)
         self._mk_asn(oid, pid, code="ASN-X")
         resp = self.client.post("/api/asns", json={
-            "code": "ASN-X", "owner_id": oid,
+            "code": "ASN-X", "owner_id": oid, "source_warehouse": self.wh_id,
             "lines": [{"product_id": pid, "expected_qty": 1}]})
         self.assertEqual(resp.status_code, 409)
 
@@ -108,7 +120,7 @@ class AsnApiTest(unittest.TestCase):
         oid2 = self._mk_owner("OW-B")
         pid = self._mk_product(oid2)  # 物料属于 OW-B
         resp = self.client.post("/api/asns", json={
-            "code": "ASN-M", "owner_id": oid,
+            "code": "ASN-M", "owner_id": oid, "source_warehouse": self.wh_id,
             "lines": [{"product_id": pid, "expected_qty": 5}]})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("不一致", resp.get_json()["errors"][0])
@@ -117,7 +129,7 @@ class AsnApiTest(unittest.TestCase):
         oid = self._mk_owner()
         pid = self._mk_product(oid)
         resp = self.client.post("/api/asns", json={
-            "code": "ASN-Q", "owner_id": oid,
+            "code": "ASN-Q", "owner_id": oid, "source_warehouse": self.wh_id,
             "lines": [{"product_id": pid, "expected_qty": 0}]})
         self.assertEqual(resp.status_code, 400)
 
@@ -257,7 +269,7 @@ class AsnApiTest(unittest.TestCase):
         oid = self._mk_owner()
         pid = self._mk_product(oid)
         resp = self.client.post("/api/asns", json={
-            "owner_id": oid,
+            "owner_id": oid, "source_warehouse": self.wh_id,
             "lines": [{"product_id": pid, "expected_qty": 1}]})
         self.assertEqual(resp.status_code, 201)
         self.assertRegex(resp.get_json()["asn"]["code"], r"^ASN-\d{8}-001$")
@@ -266,7 +278,7 @@ class AsnApiTest(unittest.TestCase):
         oid = self._mk_owner()
         pid = self._mk_product(oid)
         resp = self.client.post("/api/asns", json={
-            "code": "ASN-T", "owner_id": oid, "doc_type": "外星单",
+            "code": "ASN-T", "owner_id": oid, "doc_type": "外星单", "source_warehouse": self.wh_id,
             "lines": [{"product_id": pid, "expected_qty": 1}]})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("doc_type", str(resp.get_json()["errors"]))
@@ -277,7 +289,7 @@ class AsnApiTest(unittest.TestCase):
         p1 = self._mk_product(oid, sku="P1")
         p2 = self._mk_product(oid, sku="P2")
         resp = self.client.post("/api/asns", json={
-            "code": "ASN-MULTI", "owner_id": oid,
+            "code": "ASN-MULTI", "owner_id": oid, "source_warehouse": self.wh_id,
             "lines": [
                 {"product_id": p1, "expected_qty": 3},
                 {"product_id": p2, "expected_qty": 5},
@@ -293,7 +305,7 @@ class AsnApiTest(unittest.TestCase):
         oid = self._mk_owner()
         p1 = self._mk_product(oid, sku="P1")
         resp = self.client.post("/api/asns", json={
-            "code": "ASN-DUP", "owner_id": oid,
+            "code": "ASN-DUP", "owner_id": oid, "source_warehouse": self.wh_id,
             "lines": [
                 {"product_id": p1, "expected_qty": 3},
                 {"product_id": p1, "expected_qty": 2},
@@ -318,6 +330,7 @@ class AsnApiTest(unittest.TestCase):
         sup2 = self._mk_supplier(oid2, code="SUP-B", name="别家")
         resp = self.client.post("/api/asns", json={
             "code": "ASN-SUP2", "owner_id": oid, "supplier_id": sup2,
+            "source_warehouse": self.wh_id,
             "lines": [{"product_id": pid, "expected_qty": 1}]})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("供应商", resp.get_json()["errors"][0])
@@ -351,6 +364,95 @@ class AsnApiTest(unittest.TestCase):
         self._mk_asn(oid, pid, code="ASN-REF", supplier_id=sup_id)
         resp = self.client.delete(f"/api/suppliers/{sup_id}")
         self.assertEqual(resp.status_code, 409)
+
+    # ---------- 本轮新增：仓库必填 / 客户联动 / 联系方式覆盖 / 明细快照 ----------
+    def test_create_without_source_warehouse_allowed(self):
+        """表单层必填；API 层允许省略（兼容内部作业链路与外部对接）。"""
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        resp = self.client.post("/api/asns", json={
+            "code": "ASN-NOWH", "owner_id": oid,
+            "lines": [{"product_id": pid, "expected_qty": 1}]})
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        self.assertIsNone(resp.get_json()["asn"]["source_warehouse_code"])
+
+    def test_default_doc_type_is_purchase(self):
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        body = self._mk_asn(oid, pid, code="ASN-DOCDEF")
+        self.assertEqual(body["asn"]["doc_type"], "采购")
+
+    def test_customer_owner_mismatch_reports_error(self):
+        """选了别家货主的客户应明确报错，而不是前端被过滤掉看不到。"""
+        oid = self._mk_owner()
+        oid2 = self._mk_owner("OW-B")
+        pid = self._mk_product(oid)
+        cid2 = self._mk_customer(oid2, code="C-B", name="别家客户")
+        resp = self.client.post("/api/asns", json={
+            "code": "ASN-CUST", "owner_id": oid, "source_warehouse": self.wh_id,
+            "customer_id": cid2,
+            "lines": [{"product_id": pid, "expected_qty": 1}]})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("客户", resp.get_json()["errors"][0])
+
+    def test_contact_overrides_and_customer_snapshot(self):
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        cid = self._mk_customer(oid)
+        sid = self._mk_supplier(oid)
+        resp = self.client.post("/api/asns", json={
+            "code": "ASN-OV", "owner_id": oid, "source_warehouse": self.wh_id,
+            "customer_id": cid, "supplier_id": sid,
+            "supplier_contact": "王经理", "supplier_phone": "13711112222",
+            "customer_contact": "李经理", "customer_phone": "13633334444",
+            "customer_address": "东莞",
+            "lines": [{"product_id": pid, "expected_qty": 2}]})
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        a = resp.get_json()["asn"]
+        self.assertEqual(a["customer_id"], cid)
+        self.assertEqual(a["supplier_contact"], "王经理")
+        self.assertEqual(a["supplier_phone"], "13711112222")
+        self.assertEqual(a["customer_contact"], "李经理")
+        self.assertEqual(a["customer_phone"], "13633334444")
+        self.assertEqual(a["customer_address"], "东莞")
+        detail = self.client.get(f"/api/asns/{a['id']}").get_json()["asn"]
+        self.assertEqual(detail["supplier_contact"], "王经理")
+        self.assertEqual(detail["customer_code"], "C1")
+
+    def test_line_product_snapshot_fields(self):
+        oid = self._mk_owner()
+        pid = self.client.post("/api/products", json={
+            "sku": "MED-1", "name": "医药物料", "owner_id": oid,
+            "spec": "10mg×24片", "article_no": "HN-7788", "unit": "盒",
+            "reg_cert_no": "国械注准20260001", "registrant": "某某药业",
+            "mfg_enterprise": "深圳制药厂", "mfg_license": "粤20260001",
+        }).get_json()["product"]["id"]
+        line = {
+            "product_id": pid, "expected_qty": 5,
+            "product_name": "医药物料", "spec": "10mg×24片", "article_no": "HN-7788",
+            "unit": "盒", "brand": "测试牌", "mfg_enterprise": "深圳制药厂",
+            "reg_cert_no": "国械注准20260001", "registrant": "某某药业",
+            "mfg_license": "粤20260001", "shelf_life_days": 730,
+            "batch_no": "B20261104", "production_date": "2026-11-01",
+            "expiry_date": "2028-11-01",
+        }
+        resp = self.client.post("/api/asns", json={
+            "code": "ASN-SNAP", "owner_id": oid, "source_warehouse": self.wh_id,
+            "lines": [line]})
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        created = resp.get_json()["lines"][0]
+        self.assertEqual(created["spec"], "10mg×24片")
+        self.assertEqual(created["batch_no"], "B20261104")
+        self.assertEqual(created["registrant"], "某某药业")
+        detail = self.client.get(
+            f"/api/asns/{resp.get_json()['asn']['id']}").get_json()["lines"][0]
+        self.assertEqual(detail["article_no"], "HN-7788")
+        self.assertEqual(detail["production_date"], "2026-11-01")
+        self.assertEqual(detail["expiry_date"], "2028-11-01")
+        self.assertEqual(detail["mfg_license"], "粤20260001")
+        # 未传快照的老式明细，回退到物料主数据当前档案
+        plain = self._mk_asn(oid, pid, code="ASN-FALLBACK")
+        self.assertEqual(plain["lines"][0]["spec"], "10mg×24片")
 
 
 if __name__ == "__main__":

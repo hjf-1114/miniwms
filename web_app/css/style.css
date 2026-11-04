@@ -235,6 +235,28 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .modal-foot {
   grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px;
 }
+/* ── 分节表单 / 字段说明 / 明细卡片布局 ── */
+.form-section {
+  grid-column: 1 / -1; border-bottom: 1px solid var(--border);
+  padding: 4px 0 9px; margin: 4px 0 6px;
+  font-size: 13px; font-weight: 700; color: var(--primary-d);
+}
+.field-help { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.grid-form input[readonly], .grid-form textarea[readonly] { background: #f8fafc; color: var(--muted); }
+
+.lines-editor .card-row {
+  flex-wrap: wrap; gap: 8px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px; margin-bottom: 8px;
+  background: #fff; align-items: flex-end;
+}
+.lines-editor .card-row .lf { flex: 1 1 130px; min-width: 105px; }
+.lines-editor .card-row .lf > span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+.lines-editor .card-row .lf input,
+.lines-editor .card-row .lf select { width: 100%; }
+.lines-editor .card-row [data-del] { flex: 0 0 auto; }
+.line-err { flex-basis: 100%; font-size: 12px; color: var(--warn); display: none; }
+.line-err.show { display: block; }
+
 .lines-editor { grid-column: 1 / -1; border: 1px dashed var(--border); border-radius: var(--radius-sm); padding: 10px; background: #f8fafc; }
 .lines-head { display: flex; gap: 8px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .lines-head span { flex: 1; min-width: 0; }
