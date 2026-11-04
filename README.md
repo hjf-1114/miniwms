@@ -100,12 +100,13 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **M15 主数据体验增强**（2026-11-04）：物料体积手填/自动换算 · 条码与包装可编辑+包装等级(1-6) · 承运商演示数据(顺丰/京东/跨越/货拉拉等) · 货主合作起止时间(date 选择器)
 - **M16 供应链与单据主数据增强**（2026-11-04）：供应商主数据(归属货主/多货主隔离) + 多仓库主数据(全系统共享，此前仅支持多货主) + ASN/DN 自动单号(英文开头+日期流水，留空自动生成) + ASN/DN 单据字段增强(单据类型/外部单号/订单来源/来源仓库/供应商快照/承运商/自定义字段/订单总数量·品类数汇总)
 - **M17 移库单（Stock Transfer）**（`routes_transfer.py` + `inventory_service.stock_move`）：单据驱动库位间转移——创建移库单（货主×物料×来源位×目标位×数量，含归属/启停/来源≠目标校验），执行时在同一事务内源位扣减、目标位增加，落 move_out/move_in 两条流水且余额始终可由流水核对；仅未执行单可取消
+- **M18 盘点单（Stocktake）**（`routes_stocktake.py` + `inventory_service.adjust_stock`）：账实核对——冻结快照账存 → 盲盘录入实盘 → 差异生成 adjustment 调整流水 → 解冻结案，全程余额仍可由流水核对；含未盘行拦截、负数拦截、状态机守卫
 - **Web demo**（`web_app/`）
   - 首页导航 + 货主/物料/库位/客户/供应商/承运商/仓库/收货/出库/移库/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- 盘点（M18）、补货预警（M19）、报表统计（M20）
+- 补货预警（M19）、报表统计（M20）
 - **外部对接（M21）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
 - CSV 导入导出（M21）
 
@@ -134,6 +135,13 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET | `/api/transfers/<id>` | 移库单详情（联表带出来源/目标库位编码） |
 | POST | `/api/transfers/<id>/move` | 执行移库（同事务一减一增，写 move_out/move_in 流水） |
 | POST | `/api/transfers/<id>/cancel` | 取消（仅未执行） |
+| POST | `/api/stocktakes` | 创建盘点单（货主×编码唯一，code 必填） |
+| GET | `/api/stocktakes` | 盘点单列表，支持 `keyword`/`status`/分页 |
+| GET | `/api/stocktakes/<id>` | 盘点单详情（联表带出 物料/库位编码 + 差异 diff=counted-book） |
+| POST | `/api/stocktakes/<id>/freeze` | 冻结并快照账存到盘点行（状态→frozen） |
+| POST | `/api/stocktakes/<id>/count` | 盲盘录入实盘（逐行 counted_qty，负数 400，状态保持 frozen） |
+| POST | `/api/stocktakes/<id>/adjust` | 差异调整（有未盘行 400；对差异行生成 adjustment 流水，状态→adjusted） |
+| POST | `/api/stocktakes/<id>/close` | 解冻结案（仅已调整单，状态→closed） |
 | POST | `/api/customers` | 创建客户（归属货主，code 必填唯一） |
 | GET | `/api/customers` | 客户列表，支持 `keyword`/`status`/`owner_id`/分页 |
 | GET/PUT/DELETE | `/api/customers/<id>` | 详情/更新/删除（被出库单引用时拒绝） |

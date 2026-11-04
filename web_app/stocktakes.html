@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>盘点管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>盘点作业</h1><div class="crumb">MiniWMS / 出入库作业</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>盘点单列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建盘点单</button>
+    </div>
+    <div class="toolbar">
+      <input id="kw" placeholder="单号搜索">
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="open">待冻结</option>
+        <option value="frozen">盘点中</option>
+        <option value="adjusted">待结案</option>
+        <option value="closed">已结案</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none">
+    <h2 id="detailTitle">盘点单明细</h2>
+    <div class="toolbar" id="detailActions"></div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>行</th><th>SKU</th><th>物料</th><th>库位</th><th>账存</th><th>实盘</th><th>差异</th></tr></thead>
+      <tbody id="lineBody"></tbody>
+    </table>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
+    <script src="/js/layout.js"></script>
+<script>
+let currentSt = null;
+let ownerOptions = [];
+
+async function loadOptions() {
+  const o = await api("GET", "/api/owners?page_size=100");
+  ownerOptions = o.owners.map((x) => ({ value: x.id, label: `${x.code} · ${x.name}` }));
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page_size: 50 });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  try {
+    const data = await api("GET", "/api/stocktakes?" + qs);
+    document.getElementById("tbody").innerHTML = data.stocktakes.map((d) =>
+      `<tr>
+        <td>${d.id}</td><td>${esc(d.code)}</td>
+        <td>${esc(d.owner_code || "")} · ${esc(d.owner_name || "")}</td>
+        <td>${stTag(d.status)}</td>
+        <td class="muted">${esc(d.created_at)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function stTag(s) {
+  const map = { open: "待冻结", frozen: "盘点中", adjusted: "待结案", closed: "已结案" };
+  const cls = s === "closed" ? "ok" : (s === "open" ? "warn" : "off");
+  return `<span class="tag ${cls}">${map[s] || s}</span>`;
+}
+
+async function showDetail(id) {
+  const data = await api("GET", "/api/stocktakes/" + id);
+  currentSt = data;
+  document.getElementById("detailCard").style.display = "";
+  document.getElementById("detailTitle").textContent =
+    `盘点单明细：${data.stocktake.code}（${data.stocktake.status}）`;
+  renderActions();
+  renderLines();
+}
+
+function renderActions() {
+  const s = currentSt.stocktake.status;
+  const el = document.getElementById("detailActions");
+  let html = "";
+  if (s === "open") html += `<button class="btn" onclick="doFreeze()">冻结并快照账存</button>`;
+  if (s === "frozen") {
+    html += `<button class="btn" onclick="saveCount()">保存盲盘</button>`;
+    html += `<button class="btn secondary" onclick="doAdjust()">差异调整</button>`;
+  }
+  if (s === "adjusted") html += `<button class="btn" onclick="doClose()">解冻结案</button>`;
+  el.innerHTML = html;
+}
+
+function renderLines() {
+  const d = currentSt;
+  const frozen = d.stocktake.status === "frozen";
+  document.getElementById("lineBody").innerHTML = d.lines.map((l) => {
+    const counted = l.counted_qty === null ? l.book_qty : l.counted_qty;
+    const diff = l.diff === null ? "" : (l.diff > 0 ? "+" + l.diff : l.diff);
+    const input = frozen
+      ? `<input id="cnt-${l.id}" type="number" step="0.01" value="${counted}" style="width:90px">`
+      : (l.counted_qty === null ? "—" : l.counted_qty);
+    return `<tr>
+      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.product_name)}</td>
+      <td>${esc(l.location_code)}</td><td>${l.book_qty}</td>
+      <td>${input}</td><td>${diff}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function doFreeze() {
+  try {
+    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/freeze`);
+    showMsg(document.getElementById("msg"), `已冻结，快照 ${r.lines.length} 行账存`, "success");
+    await showDetail(currentSt.stocktake.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "冻结失败：" + e.message, "error");
+  }
+}
+
+async function saveCount() {
+  const lines = currentSt.lines.map((l) => ({
+    line_id: l.id,
+    counted_qty: parseFloat(document.getElementById("cnt-" + l.id).value),
+  }));
+  try {
+    await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/count`, { lines });
+    showMsg(document.getElementById("msg"), "盲盘已保存", "success");
+    await showDetail(currentSt.stocktake.id);
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "保存失败：" + e.message, "error");
+  }
+}
+
+async function doAdjust() {
+  if (!confirm("确认按盘点差异生成调整流水？（账存将修正为实盘）")) return;
+  try {
+    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/adjust`);
+    showMsg(document.getElementById("msg"), `差异调整完成，单据状态：${r.status}`, "success");
+    await showDetail(currentSt.stocktake.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "调整失败：" + e.message, "error");
+  }
+}
+
+async function doClose() {
+  if (!confirm("确认解冻结案？")) return;
+  try {
+    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/close`);
+    showMsg(document.getElementById("msg"), `已结案，状态：${r.status}`, "success");
+    await showDetail(currentSt.stocktake.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "结案失败：" + e.message, "error");
+  }
+}
+
+async function openCreate() {
+  await loadOptions();
+  openForm({
+    title: "新建盘点单（Stocktake）", submitText: "创建", width: 620,
+    fields: [
+      { name: "code", label: "单号 *", required: true, autocode: true, autocodePrefix: "ST" },
+      { name: "owner_id", label: "货主 *", type: "select", required: true, options: ownerOptions },
+      { name: "note", label: "备注", type: "textarea", full: true },
+    ],
+    onSubmit: async (p) => {
+      await api("POST", "/api/stocktakes", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+loadOptions().then(load);
+</script>
+</body>
+</html>

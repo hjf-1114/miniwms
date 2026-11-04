@@ -14,6 +14,7 @@
     { href: "/asns.html", label: "收货", ico: "📥" },
     { href: "/dns.html", label: "出库", ico: "📤" },
     { href: "/transfers.html", label: "移库", ico: "🔄" },
+    { href: "/stocktakes.html", label: "盘点", ico: "🔍" },
     { href: "/stock.html", label: "库存账", ico: "📊" },
     { group: "系统管理" },
     { href: "/roles.html", label: "角色", ico: "🔑" },
