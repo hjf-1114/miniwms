@@ -153,12 +153,26 @@ def _post(c, path, payload, expect=(200, 201)):
     return resp.get_json()
 
 
+def _put(c, path, payload):
+    resp = c.put(path, json=payload)
+    if resp.status_code != 200:
+        raise RuntimeError(f"PUT {path} 失败: HTTP {resp.status_code} {resp.get_data(as_text=True)}")
+    return resp.get_json()
+
+
+def _get(c, path):
+    resp = c.get(path)
+    if resp.status_code != 200:
+        raise RuntimeError(f"GET {path} 失败: HTTP {resp.status_code} {resp.get_data(as_text=True)}")
+    return resp.get_json()
+
+
 def _reset(db_path):
     """清空全部业务数据（关闭 FK 约束后按子→主顺序删除）。"""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
-        for t in ("batch_receipt", "batch",
+        for t in ("batch_receipt", "batch", "product_location",
                   "dn_pick", "dn_line", "dn", "asn_line", "asn",
                   "transfer_line", "transfer", "stocktake_line", "stocktake",
                   "stock_movement", "stock", "customer", "product",
@@ -254,6 +268,24 @@ def seed(reset):
         _post(c, "/api/carriers", car)
         carrier_count += 1
     print(f"  承运商：{carrier_count} 个（顺丰/京东/跨越/货拉拉/德邦/中通/圆通/安能）")
+
+    # 4.7) M20 储区维度：把库位挂到「全仓共享默认区」，给物料设推荐储区并绑定固定货位，
+    #      这样打开「上架作业」页就能直接看到有理由的推荐结果。
+    zone_rows = _get(c, "/api/zones?keyword=ZONE-SHARED")["zones"]
+    if zone_rows:
+        zone_id = zone_rows[0]["id"]
+        for lid in loc_ids.values():
+            _put(c, f"/api/locations/{lid}",
+                 {"zone_id": zone_id, "warehouse_id": wh_ids["WH-SZ"]})
+        for pid in product_ids.values():
+            _put(c, f"/api/products/{pid}", {"default_zone_id": zone_id})
+        for sku, dest in PUTAWAY_PLAN.items():
+            _post(c, "/api/product-locations", {
+                "product_id": product_ids[sku], "location_id": loc_ids[dest],
+                "priority": 10, "note": "演示数据：固定货位",
+            })
+        print(f"  储区/绑定：{len(loc_ids)} 个库位挂储区、{len(product_ids)} 个物料设推荐储区、"
+              f"{len(PUTAWAY_PLAN)} 条固定货位绑定")
 
     # 5) 跑通 收货上架 → 拣货发货 动线
     flow_count = 0

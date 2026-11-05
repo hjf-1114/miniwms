@@ -299,15 +299,23 @@ body.embed .main { min-height: 100vh; }
   display: flex; flex-direction: column; transition: width .18s ease; overflow: hidden;
   border-right: 1px solid rgba(255,255,255,.06); position: relative;
 }
-.ws-pin {
-  position: absolute; top: 16px; right: 8px; z-index: 3;
-  width: 26px; height: 26px; display: grid; place-items: center;
-  background: rgba(255,255,255,.08); border: none; color: #cbd5e1;
-  border-radius: 6px; cursor: pointer; font-size: 15px; line-height: 1;
+/* 显式的收起 / 展开导航按钮（默认展开，状态记在 localStorage） */
+.ws-toggle {
+  height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 10px;
+  padding: 0 16px; border: 0; border-bottom: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.05); color: var(--sidebar-fg);
+  font-family: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer;
+  text-align: left; transition: background .15s, color .15s;
 }
-.ws-pin:hover { background: rgba(255,255,255,.18); color: #fff; }
-.ws-side .brand { padding-right: 40px; }
+.ws-toggle:hover { background: rgba(255,255,255,.16); color: #fff; }
+.ws-toggle-ico { width: 20px; flex-shrink: 0; text-align: center; font-size: 15px; }
+.ws-toggle .ws-toggle-text { opacity: 0; transition: opacity .15s; }
+.ws-side:hover .ws-toggle .ws-toggle-text,
+.ws-side.pinned .ws-toggle .ws-toggle-text { opacity: 1; }
 .ws-side:hover, .ws-side.pinned { width: 232px; }
+/* 用户显式收起后不再因 hover 弹开，保证「收起」真的生效 */
+.ws-side.collapsed, .ws-side.collapsed:hover { width: 64px; }
+.ws-side.collapsed .ws-toggle .ws-toggle-text { opacity: 0; }
 .ws-side .brand {
   height: 58px; display: flex; align-items: center; gap: 10px; padding: 0 16px;
   font-size: 17px; font-weight: 700; color: #fff; white-space: nowrap;
@@ -409,7 +417,9 @@ body.embed .main { min-height: 100vh; }
   .ws { flex-direction: column; }
   .ws-top { height: auto; min-height: 44px; padding: 6px 10px; }
   .ws-top-title, .ws-user-role { display: none; }
-  .ws-side, .ws-side:hover, .ws-side.pinned { width: 100%; height: auto; }
+  .ws-side, .ws-side:hover, .ws-side.pinned,
+  .ws-side.collapsed, .ws-side.collapsed:hover { width: 100%; height: auto; }
+  .ws-toggle { display: none; }
   .ws-side .nav { display: flex; overflow-x: auto; }
   .ws-side .nav-group, .ws-side .side-foot,
   .nav-group-toggle .nav-arrow, .nav-group-toggle { display: none; }

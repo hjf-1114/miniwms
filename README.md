@@ -20,8 +20,8 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
 货主/物料/库位/收货/出库/移库/库存等多个管理页，创建、搜索、启停、删除与
 收货/上架/拣货/发货/移库/账目核对均直接调用后端 API。
-也可打开 `http://localhost:5100/app.html` 进入**工作台**：左侧垂直可折叠子菜单 +
-多标签页，多个页面在同一窗口并存（工作台自身不会被嵌套进标签）。
+也可打开 `http://localhost:5100/app.html` 进入**工作台**：默认展开的左侧垂直分组菜单（顶部「收起导航 / 展开导航」按钮可伸缩，状态记忆在 localStorage）+
+多标签页，多个页面在同一窗口并存（工作台自身不会被嵌套进标签）。验收、上架各有独立作业页，可同时打开多张收货单的标签。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
 想直接体验完整流程，可先灌一套演示数据再启动：
@@ -110,13 +110,20 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - **每次入库唯一批次号**：验收入库 `receive()` 在原有事务内写入完整批次信息并生成 `BAT-日期-流水`；内部批次号＝外部数据传入优先 → 退货沿用出库内部批次号 → 首次入库等于批次号
   - 收货明细新增灭菌批号 / 产地 / 患者名称 / 内部批次号 / 货品属性(合格·不合格) / UDI / 生产企业，且**所有自动带出的档案字段均可人工编辑**（自动带出只是默认值，单据留存最终填写值）
 - **收货单体验增强**（2026-11-04 用户反馈，`web_app/asns.html` + `routes_asn.py`）：单据类型默认「采购」、来源仓库表单必填且默认选中（无仓库时自动建默认仓库）；货主默认不填，选定后客户/供应商/商品**全量可选**并按归属排前打 ✓，**选错即时红字报错**（不再预先过滤）；供应商/客户联系方式可在下单时覆盖；收货明细选商品自动带出**货品名称/规格/货号/单位/品牌/厂家/生产企业/产地/注册证号/注册人备案人/生产许可证/效期/UDI**，并支持批号、灭菌批号、生产日期、失效日期、内部批次号、货品属性、患者名称补录，全部字段可人工改写，随单据留档并在验收入库时写入批次信息
+- **M20 储区与上架作业基础（阶段 A，2026-11-05）**（`routes_zone.py` / `routes_product_location.py` / `putaway_service.py` / `routes_putaway.py` + `web_app/zones.html`、`asn_receive.html`、`asn_putaway.html`）：
+  - **储区主数据**：编码/名称/温区分类（常温·阴凉·冷藏·冷冻）/所属仓库（留空＝全仓共享）/启用/备注 + 产品·批号·货主三个混放开关；改仓库时若已有其它仓库库位则拒绝，删储区时若已挂库位或已被货品设为推荐储区则拒绝
+  - **仓库维度打通**：`location` 增加 `warehouse_id` / `zone_id` 与三个可空混放开关（留空＝继承储区，实值＝覆盖）；库位与储区仓库必须一致或储区为全仓共享；旧 `zone` 文本列保留兼容、不再参与业务判断；列表按仓库/储区筛选并返回 `effective_mix`
+  - **货品上架偏好**：`product.default_zone_id`「推荐储区」下拉 + `product_location` 绑定表（一个 SKU 可绑多个固定货位，仅允许启用中的存储位/拣货位）
+  - **简版上架推荐**：`GET /api/putaway/recommend` 只读计算，硬过滤（启用/目标位类型/温区/剩余容量/三类混放）后按「绑定货位 > 推荐储区 > 同产品聚拢 > 同批号聚拢 > 空库位 > 容量贴合」打分，返回 Top-N 货位、理由与被排除原因；**不写库存**，一键采纳只是把 `location_id` 填进原有 `/api/asns/<id>/putaway`
+  - **验收 / 上架独立作业页**：`asn_receive.html` / `asn_putaway.html` 均带 `?asn_id=`（可带 `&line_id=`），在工作台里各开一个标签页、多张单据可并行；验收页录数量/收货位/内部批次号并展示已生成批次流水，上架页展示推荐与排除清单并支持一键采纳；`asns.html` 明细行的验收/上架按钮改为打开对应标签页，独立打开页面时回退为新窗口
+  - 工作台侧栏恢复为**默认展开 + 显式收起/展开按钮 + 记住状态**；收起状态下 hover 不再意外弹开
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/客户/供应商/承运商/仓库/收货/出库/移库/盘点/批次/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
-  - **工作台（`/app.html`）**：左侧垂直一级菜单 + 内嵌可折叠子菜单（图标条 hover/点按展开）+ 多标签页，多个页面在同一窗口以 iframe 标签并存；单据「明细」按钮在工作台内以新标签打开，独立打开页面时回退为页内展开；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
+  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
+  - **工作台（`/app.html`）**：默认展开的左侧垂直一级菜单 + 内嵌可折叠子菜单 + 多标签页，顶部按钮收起/展开导航并记忆状态；单个页面以 iframe 标签并存；单据「明细」按钮与验收/上架作业在工作台内以新标签打开，独立打开页面时回退为新窗口；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- M20 储区主数据 + 单据标识 + 入库混放校验
+- M20 剩余：单据标识位（虚拟/直调/冷链/危险）+ 入库混放硬校验
 - M21 批次级库存明细层（stock_batch + 流水维度列 + 三层不变式）
 - M22 库存调整单 + 盘点增强（全盘 / 部分 / 盲盘 / 动碰，动碰支持手工时间窗 + 交易类型）
 - M23 指定客户专属库存 + 销退口径
@@ -137,9 +144,16 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/owners` | 创建货主（编码必填唯一） |
 | GET | `/api/owners` | 货主列表，支持 `keyword`/`status`/分页 |
 | GET/PUT/DELETE | `/api/owners/<id>` | 详情/更新/删除（名下有物料时拒绝） |
-| POST | `/api/locations` | 创建库位（编码必填唯一） |
-| GET | `/api/locations` | 列表，支持 `keyword`/`zone`/`loc_type`/`status`/分页 |
+| POST | `/api/locations` | 创建库位（编码必填唯一；可选 `warehouse_id` / `zone_id` / 三个可空混放开关，仓库与储区须一致或储区全仓共享） |
+| GET | `/api/locations` | 列表，支持 `keyword`/`zone`/`loc_type`/`status`/`warehouse_id`/`zone_id`/分页；返回仓库名、储区名与 `effective_mix`（生效混放值与来源） |
 | GET/PUT/DELETE | `/api/locations/<id>` | 详情/更新/删除（有库存时拒绝） |
+| POST | `/api/zones` | 创建储区（编码/名称必填；温区分类、所属仓库可空＝全仓共享、三个混放开关、启停、备注） |
+| GET | `/api/zones` | 储区列表，支持 `keyword`/`temp_class`/`status`/`warehouse_id`/分页；传 `warehouse_id` 时返回该仓专属 + 全仓共享 |
+| GET/PUT/DELETE | `/api/zones/<id>` | 详情/更新/删除（已挂库位或已被货品设为推荐储区时拒绝；返回库位数与混放标签） |
+| GET | `/api/product-locations` | 货品固定货位绑定列表，支持 `product_id`/`location_id` |
+| POST | `/api/product-locations` | 新增绑定（一个 SKU 可绑多个；仅启用中的存储位/拣货位，重复绑定 409） |
+| DELETE | `/api/product-locations/<id>` | 解绑 |
+| GET | `/api/putaway/recommend` | 上架推荐只读预览：`asn_id`/`line_id` 必填，可选 `qty`/`top_n`；返回 Top-N 货位（分数/理由/已用容量/生效混放）、被排除货位及原因；**不写库存** |
 | POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性；单号留空自动生成 `ASN-日期-流水`；单据类型默认「采购」；支持 外部单号/订单来源/来源仓库/供应商/`customer_id`/承运商/自定义字段，自动算 总数量·品类数）。供应商与客户须属同一货主，否则 400 明确报错；`supplier_contact`/`supplier_phone`/`supplier_address`/`customer_contact`/`customer_phone`/`customer_address` 可覆盖主数据快照；明细行可带 20 个商品档案 + 批次信息字段（含灭菌批号/产地/患者名称/内部批次号/货品属性/UDI/生产企业），全部可人工编辑、落库为单据快照；`goods_property` 仅接受 合格/不合格 |
 | GET | `/api/asns` | 收货单列表，支持 `keyword`/`status`/分页（返回 来源仓库/供应商/总数量/品类数） |
 | GET | `/api/asns/<id>` | 收货单详情 + 明细行（返回规格/货号/单位/厂家/生产企业/产地/UDI/批号/灭菌批号/生产日期/失效日期/内部批次号/货品属性/患者名称/注册证号/注册人/生产许可证等快照，老单据回退物料主数据；每行附本行已生成的 `batch_receipts`） |
@@ -183,8 +197,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET | `/api/stock` | 库存余额列表，支持 `owner_id`/`product_id`/`location_id`/`has_stock`/分页 |
 | GET | `/api/stock/reconcile` | 余额核对（余额 = 流水累加，返回不一致明细） |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
-| POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`） |
-| GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页 |
+| POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`、`default_zone_id` 推荐储区） |
+| GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页（返回 `default_zone_name`） |
 | GET/PUT/DELETE | `/api/products/<id>` | 详情/更新/删除（库存非 0 时拒绝） |
 | POST | `/api/auth/login` | 登录（用户名+密码），返回无状态 token |
 | GET/POST | `/api/roles` | 角色列表 / 创建（需 `user:manage`） |
@@ -197,21 +211,25 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ```
 main.py               Flask 入口、数据库初始化与连接管理、静态托管 web_app
 auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器）
-constants.py          状态机、流水类型、批次号前缀与货品属性枚举（显式集中）
+constants.py          状态机、流水类型、批次号前缀、温区/混放字段与推荐理由码（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
+putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，只读）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则）
 routes_owner.py       货主主数据 Blueprint
-routes_product.py     物料主数据 Blueprint
-routes_location.py    库位主数据 Blueprint
+routes_product.py     物料主数据 Blueprint（含推荐储区）
+routes_location.py    库位主数据 Blueprint（含仓库/储区/混放继承）
+routes_zone.py        储区主数据 Blueprint
+routes_product_location.py 货品固定货位绑定 Blueprint
+routes_putaway.py     上架推荐只读 API Blueprint
 routes_asn.py         收货单与上架 Blueprint（验收入库同事务写批次信息）
 routes_dn.py          出库单（拣货/发货）Blueprint
 routes_stock.py       库存账/流水/余额核对只读 Blueprint
 routes_customer.py   客户主数据 Blueprint（出库收货方维度）
 routes_user.py        用户与角色（登录/权限）Blueprint
 routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
-web_app/              Web demo（index/owners/products/locations/customers/suppliers/warehouses/carriers/asns/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
-tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货，支持 --reset/--check）
+web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
+tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录
@@ -222,4 +240,6 @@ DEVELOPMENT.md        里程碑开发记录
 - 所有接口返回 JSON：成功 `{"ok": true, ...}`，失败 `{"ok": false, "errors": [...]}` + 对应 4xx 状态码
 - 库存只由单据驱动：收货/上架（M4）→ 拣货/发货（M5）→ 移库/盘点（M17/M18），全部经 inventory_service 落流水
 - 批次只由验收驱动：批次流水无手工新增接口，由 `receive()` 在同事务内经 batch_service 写入；关键批次信息由 `batch_config` 配置，改配置不重算历史档案
+- 上架推荐只读：`/api/putaway/recommend` 只算建议与理由，不写库存；采纳＝把 `location_id` 填进原有上架接口，过账路径唯一
+- 混放生效值三级作用域：库位自身非空优先 → 继承储区 → 默认全部禁止（保守口径）
 - 时间戳由 SQLite `datetime('now','localtime')` 生成

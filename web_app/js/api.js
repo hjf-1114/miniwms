@@ -91,6 +91,20 @@ function openDetail(title, url) {
   }
 }
 
+/**
+ * 打开一个作业标签页（验收 / 上架等独立作业页）。
+ * 在工作台里交给父窗口的 openTab 复用同一标签栏；独立打开页面时退化为新窗口，
+ * 保证不依赖工作台也能作业。URL 上带 asn_id / line_id，不同单据可同时开多张标签。
+ */
+function openWorkTab(title, url) {
+  if (window.parent && window.parent !== window &&
+      typeof window.parent.openTab === "function") {
+    window.parent.openTab(title, url);
+  } else {
+    window.open(url, "_blank");
+  }
+}
+
 /** 渲染状态标签。 */
 function statusTag(s) {
   return s === "active"

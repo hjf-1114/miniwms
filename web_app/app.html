@@ -9,7 +9,9 @@
 <body>
 <div class="ws" id="wsRoot">
   <aside class="ws-side" id="wsSide">
-    <button class="ws-pin" onclick="togglePin()" title="固定 / 收起导航">⤢</button>
+    <button class="ws-toggle" id="wsToggle" onclick="togglePin()" type="button" title="收起 / 展开导航">
+      <span class="ws-toggle-ico" id="wsToggleIco">«</span><span class="nav-label ws-toggle-text" id="wsToggleText">收起导航</span>
+    </button>
     <div class="brand"><span class="logo">📦</span><span class="nav-label">MiniWMS 工作台</span></div>
     <nav class="nav" id="wsNav"></nav>
     <div class="side-foot nav-label">轻量多货主 WMS · 本地演示</div>
@@ -91,10 +93,36 @@ if (EMBED) {
        </div>
      </div>`).join("");
 
-  // 一级菜单：折叠/展开子菜单；图标条状态先固定展开，否则看不到子项
+  // ── 侧栏伸缩：默认展开；按钮显式收起/展开；状态记在 localStorage ──
+  // collapsed 时禁用 hover 展开，避免「刚点收起、鼠标还在侧栏上就又弹开」的错觉。
+  const SIDE_KEY = "miniwms_side_expanded";
+  function setSide(expanded, persist) {
+    side.classList.toggle("pinned", expanded);
+    side.classList.toggle("collapsed", !expanded);
+    const ico = document.getElementById("wsToggleIco");
+    const txt = document.getElementById("wsToggleText");
+    const btn = document.getElementById("wsToggle");
+    if (ico) ico.textContent = expanded ? "«" : "☰";
+    if (txt) txt.textContent = expanded ? "收起导航" : "展开导航";
+    if (btn) {
+      btn.title = expanded ? "点击收起导航" : "点击展开导航";
+      btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+    if (persist) {
+      try { localStorage.setItem(SIDE_KEY, expanded ? "1" : "0"); } catch (e) {}
+    }
+  }
+  function togglePin() { setSide(!side.classList.contains("pinned"), true); }
+  (function initSide() {
+    let saved = null;
+    try { saved = localStorage.getItem(SIDE_KEY); } catch (e) {}
+    setSide(saved !== "0", false); // 无记录时默认展开
+  })();
+
+  // 一级菜单：折叠/展开子菜单；收起状态下先展开侧栏，避免看不到子项
   navEl.querySelectorAll("[data-toggle]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      if (!side.classList.contains("pinned")) side.classList.add("pinned");
+      if (!side.classList.contains("pinned")) { setSide(true, true); return; }
       btn.closest(".nav-group-box").classList.toggle("collapsed");
     });
   });
@@ -106,8 +134,6 @@ if (EMBED) {
       openTab(a.querySelector(".nav-label").textContent, a.dataset.href);
     });
   });
-
-  function togglePin() { side.classList.toggle("pinned"); }
 
   // ── 标签页管理 ──
   let tabs = [];

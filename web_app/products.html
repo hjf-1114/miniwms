@@ -28,7 +28,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>条码</th><th>品牌</th><th>规格</th><th>分类</th><th>货主</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>条码</th><th>品牌</th><th>规格</th><th>分类</th><th>货主</th><th>推荐储区</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -48,6 +48,7 @@
 <script>
 let page = 1, pageSize = 20;
 let ownerOptions = [{ value: "", label: "自营" }];
+let zones = [];
 
 // 体积：未手填但填了长宽高时，前端先做 cm³ 估算（后端为权威口径，会再算一次）
 function autoVolume(p) {
@@ -99,6 +100,12 @@ function productFields() {
     { name: "shelf_life_days", label: "保质期(天)", type: "number" },
     { name: "purchase_price", label: "采购价", type: "number" },
     { name: "sale_price", label: "销售价", type: "number" },
+    { type: "section", label: "上架推荐（M20）" },
+    { name: "default_zone_id", label: "推荐储区", type: "select", placeholder: "未设置推荐储区",
+      options: zones.filter(z => z.status === "active").map(z => ({
+        value: z.id, label: `${z.code} · ${z.name}〔${z.warehouse_name || "全仓共享"}｜${z.temp_class}〕`,
+      })),
+      help: "上架推荐会给该储区下的库位加分；下方「绑定货位」可指定优先级更高的固定货位" },
     { name: "owner_id", label: "货主（可空=自营）", type: "select", nullable: true, options: ownerOptions },
     { name: "status", label: "状态", type: "select", options: [{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }] },
     { name: "note", label: "备注", type: "textarea", full: true },
@@ -112,6 +119,13 @@ async function loadOwners() {
   );
   document.getElementById("ownerFilter").insertAdjacentHTML("beforeend",
     data.owners.map((o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join(""));
+}
+
+async function loadZones() {
+  try {
+    const d = await api("GET", "/api/zones?page_size=100");
+    zones = d.zones || [];
+  } catch (e) { /* 忽略 */ }
 }
 
 async function load() {
@@ -128,11 +142,13 @@ async function load() {
         <td>${esc(p.barcode)}</td><td>${esc(p.brand)}</td><td>${esc(p.spec)}</td>
         <td>${esc(p.category)}</td>
         <td>${p.owner_code ? esc(p.owner_code + " · " + p.owner_name) : '<span class="muted">自营</span>'}</td>
+        <td>${p.default_zone_name ? esc(p.default_zone_name) : '<span class="muted">—</span>'}</td>
         <td>${p.purchase_price}</td><td>${p.sale_price}</td>
         <td><b>${p.stock_qty}</b></td>
         <td>${statusTag(p.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${p.id})">编辑</button>
+          <button class="btn secondary sm" onclick="manageBindings(${p.id})">绑定货位</button>
           <button class="btn secondary sm" onclick="manageProductAttrs(${p.id})">条码/包装</button>
           <button class="btn danger sm" onclick="del(${p.id})">删除</button>
         </td>
@@ -168,6 +184,80 @@ async function openEdit(id) {
       load();
     },
   });
+}
+
+/** 固定货位绑定（M20）：一个 SKU 可绑多个货位，上架推荐优先取绑定货位。 */
+async function manageBindings(id) {
+  const [prod, loc] = await Promise.all([
+    api("GET", "/api/products/" + id),
+    api("GET", "/api/locations?status=active&page_size=100"),
+  ]);
+  const p = prod.product;
+  const eligible = loc.locations.filter(l => l.loc_type === "storage" || l.loc_type === "picking");
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML = `
+    <div class="modal" style="width:min(820px,100%)">
+      <div class="modal-head"><h3>绑定货位：${esc(p.sku)} · ${esc(p.name)}</h3>
+        <button class="modal-x" type="button" aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <div class="text-sm muted" style="margin-bottom:10px">
+          绑定货位在上架推荐中得分最高（100 + 优先级），高于「推荐储区」。只能绑定启用中的存储位 / 拣货位。
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>库位</th><th>储区</th><th>仓库</th><th>优先级</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody id="bindBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:12px">
+          <select id="bindLoc" style="min-width:260px"><option value="">选择固定货位…</option>
+            ${eligible.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)}〔${esc(l.zone_name || "无储区")}｜${esc(l.warehouse_name || "未指定仓库")}〕</option>`).join("")}
+          </select>
+          <input id="bindPrio" type="number" value="0" step="1" style="width:96px" title="优先级（越大越靠前）" placeholder="优先级">
+          <input id="bindNote" placeholder="备注（可空）" style="width:150px">
+          <button class="btn sm" id="bindAdd">+ 添加绑定</button>
+        </div>
+        <div id="bindErr" class="modal-err"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov || e.target.classList.contains("modal-x")) close();
+  });
+  ov.querySelector(".modal-x").addEventListener("click", close);
+  const errEl = ov.querySelector("#bindErr");
+
+  async function refresh() {
+    const d = await api("GET", `/api/product-locations?product_id=${id}`);
+    ov.querySelector("#bindBody").innerHTML = d.bindings.map(b =>
+      `<tr><td>${esc(b.location_code)} · ${esc(b.location_name)}</td>
+        <td>${esc(b.zone_name || "—")}</td><td>${esc(b.warehouse_code || "—")}</td>
+        <td>${b.priority}</td><td>${esc(b.note || "")}</td>
+        <td><button class="btn danger sm" data-del="${b.id}">解绑</button></td></tr>`
+    ).join("") || '<tr><td colspan="6" class="muted">暂无固定货位，推荐将按「推荐储区 + 聚拢规则」计算</td></tr>';
+    ov.querySelectorAll("[data-del]").forEach(btn => btn.addEventListener("click", async () => {
+      try {
+        await api("DELETE", `/api/product-locations/${btn.dataset.del}`);
+        await refresh();
+      } catch (e) { errEl.textContent = e.message; errEl.style.display = "block"; }
+    }));
+  }
+  ov.querySelector("#bindAdd").addEventListener("click", async () => {
+    errEl.style.display = "none";
+    const location_id = ov.querySelector("#bindLoc").value;
+    if (!location_id) { errEl.textContent = "请先选择货位"; errEl.style.display = "block"; return; }
+    try {
+      await api("POST", "/api/product-locations", {
+        product_id: id, location_id: Number(location_id),
+        priority: Number(ov.querySelector("#bindPrio").value || 0),
+        note: ov.querySelector("#bindNote").value.trim(),
+      });
+      ov.querySelector("#bindLoc").value = "";
+      ov.querySelector("#bindNote").value = "";
+      await refresh();
+    } catch (e) { errEl.textContent = e.message; errEl.style.display = "block"; }
+  });
+  await refresh();
 }
 
 // 条码与包装管理（多条码 / 多层级包装规格）
@@ -319,7 +409,7 @@ async function del(id) {
   }
 }
 
-loadOwners().then(load);
+Promise.all([loadOwners(), loadZones()]).then(load);
 </script>
 </body>
 </html>

@@ -47,10 +47,10 @@
   <div class="card" id="detailCard" style="display:none">
     <h2 id="detailTitle">收货单明细</h2>
     <div class="toolbar">
-      <select id="recvLocSel"></select><span class="muted">← 收货位（收货用）</span>
-      <select id="fromLocSel"></select><span class="muted">← 来源暂存位（上架用）</span>
-      <select id="toLocSel"></select><span class="muted">← 目标存储/拣货位（上架用）</span>
-      <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
+      <span class="text-sm muted">验收 / 上架在独立作业页完成，可同时打开多张单据的标签页。</span>
+      <button class="btn secondary" onclick="openReceiveTab()">打开验收作业</button>
+      <button class="btn secondary" onclick="openPutawayTab()">打开上架作业</button>
+      <button class="btn secondary" onclick="refreshDetail()">刷新明细</button>
     </div>
     <div class="table-wrap">
       <table><tbody id="asnMeta"></tbody></table>
@@ -61,7 +61,7 @@
         <th>行</th><th>货品名称</th><th>规格</th><th>货号</th><th>数量</th><th>单位</th>
         <th>厂家</th><th>批号</th><th>生产日期</th><th>失效日期</th>
         <th>注册证号</th><th>注册人/备案人</th><th>生产许可证</th>
-        <th>已收</th><th>已上架</th><th>收货</th><th>上架</th>
+        <th>已收</th><th>已上架</th><th>验收</th><th>上架</th>
       </tr></thead>
       <tbody id="lineBody"></tbody>
     </table>
@@ -250,19 +250,35 @@ function bindLinkage(ov) {
   sync();
 }
 
-async function loadLocs() {
-  const [recv, dest] = await Promise.all([
-    api("GET", "/api/locations?loc_type=receiving&status=active&page_size=100"),
-    api("GET", "/api/locations?status=active&page_size=100"),
-  ]);
-  const recvOpts = recv.locations.map(
-    (l) => `<option value="${l.id}">${esc(l.code)}（收货区）</option>`).join("");
-  const destOpts = dest.locations.filter(
-    (l) => l.loc_type === "storage" || l.loc_type === "picking").map(
-    (l) => `<option value="${l.id}">${esc(l.code)}（${esc(l.loc_type_label)}）</option>`).join("");
-  document.getElementById("recvLocSel").innerHTML = recvOpts;
-  document.getElementById("fromLocSel").innerHTML = recvOpts;
-  document.getElementById("toLocSel").innerHTML = destOpts;
+function asnTabTitle(kind) {
+  const suffix = currentAsn && currentAsn.asn ? currentAsn.asn.code : (asnIdParam() || "收货单");
+  return kind + " · " + suffix;
+}
+
+function asnIdParam() {
+  const m = /[?&]detail=(\d+)/.exec(location.search || "");
+  return m ? m[1] : "";
+}
+
+/** 打开验收作业标签页；带 line_id 时作业页会默认选中该明细行。 */
+function openReceiveTab(lineId) {
+  const id = currentAsn && currentAsn.asn ? currentAsn.asn.id : asnIdParam();
+  if (!id) { showMsg(document.getElementById("msg"), "请先打开一张收货单明细", "error"); return; }
+  const url = `/asn_receive.html?asn_id=${id}` + (lineId ? `&line_id=${lineId}` : "");
+  openWorkTab(asnTabTitle("验收") + (lineId ? ` #${lineId}` : ""), url);
+}
+
+/** 打开上架作业标签页（含推荐货位与一键采纳）。 */
+function openPutawayTab(lineId) {
+  const id = currentAsn && currentAsn.asn ? currentAsn.asn.id : asnIdParam();
+  if (!id) { showMsg(document.getElementById("msg"), "请先打开一张收货单明细", "error"); return; }
+  const url = `/asn_putaway.html?asn_id=${id}` + (lineId ? `&line_id=${lineId}` : "");
+  openWorkTab(asnTabTitle("上架") + (lineId ? ` #${lineId}` : ""), url);
+}
+
+async function refreshDetail() {
+  if (currentAsn && currentAsn.asn) await showDetail(currentAsn.asn.id);
+  load();
 }
 
 async function load() {
@@ -322,7 +338,6 @@ async function showDetail(id) {
   ].map(([k1, v1, k2, v2]) =>
     `<tr><td class="muted">${k1}</td><td>${esc(v1)}</td><td class="muted">${k2}</td><td>${esc(v2)}</td></tr>`
   ).join("");
-  await loadLocs();
   renderLines();
 }
 
@@ -352,54 +367,14 @@ function renderLines() {
       <td>${cell(l.reg_cert_no)}</td><td>${cell(l.registrant)}</td>
       <td>${cell(l.mfg_license)}</td>
       <td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
-      <td>
-        <input id="rq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
-        <input id="ib-${l.id}" placeholder="内部批次号(退货填出库值)" style="width:170px" title="一般由数据传入；留空时首次入库自动=批次号，销退沿用原内部批次号">
-        <button class="btn sm" onclick="doReceive(${l.id})">收货</button>
-      </td>
-      <td>
-        <input id="pq-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
-        <button class="btn secondary sm" onclick="doPutaway(${l.id})">上架</button>
-      </td>
+      <td><button class="btn sm" onclick="openReceiveTab(${l.id})">验收</button></td>
+      <td><button class="btn secondary sm" onclick="openPutawayTab(${l.id})">上架</button></td>
     </tr>
     <tr><td colspan="17" style="background:#f8fafc;padding:8px 12px">
       <div style="margin-bottom:6px">${extraFields}</div>
       <div class="text-sm"><b>验收入库批次：</b>${batches}</div>
     </td></tr>`;
   }).join("");
-}
-
-async function doReceive(lineId) {
-  const qty = parseFloat(document.getElementById("rq-" + lineId).value);
-  const locationId = parseInt(document.getElementById("recvLocSel").value, 10);
-  const ibEl = document.getElementById("ib-" + lineId);
-  const internal_batch_no = ibEl ? ibEl.value.trim() : "";
-  try {
-    const r = await api("POST", `/api/asns/${currentAsn.asn.id}/receive`,
-      { line_id: lineId, location_id: locationId, qty, internal_batch_no });
-    showMsg(document.getElementById("msg"),
-      `收货成功：批次号 ${r.batch ? r.batch.batch_no : "-"}（内部批次号 ${r.batch ? r.batch.internal_batch_no : "-"}），单据状态 ${r.status}`,
-      "success");
-    await showDetail(currentAsn.asn.id);
-    load();
-  } catch (e) {
-    showMsg(document.getElementById("msg"), "收货失败：" + e.message, "error");
-  }
-}
-
-async function doPutaway(lineId) {
-  const qty = parseFloat(document.getElementById("pq-" + lineId).value);
-  const fromId = parseInt(document.getElementById("fromLocSel").value, 10);
-  const toId = parseInt(document.getElementById("toLocSel").value, 10);
-  try {
-    const r = await api("POST", `/api/asns/${currentAsn.asn.id}/putaway`,
-      { line_id: lineId, from_location_id: fromId, to_location_id: toId, qty });
-    showMsg(document.getElementById("msg"), `上架成功，单据状态：${r.status}`, "success");
-    await showDetail(currentAsn.asn.id);
-    load();
-  } catch (e) {
-    showMsg(document.getElementById("msg"), "上架失败：" + e.message, "error");
-  }
 }
 
 async function cancelAsn(id) {

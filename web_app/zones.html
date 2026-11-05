@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>储区管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>储区管理</h1><div class="crumb">MiniWMS / 基础主数据</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <div class="card">
+        <div class="card-head">
+          <h2>储区列表</h2>
+          <button class="btn" onclick="openCreate()">+ 新建储区</button>
+        </div>
+        <div class="toolbar">
+          <input id="kw" placeholder="编码/名称搜索">
+          <select id="whFilter"><option value="">全部仓库（含全仓共享）</option></select>
+          <select id="tempFilter">
+            <option value="">全部温区</option>
+            <option value="常温">常温</option>
+            <option value="阴凉">阴凉</option>
+            <option value="冷藏">冷藏</option>
+            <option value="冷冻">冷冻</option>
+          </select>
+          <button class="btn secondary" onclick="page=1;load()">查询</button>
+        </div>
+        <div class="text-sm muted" style="margin:0 0 10px">
+          所属仓库留空＝全仓共享（任何仓库的库位都可挂）；混放开关默认全关，库位可单独覆盖。
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>所属仓库</th><th>温区</th><th>混放策略</th><th>库位数</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+          <span id="pageInfo"></span>
+          <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+let warehouses = [];
+
+const MIX_YESNO = [{ value: 0, label: "禁止" }, { value: 1, label: "允许" }];
+const MIX_FIELDS = [
+  { name: "allow_mix_product", label: "产品混放", type: "select", options: MIX_YESNO },
+  { name: "allow_mix_batch", label: "批号混放", type: "select", options: MIX_YESNO },
+  { name: "allow_mix_owner", label: "货主混放", type: "select", options: MIX_YESNO },
+];
+
+function fields() {
+  return [
+    { name: "code", label: "储区编码 *", required: true, autocode: true, autocodePrefix: "ZONE" },
+    { name: "name", label: "储区名称 *", required: true },
+    { name: "warehouse_id", label: "所属仓库", type: "select",
+      placeholder: "留空＝全仓共享",
+      options: warehouses.map(w => ({ value: w.id, label: `${w.code} · ${w.name}` })) },
+    { name: "temp_class", label: "温区分类", type: "select",
+      options: ["常温", "阴凉", "冷藏", "冷冻"].map(v => ({ value: v, label: v })) },
+    { type: "section", label: "混放策略（默认全部禁止；库位可单独覆盖）" },
+    ...MIX_FIELDS,
+    { name: "status", label: "状态", type: "select",
+      options: [{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }] },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+async function loadWarehouses() {
+  try {
+    const d = await api("GET", "/api/warehouses?page_size=100");
+    warehouses = d.warehouses || [];
+    document.getElementById("whFilter").insertAdjacentHTML("beforeend",
+      warehouses.map(w => `<option value="${w.id}">${esc(w.code)} · ${esc(w.name)}</option>`).join(""));
+  } catch (e) { /* 忽略 */ }
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const wid = document.getElementById("whFilter").value;
+  const tc = document.getElementById("tempFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (wid) qs.set("warehouse_id", wid);
+  if (tc) qs.set("temp_class", tc);
+  try {
+    const data = await api("GET", "/api/zones?" + qs);
+    document.getElementById("tbody").innerHTML = data.zones.map(z =>
+      `<tr>
+        <td>${z.id}</td><td>${esc(z.code)}</td><td>${esc(z.name)}</td>
+        <td>${z.warehouse_name ? esc(z.warehouse_name) : '<span class="muted">全仓共享</span>'}</td>
+        <td>${esc(z.temp_class)}</td>
+        <td>${z.mix_labels.length ? z.mix_labels.map(esc).join(" · ") : '<span class="muted">全部禁止</span>'}</td>
+        <td>${z.location_count}</td>
+        <td>${statusTag(z.status)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${z.id})">编辑</button>
+          <button class="btn secondary sm" onclick="toggle(${z.id},'${z.status}')">${z.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger sm" onclick="del(${z.id})">删除</button>
+        </td>
+      </tr>`).join("");
+    document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+
+function openCreate() {
+  openForm({
+    title: "新建储区", submitText: "创建", width: 720, fields: fields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/zones", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/zones/" + id);
+  openForm({
+    title: "编辑储区", submitText: "保存", width: 720, fields: fields(), values: data.zone,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/zones/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/zones/" + id, { status: status === "active" ? "inactive" : "active" });
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "操作失败：" + e.message, "error");
+  }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该储区？（已挂库位或已被货品设为推荐储区时会被拒绝）")) return;
+  try {
+    await api("DELETE", "/api/zones/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+loadWarehouses().then(load);
+</script>
+</body>
+</html>

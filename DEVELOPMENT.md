@@ -54,7 +54,7 @@
 - M17 移库（库位间转移：同数量一减一增两条流水，原子事务）✅
 - M18 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）✅
 - M19 批次与验收入库追溯（批次字段配置 + 批次档案 + 每次入库唯一批次流水）✅
-- M20 储区主数据 + 单据标识 + 入库混放校验（zone 主数据 / asn·dn 各 4 标识 + external_doc_type / 五级混放策略 / 库位占用）
+- M20 储区主数据 + 单据标识 + 入库混放校验（**阶段 A 已交付 2026-11-05**：储区主数据 / 仓库维度 / 混放字段 / 推荐储区 / 固定货位 / 简版上架推荐 / 验收·上架作业页；**剩余**：asn·dn 各 4 个单据标识 + external_doc_type + 入库混放硬校验）
 - M21 批次级库存明细层（stock_batch + stock_movement 扩维度列 + I2/I3 硬校验 + 一次性回填）
 - M22 库存调整单 + 盘点增强（stock_adjustment 唯一手工数量入口 / stocktake_plan 全盘·部分·盲盘·动碰；动碰支持手工时间窗 + 交易类型 / 差异由人工按钮生成调整单）
 - M23 指定客户专属库存 + 销退口径（designated_customer_id 只在明细行 / 出库校验规则 / 销退外部批次号）
@@ -413,6 +413,60 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
   外部数据传入的内部批次号优先；配置默认值补齐空字段；非法货品属性 400；`/api/stock/reconcile` 仍一致
 - Playwright 端到端 **39/39 通过**：配置 20 行 / 7 关键字段可开关、验收批次写入、
   档案与流水列表、档案详情、收货明细 7 个新字段与无置灰字段、货品属性下拉、工作台「批次」入口
+
+## M20 储区与上架作业基础（阶段 A，2026-11-05）✅
+
+**目标（用户原话）**：「侧边菜单栏的伸缩消失了 需要恢复，做完你要检查 不要做完一个 另外一个就出问题」；
+「增加储区的基础资料，然后货位新增修改的时候能够选择这个储区」；「储区货位这些是和仓库有关系的 我看你没有做区分」；
+「只做基础资料：编码 / 名称 / 温区分类 / 所属仓库（可空＝全仓共享）/ 启用 / 备注；location 加 zone_id，库位新增修改改成下拉选储区，旧 zone 文本保留兼容，额外增加是否混放的字段」；
+「验收、上架各开一个工作台新标签页（独立页，URL 带 ?asn_id=，可同时开多张单）」；
+「货品需要有地方选择推荐的储区，和增加一个绑定货位的地方」；
+「简版可用：推荐储区 + 绑定货位优先 + 同产品/同批号聚拢 + 启用/容量/温区过滤 → 返回 Top-N 货位与理由，上架页一键采纳」；「就改这些」。
+
+**设计口径**：
+- 仓库 → 储区 → 库位三级：`zone.warehouse_id` 为空＝全仓共享；库位 `warehouse_id` 与储区 `warehouse_id` 必须一致，或储区全仓共享。
+- 混放三级作用域：库位自身非 NULL 优先 → 继承储区 → 默认全部禁止；三个开关＝产品 / 批号 / 货主混放。
+- 上架推荐只读：硬过滤（启用 / 目标位类型 storage·picking / 温区 / 剩余容量 / 三类混放）后打分
+  「绑定货位 100+优先级 > 推荐储区 60 > 同产品聚拢 30 > 同批号聚拢 20 > 空库位 10 > 容量贴合 5」；
+  返回 Top-N + 理由 + 被排除原因；**不写库存**，采纳仅把 `location_id` 填进原有 `/api/asns/<id>/putaway`。
+- 条件组 / fallback 链 / 权重配置仍属 M25，本版不做；`asn`·`dn` 单据标识位与入库混放硬校验仍属 M20 剩余范围。
+
+**改动清单**：
+- `main.py`：`zone` / `product_location` 两表 DDL + 索引、`_migrate_m20_columns()` 幂等列迁移
+  （location 加 `zone_id`/`warehouse_id`/三个可空混放列，product 加 `default_zone_id`）、`_seed_zones()`
+  播种 3 个全仓共享储区与每仓默认储区、注册 3 个新 Blueprint；旧 `location.zone` 文本列保留兼容
+- `constants.py`：`TEMP_CLASSES`、`MIX_FIELDS`、`PUTAWAY_R_*` 理由码与中文标签
+- `routes_zone.py`（新增）：`/api/zones` CRUD，仓库存在性 / 温区枚举 / 编码唯一 / 改仓库时校验已挂库位 /
+  删除保护（已挂库位或已被货品设为推荐储区），`GET ?warehouse_id=` 返回「本仓专属 + 全仓共享」
+- `routes_location.py`：新增字段校验、`_check_zone_warehouse()` 一致性校验、`_row_to_dict()` 返回
+  `zone_name`/`warehouse_name`/`effective_mix`（含来源）、列表支持 `warehouse_id`/`zone_id` 过滤
+- `routes_product.py`：`default_zone_id` 校验与 `default_zone_name` 返回
+- `routes_product_location.py`（新增）：`/api/product-locations` 绑定 CRUD（一个 SKU 多货位、
+  仅启用中的 storage/picking、重复绑定 409、联表带出 SKU/库位/储区/仓库）
+- `putaway_service.py`（新增）：`recommend(db, asn_id, line_id, qty, top_n)`；同批号判断只依据
+  `batch_receipt.info` 中明确出现的批号，避免「有库存但查不到批次」被误判为混批而误杀聚拢排序
+- `routes_putaway.py`（新增）：`GET /api/putaway/recommend`（只读）
+- `web_app/zones.html`（新增）：储区列表/筛选/CRUD/启停，含三个混放开关与库位数
+- `web_app/locations.html`：仓库/储区筛选、表单下拉联动（选仓库后只列本仓 + 共享储区）、
+  混放继承字段、表格显示仓库/储区/生效混放
+- `web_app/products.html`：推荐储区下拉 + 「绑定货位」弹窗（新增/解绑/优先级）
+- `web_app/asn_receive.html` / `web_app/asn_putaway.html`（新增）：独立作业页，`?asn_id=`+可选 `&line_id=`；
+  验收页录数量/收货位/内部批次号并展示批次流水；上架页展示 Top-N 推荐与排除清单、一键采纳
+- `web_app/asns.html`：明细行验收/上架按钮改为打开新标签页，移除行内输入框与库位下拉；
+  `web_app/js/api.js` 增 `openWorkTab()`（工作台内开标签、独立打开时退化为新窗口）
+- `web_app/js/layout.js`：导航加入「储区 / 验收作业 / 上架作业」入口（工作台复用同一份 NAV）
+- `web_app/app.html` + `css/style.css`：侧栏恢复「默认展开 + 显式收起/展开按钮 + localStorage 记住状态」，
+  收起后 hover 不再弹开；移动端隐藏该按钮
+- `tools/seed_demo.py`：`--reset` 增加清理 `product_location`；播种时把库位挂到全仓共享储区、
+  给物料设推荐储区、按 `PUTAWAY_PLAN` 建固定货位绑定，使推荐页开箱即有可解释结果
+- `tests/test_zone.py` / `tests/test_putaway.py`（新增 28 例）
+
+**可验证结果**：
+- `./.venv/Scripts/python.exe -m unittest discover -s tests` **268 例全绿**（原 240 + M20 28）
+- 覆盖：储区 CRUD / 编码唯一 / 非法温区 / 仓库一致性 / 全仓共享 / 混放继承与覆盖 / 删除保护 /
+  推荐排序（绑定货位第一、推荐储区、同产品、空库位）/ 温区·容量·混放硬过滤 / 采纳后真实上架成功
+- 浏览器回归：工作台侧栏默认展开、收起后不因 hover 弹开、分组折叠、标签页开关、顶栏退出登录、
+  储区/仓库联动下拉、验收与上架各自新标签、推荐货位一键采纳
 
 ## M6 库存账与流水查询（2026-11-03）
 

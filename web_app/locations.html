@@ -31,11 +31,16 @@
         <option value="returns">退货区</option>
       </select>
       <select id="groupFilter"><option value="">全部库位组</option></select>
-      <button class="btn secondary" onclick="load()">查询</button>
+      <select id="whFilter"><option value="">全部仓库</option></select>
+      <select id="zoneFilter"><option value="">全部储区</option></select>
+      <button class="btn secondary" onclick="page=1;load()">查询</button>
+    </div>
+    <div class="text-sm muted" style="margin:0 0 10px">
+      库位与储区都归属仓库；选了仓库后，储区下拉只列「本仓库储区 + 全仓共享储区」。混放留空＝继承储区。
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>库区</th><th>库位组</th><th>巷道</th><th>层</th><th>类型</th><th>容量</th><th>体积库容(m³)</th><th>条码</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>所属仓库</th><th>储区</th><th>库位组</th><th>巷道</th><th>层</th><th>类型</th><th>容量</th><th>体积库容(m³)</th><th>条码</th><th>混放</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -54,27 +59,108 @@
     <script src="/js/layout.js"></script>
 <script>
 let page = 1, pageSize = 20;
+let warehouses = [], zones = [];
 
-const FIELDS = [
-  { name: "code", label: "编码 *", required: true, autocode: true, autocodePrefix: "LOC" },
-  { name: "name", label: "名称 *", required: true },
-  { name: "zone", label: "库区", placeholder: "默认: 默认区" },
-  { name: "aisle", label: "巷道", placeholder: "如 A" },
-  { name: "bay", label: "列", placeholder: "如 01" },
-  { name: "level", label: "层", placeholder: "如 01" },
-  { name: "barcode", label: "库位条码" },
-  { name: "loc_type", label: "类型", type: "select", options: [
-    { value: "storage", label: "存储区" },
-    { value: "receiving", label: "收货区" },
-    { value: "picking", label: "拣货区" },
-    { value: "returns", label: "退货区" },
-  ] },
-  { name: "capacity", label: "容量（0=不限）", type: "number" },
-  { name: "location_group", label: "库位组（留空按编码前缀自动生成）" },
-  { name: "length_cm", label: "长(cm)", type: "number" },
-  { name: "width_cm", label: "宽(cm)", type: "number" },
-  { name: "height_cm", label: "高(cm)", type: "number" },
+const MIX_INHERIT = [
+  { value: "", label: "继承储区（留空）" },
+  { value: 0, label: "禁止" },
+  { value: 1, label: "允许" },
 ];
+const MIX_FIELDS = [
+  { name: "allow_mix_product", label: "产品混放", type: "select", options: MIX_INHERIT },
+  { name: "allow_mix_batch", label: "批号混放", type: "select", options: MIX_INHERIT },
+  { name: "allow_mix_owner", label: "货主混放", type: "select", options: MIX_INHERIT },
+];
+const MIX_SHORT = { allow_mix_product: "产品", allow_mix_batch: "批号", allow_mix_owner: "货主" };
+
+/** 可见的储区：本仓库专属 + 全仓共享（warehouse_id 为空）。 */
+function visibleZones(wid) {
+  return zones.filter(z => z.status === "active" &&
+    (!wid || z.warehouse_id === null || String(z.warehouse_id) === String(wid)));
+}
+function zoneLabel(z) {
+  return `${z.code} · ${z.name}〔${z.warehouse_name || "全仓共享"}｜${z.temp_class}〕`;
+}
+function zoneOptions(wid) {
+  return visibleZones(wid).map(z => ({ value: z.id, label: zoneLabel(z) }));
+}
+
+function fields() {
+  return [
+    { name: "code", label: "编码 *", required: true, autocode: true, autocodePrefix: "LOC" },
+    { name: "name", label: "名称 *", required: true },
+    { type: "section", label: "仓库 / 储区归属（先选仓库，储区下拉只列本仓 + 全仓共享）" },
+    { name: "warehouse_id", label: "所属仓库", type: "select", placeholder: "未指定仓库",
+      options: warehouses.map(w => ({ value: w.id, label: `${w.code} · ${w.name}` })) },
+    { name: "zone_id", label: "储区", type: "select", placeholder: "不挂储区", options: [] },
+    { name: "zone", label: "库区（旧文本，兼容保留）", placeholder: "默认: 默认区" },
+    { type: "section", label: "库位属性" },
+    { name: "aisle", label: "巷道", placeholder: "如 A" },
+    { name: "bay", label: "列", placeholder: "如 01" },
+    { name: "level", label: "层", placeholder: "如 01" },
+    { name: "barcode", label: "库位条码" },
+    { name: "loc_type", label: "类型", type: "select", options: [
+      { value: "storage", label: "存储区" },
+      { value: "receiving", label: "收货区" },
+      { value: "picking", label: "拣货区" },
+      { value: "returns", label: "退货区" },
+    ] },
+    { name: "capacity", label: "容量（0=不限）", type: "number" },
+    { name: "location_group", label: "库位组（留空按编码前缀自动生成）" },
+    { name: "length_cm", label: "长(cm)", type: "number" },
+    { name: "width_cm", label: "宽(cm)", type: "number" },
+    { name: "height_cm", label: "高(cm)", type: "number" },
+    { type: "section", label: "混放策略（留空＝继承储区；不填储区则默认全部禁止）" },
+    ...MIX_FIELDS,
+    { name: "status", label: "状态", type: "select",
+      options: [{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }] },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+/** 重绘表单里的储区下拉，并尽量保留当前选中的储区。 */
+function refreshFormZones(ov, keepId, fallbackZone) {
+  const sel = ov.querySelector('[name="zone_id"]');
+  const wid = ov.querySelector('[name="warehouse_id"]').value;
+  if (!sel) return;
+  const opts = zoneOptions(wid);
+  const cur = keepId === undefined ? sel.value : String(keepId ?? "");
+  // 历史数据里若储区不属于当前仓库，也保留一个可选项，避免编辑时静默清空
+  let html = '<option value="">不挂储区</option>';
+  if (cur && !opts.some(o => String(o.value) === String(cur))) {
+    const z = zones.find(x => String(x.id) === String(cur));
+    html += `<option value="${esc(cur)}">${z ? esc(zoneLabel(z)) : "当前储区 #" + esc(cur)}（跨仓库）</option>`;
+  }
+  html += opts.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("");
+  sel.innerHTML = html;
+  sel.value = cur;
+}
+
+function refreshFilterZones() {
+  const wid = document.getElementById("whFilter").value;
+  const sel = document.getElementById("zoneFilter");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部储区</option>' +
+    zoneOptions(wid).map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("");
+  sel.value = cur;
+}
+
+async function loadWarehouses() {
+  try {
+    const d = await api("GET", "/api/warehouses?page_size=100");
+    warehouses = d.warehouses || [];
+    document.getElementById("whFilter").insertAdjacentHTML("beforeend",
+      warehouses.map(w => `<option value="${w.id}">${esc(w.code)} · ${esc(w.name)}</option>`).join(""));
+  } catch (e) { /* 忽略 */ }
+}
+
+async function loadZones() {
+  try {
+    const d = await api("GET", "/api/zones?page_size=100");
+    zones = d.zones || [];
+    refreshFilterZones();
+  } catch (e) { /* 忽略 */ }
+}
 
 async function loadGroups() {
   try {
@@ -85,23 +171,37 @@ async function loadGroups() {
   } catch (e) { /* 忽略 */ }
 }
 
+function mixCell(l) {
+  const eff = l.effective_mix || {};
+  const yes = Object.keys(MIX_SHORT).filter(k => eff[k]);
+  if (!yes.length) return '<span class="muted">全部禁止</span>';
+  return yes.map(k => `<span class="tag ok">${MIX_SHORT[k]}</span>`).join(" ");
+}
+
 async function load() {
   const kw = document.getElementById("kw").value.trim();
   const lt = document.getElementById("typeFilter").value;
   const grp = document.getElementById("groupFilter").value;
+  const wid = document.getElementById("whFilter").value;
+  const zid = document.getElementById("zoneFilter").value;
   const qs = new URLSearchParams({ page, page_size: pageSize });
   if (kw) qs.set("keyword", kw);
   if (lt) qs.set("loc_type", lt);
   if (grp) qs.set("location_group", grp);
+  if (wid) qs.set("warehouse_id", wid);
+  if (zid) qs.set("zone_id", zid);
   try {
     const data = await api("GET", "/api/locations?" + qs);
     document.getElementById("tbody").innerHTML = data.locations.map((l) =>
       `<tr>
         <td>${l.id}</td><td>${esc(l.code)}</td><td>${esc(l.name)}</td>
-        <td>${esc(l.zone)}</td><td>${esc(l.location_group || "")}</td><td>${esc(l.aisle)}</td><td>${esc(l.level)}</td>
+        <td>${l.warehouse_name ? esc(l.warehouse_name) : '<span class="muted">—</span>'}</td>
+        <td>${l.zone_name ? esc(l.zone_name) : '<span class="muted">—</span>'}</td>
+        <td>${esc(l.location_group || "")}</td><td>${esc(l.aisle)}</td><td>${esc(l.level)}</td>
         <td>${esc(l.loc_type_label)}</td>
         <td>${l.capacity === 0 ? "不限" : l.capacity}</td>
         <td>${l.capacity_volume ? l.capacity_volume : "-"}</td><td>${esc(l.barcode)}</td>
+        <td>${mixCell(l)}</td>
         <td>${statusTag(l.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${l.id})">编辑</button>
@@ -120,27 +220,37 @@ async function load() {
 
 function turn(d) { page += d; load(); }
 
+/** 绑定「仓库 → 储区」联动，并在打开编辑弹窗时回填原储区。 */
+function bindForm(ov, values) {
+  refreshFormZones(ov, values ? values.zone_id : "");
+  ov.querySelector('[name="warehouse_id"]').addEventListener("change", () => {
+    refreshFormZones(ov, "");
+  });
+}
+
 function openCreate() {
-  openForm({
-    title: "新建库位", submitText: "创建", width: 760, fields: FIELDS,
+  const ov = openForm({
+    title: "新建库位", submitText: "创建", width: 760, fields: fields(),
     onSubmit: async (p) => {
       await api("POST", "/api/locations", p);
       showMsg(document.getElementById("msg"), "创建成功", "success");
       load();
     },
   });
+  bindForm(ov, null);
 }
 
 async function openEdit(id) {
   const data = await api("GET", "/api/locations/" + id);
-  openForm({
-    title: "编辑库位", submitText: "保存", width: 760, fields: FIELDS, values: data.location,
+  const ov = openForm({
+    title: "编辑库位", submitText: "保存", width: 760, fields: fields(), values: data.location,
     onSubmit: async (p) => {
       await api("PUT", "/api/locations/" + id, p);
       showMsg(document.getElementById("msg"), "已保存", "success");
       load();
     },
   });
+  bindForm(ov, data.location);
 }
 
 async function toggle(id, status) {
@@ -163,7 +273,11 @@ async function del(id) {
   }
 }
 
-loadGroups().then(load);
+document.getElementById("whFilter").addEventListener("change", () => {
+  refreshFilterZones();
+  page = 1; load();
+});
+Promise.all([loadGroups(), loadWarehouses(), loadZones()]).then(load);
 </script>
 </body>
 </html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>验收作业 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>验收作业</h1><div class="crumb">MiniWMS / 出入库作业 / 收货验收</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2 id="asnTitle">收货单</h2>
+          <div class="flex">
+            <button class="btn secondary" onclick="openWorkTab('上架作业 · ' + (asnCode || ''), '/asn_putaway.html?asn_id=' + asnId)">前往上架作业 →</button>
+            <button class="btn secondary" onclick="openWorkTab('收货管理', '/asns.html?detail=' + asnId)">返回收货单</button>
+            <button class="btn secondary" onclick="loadAll()">刷新</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <label class="muted text-sm">收货单</label>
+          <select id="asnSel" style="min-width:240px"><option value="">加载中…</option></select>
+        </div>
+        <div class="table-wrap"><table><tbody id="asnMeta"></tbody></table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>验收入库</h2></div>
+        <div class="text-sm muted" style="margin:0 0 10px">
+          每次确认验收生成一条唯一批次流水（入库后可在下方查看批次号）。内部批次号留空时：首次入库自动等于批次号，销退沿用原内部批次号。
+        </div>
+        <div class="toolbar">
+          <label class="muted text-sm">明细行</label>
+          <select id="lineSel" style="min-width:300px"><option value="">请选择明细行</option></select>
+          <label class="muted text-sm">收货位</label>
+          <select id="recvLocSel" style="min-width:200px"><option value="">请选择收货位</option></select>
+          <label class="muted text-sm">本次验收数量</label>
+          <input id="recvQty" type="number" min="0.01" step="0.01" style="width:110px" placeholder="数量">
+          <label class="muted text-sm">内部批次号</label>
+          <input id="recvInternal" style="width:190px" placeholder="一般由外部数据传入，可留空">
+          <button class="btn" id="recvBtn" onclick="doReceive()">确认验收入库</button>
+        </div>
+        <div id="lineHint" class="text-sm muted"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>明细与验收进度</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>行</th><th>货品</th><th>规格</th><th>应收</th><th>已收</th><th>已上架</th><th>批号</th><th>验收批次流水</th><th>操作</th></tr></thead>
+            <tbody id="lineBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+let asnId = params.get("asn_id") || "";
+const presetLine = params.get("line_id") || "";
+let asnCode = "", asnData = null, recvLocs = [];
+
+function asnStatusTag(s) {
+  const map = { open: "待收货", receiving: "收货中", putaway: "上架中", closed: "已完成", cancelled: "已取消" };
+  return `<span class="tag ${s === "closed" ? "ok" : "off"}">${map[s] || s}</span>`;
+}
+
+async function loadAsnOptions() {
+  const d = await api("GET", "/api/asns?page_size=100");
+  const sel = document.getElementById("asnSel");
+  sel.innerHTML = '<option value="">请选择收货单…</option>' +
+    d.asns.map(a => `<option value="${a.id}">${esc(a.code)} · ${esc(a.owner_name || "")}（${esc(a.status)}）</option>`).join("");
+  if (!asnId && d.asns.length) asnId = String(d.asns[0].id);
+  sel.value = asnId;
+  sel.addEventListener("change", () => {
+    asnId = sel.value;
+    if (asnId) loadAll(); else { asnData = null; renderMeta(); renderLines(); }
+  });
+}
+
+async function loadRecvLocs() {
+  const d = await api("GET", "/api/locations?loc_type=receiving&status=active&page_size=100");
+  recvLocs = d.locations;
+  const sel = document.getElementById("recvLocSel");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">请选择收货位</option>' +
+    recvLocs.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)}</option>`).join("");
+  sel.value = cur || (recvLocs.length ? String(recvLocs[0].id) : "");
+}
+
+function renderMeta() {
+  const a = asnData ? asnData.asn : null;
+  asnCode = a ? a.code : "";
+  document.getElementById("asnTitle").textContent = a ? `验收作业：${a.code}` : "验收作业（未选择收货单）";
+  document.getElementById("asnMeta").innerHTML = a ? [
+    ["单据状态", asnStatusTag(a.status), "货主", `${esc(a.owner_code || "")} ${esc(a.owner_name || "")}`],
+    ["单据类型", a.doc_type || "-", "来源仓库", a.source_warehouse_name || a.source_warehouse_code || "-"],
+    ["供应商", a.supplier_name || "-", "外部单号", a.external_no || "-"],
+    ["创建时间", a.created_at || "-", "备注", a.note || "-"],
+  ].map(([k1, v1, k2, v2]) =>
+    `<tr><td class="muted">${k1}</td><td>${v1}</td><td class="muted">${k2}</td><td>${v2}</td></tr>`
+  ).join("") : '<tr><td class="muted">请在上方选择一张收货单</td></tr>';
+}
+
+function lineLabel(l) {
+  return `#${l.id} ${l.product_name || l.sku || "货品"} · 应收 ${l.expected_qty} / 已收 ${l.received_qty}${l.unit || ""}`;
+}
+
+function renderLines() {
+  const lines = asnData ? asnData.lines : [];
+  const sel = document.getElementById("lineSel");
+  const cur = sel.value || presetLine;
+  sel.innerHTML = '<option value="">请选择明细行</option>' +
+    lines.map(l => `<option value="${l.id}">${esc(lineLabel(l))}</option>`).join("");
+  sel.value = cur || (lines.length ? String(lines[0].id) : "");
+  document.getElementById("lineBody").innerHTML = lines.map(l => {
+    const batches = (l.batch_receipts || []).map(b =>
+      `<div class="mono text-sm">${esc(b.batch_no)} · 内部 ${esc(b.internal_batch_no)} · ${b.qty}${esc(l.unit || "")} · ${esc(b.goods_property || "-")}</div>`
+    ).join("") || '<span class="muted text-sm">尚未验收</span>';
+    const left = Number(l.expected_qty) - Number(l.received_qty);
+    return `<tr>
+      <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td><td>${esc(l.spec || "-")}</td>
+      <td>${l.expected_qty}</td><td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
+      <td>${esc(l.batch_no || "-")}</td><td>${batches}</td>
+      <td><button class="btn secondary sm" onclick="pickLine(${l.id})">选为当前行</button></td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="9" class="muted">该收货单暂无明细行</td></tr>';
+  updateHint();
+}
+
+function updateHint() {
+  const id = document.getElementById("lineSel").value;
+  const l = (asnData ? asnData.lines : []).find(x => String(x.id) === String(id));
+  const box = document.getElementById("lineHint");
+  if (!l) { box.textContent = ""; return; }
+  const left = Number(l.expected_qty) - Number(l.received_qty);
+  box.textContent = `当前行：${l.product_name || l.sku || ""}｜剩余可收 ${Math.max(0, left)}${l.unit || ""}｜批号 ${l.batch_no || "（明细未填）"}`;
+  if (!document.getElementById("recvQty").value && left > 0) {
+    document.getElementById("recvQty").value = left;
+  }
+}
+
+function pickLine(id) {
+  document.getElementById("lineSel").value = String(id);
+  document.getElementById("recvQty").value = "";
+  updateHint();
+}
+
+async function doReceive() {
+  const msg = document.getElementById("msg");
+  if (!asnId) { showMsg(msg, "请先选择收货单", "error"); return; }
+  const lineId = document.getElementById("lineSel").value;
+  const locationId = document.getElementById("recvLocSel").value;
+  const qty = parseFloat(document.getElementById("recvQty").value);
+  const internal_batch_no = document.getElementById("recvInternal").value.trim();
+  if (!lineId || !locationId || !(qty > 0)) {
+    showMsg(msg, "明细行 / 收货位 / 数量均必填，数量须大于 0", "error");
+    return;
+  }
+  try {
+    const r = await api("POST", `/api/asns/${asnId}/receive`, {
+      line_id: Number(lineId), location_id: Number(locationId), qty, internal_batch_no,
+    });
+    showMsg(msg, `验收成功：批次号 ${r.batch ? r.batch.batch_no : "-"}（内部 ${r.batch ? r.batch.internal_batch_no : "-"}），单据状态 ${r.status}`, "success");
+    document.getElementById("recvQty").value = "";
+    document.getElementById("recvInternal").value = "";
+    await loadAll();
+  } catch (e) {
+    showMsg(msg, "验收失败：" + e.message, "error");
+  }
+}
+
+async function loadAll() {
+  try {
+    await loadRecvLocs();
+    if (!asnId) { asnData = null; renderMeta(); renderLines(); return; }
+    asnData = await api("GET", "/api/asns/" + asnId);
+    document.getElementById("asnSel").value = String(asnId);
+    renderMeta();
+    renderLines();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+document.getElementById("lineSel").addEventListener("change", () => {
+  document.getElementById("recvQty").value = "";
+  updateHint();
+});
+loadAsnOptions().then(loadAll);
+</script>
+</body>
+</html>
