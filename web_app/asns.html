@@ -326,6 +326,7 @@ async function showDetail(id) {
   const a = data.asn;
   document.getElementById("asnMeta").innerHTML = [
     ["单据类型", a.doc_type || "-", "外部单号", a.external_no || "-"],
+    ["外部单据类别", a.external_doc_type || "-", "单据标识", docFlagsText(a)],
     ["来源仓库", a.source_warehouse_name || (a.source_warehouse_code || "-"), "订单来源", a.order_source || "-"],
     ["供应商", a.supplier_name || "-", "客户", a.customer_name || "-"],
     ["供应商联系人", a.supplier_contact || "-", "供应商电话", a.supplier_phone || "-"],
@@ -407,6 +408,18 @@ async function openCreate() {
     { name: "source_warehouse", label: "来源仓库 *", type: "select", required: true,
       placeholder: "请选择仓库", default: whDefault, options: warehouseOptions,
       help: warehouseOptions.length ? "已默认选中第一个仓库，可更换" : "尚无仓库，请到「基础主数据 → 仓库」创建" },
+
+    { type: "section", label: "单据标识（M20 剩余：仅记录，暂不参与校验）" },
+    { name: "external_doc_type", label: "外部单据类别",
+      help: "自由文本；M26 上架规则编辑器再提供可配字典与按类别分流" },
+    { name: "is_virtual", label: "虚拟", type: "select", default: 0,
+      options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+    { name: "is_direct", label: "直调", type: "select", default: 0,
+      options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+    { name: "is_cold_chain", label: "冷链", type: "select", default: 0,
+      options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+    { name: "is_hazard", label: "危险", type: "select", default: 0,
+      options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
 
     { type: "section", label: "② 往来单位（联系方式可在下单时修改）" },
     { name: "supplier_id", label: "供应商", type: "select", placeholder: "请选择供应商", options: allSupplierOptions },

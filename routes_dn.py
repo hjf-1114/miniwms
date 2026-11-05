@@ -85,6 +85,9 @@ def create_dn():
     lines = payload.get("lines")
     note = str(payload.get("note") or "")
 
+    # M20 剩余（v3.3）：4 个单据标识位 + 外部单据类别，只落字段不做业务校验
+    flags, external_doc_type, flag_errors = C.parse_doc_flags(payload)
+
     # 单据字段（M16）：单据类型/外部单号/订单来源/来源仓库/承运商/自定义字段
     doc_type = str(payload.get("doc_type") or "").strip() or "销售"
     external_no = str(payload.get("external_no") or "").strip()
@@ -95,7 +98,7 @@ def create_dn():
     extra2 = str(payload.get("extra2") or "").strip()
     extra3 = str(payload.get("extra3") or "").strip()
 
-    errors = []
+    errors = list(flag_errors)
     if doc_type not in C.DN_DOC_TYPES:
         errors.append(f"doc_type 只能是 {'/'.join(C.DN_DOC_TYPES)}")
     try:
@@ -181,10 +184,12 @@ def create_dn():
 
     cur = db.execute(
         """INSERT INTO dn (code, owner_id, customer_id, doc_type, external_no, order_source,
-               source_warehouse, carrier_name, total_qty, category_count, extra1, extra2, extra3, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               source_warehouse, carrier_name, total_qty, category_count, extra1, extra2, extra3, note,
+               is_virtual, is_direct, is_cold_chain, is_hazard, external_doc_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (code, owner_id, customer_id, doc_type, external_no, order_source,
-         source_warehouse, carrier_name, total_qty, category_count, extra1, extra2, extra3, note),
+         source_warehouse, carrier_name, total_qty, category_count, extra1, extra2, extra3, note)
+        + tuple(flags[k] for k in C.DOC_FLAG_FIELDS) + (external_doc_type,),
     )
     dn_id = cur.lastrowid
     db.executemany(

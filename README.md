@@ -117,13 +117,16 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - **简版上架推荐**：`GET /api/putaway/recommend` 只读计算，硬过滤（启用/目标位类型/温区/剩余容量/三类混放）后按「绑定货位 > 推荐储区 > 同产品聚拢 > 同批号聚拢 > 空库位 > 容量贴合」打分，返回 Top-N 货位、理由与被排除原因；**不写库存**，一键采纳只是把 `location_id` 填进原有 `/api/asns/<id>/putaway`
   - **验收 / 上架独立作业页**：`asn_receive.html` / `asn_putaway.html` 均带 `?asn_id=`（可带 `&line_id=`），在工作台里各开一个标签页、多张单据可并行；验收页录数量/收货位/内部批次号并展示已生成批次流水，上架页展示推荐与排除清单并支持一键采纳；`asns.html` 明细行的验收/上架按钮改为打开对应标签页，独立打开页面时回退为新窗口
   - 工作台侧栏恢复为**默认展开 + 显式收起/展开按钮 + 记住状态**；收起状态下 hover 不再意外弹开
+- **M20 剩余 · 单据标识位（阶段 B，2026-11-05）**（`constants.py` / `main.py` / `routes_asn.py` / `routes_dn.py` + `web_app/asns.html`、`dns.html`）：
+  - ASN / DN 各增加 4 个 0/1 标识位 `is_virtual`（虚拟）/ `is_direct`（直调）/ `is_cold_chain`（冷链）/ `is_hazard`（危险）与自由文本 `external_doc_type`（外部单据类别，≤32 字符）；新建表单可填、列表与明细可查、明细页以中文标签展示；老库自动补列，旧单据默认 0 / 空串
+  - `constants.parse_doc_flags()` 集中解析，兼容整数 / 布尔 / 字符串 `"0"`/`"1"`；非法值或超长返回 400
+  - **仅记录、不校验（蓝图 v3 口径）**：`receive()` / `putaway()` 完全不因这些标识拦截，冷链 + 危险单据仍可上架到常温货位；混放 / 温区 / 危化拦截将在 M25 由**可配置上架规则**决定、M26 提供条件组编辑器，代码中无 hardcoded 红线
 - **Web demo**（`web_app/`）
   - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
   - **工作台（`/app.html`）**：默认展开的左侧垂直一级菜单 + 内嵌可折叠子菜单 + 多标签页，顶部按钮收起/展开导航并记忆状态；单个页面以 iframe 标签并存；单据「明细」按钮与验收/上架作业在工作台内以新标签打开，独立打开页面时回退为新窗口；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
 
 ### 规划中（见 DEVELOPMENT.md）
 
-- M20 剩余（**范围已按蓝图 v3 收窄**）：asn/dn 各 4 个单据标识位（虚拟 / 直调 / 冷链 / 危险）+ `external_doc_type`，只做字段 / 表单 / 测试；**不含硬校验**
 - M21 批次级库存明细层（stock_batch + 流水维度列 + 三层不变式）
 - M22 库存调整单 + 盘点增强（全盘 / 部分 / 盲盘 / 动碰，动碰支持手工时间窗 + 交易类型）
 - M23 指定客户专属库存 + 销退口径
@@ -161,13 +164,13 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/product-locations` | 新增绑定（一个 SKU 可绑多个；仅启用中的存储位/拣货位，重复绑定 409） |
 | DELETE | `/api/product-locations/<id>` | 解绑 |
 | GET | `/api/putaway/recommend` | 上架推荐只读预览：`asn_id`/`line_id` 必填，可选 `qty`/`top_n`；返回 Top-N 货位（分数/理由/已用容量/生效混放）、被排除货位及原因；**不写库存** |
-| POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性；单号留空自动生成 `ASN-日期-流水`；单据类型默认「采购」；支持 外部单号/订单来源/来源仓库/供应商/`customer_id`/承运商/自定义字段，自动算 总数量·品类数）。供应商与客户须属同一货主，否则 400 明确报错；`supplier_contact`/`supplier_phone`/`supplier_address`/`customer_contact`/`customer_phone`/`customer_address` 可覆盖主数据快照；明细行可带 20 个商品档案 + 批次信息字段（含灭菌批号/产地/患者名称/内部批次号/货品属性/UDI/生产企业），全部可人工编辑、落库为单据快照；`goods_property` 仅接受 合格/不合格 |
+| POST | `/api/asns` | 创建收货单（行 = 物料×预期数量，校验货主一致性；单号留空自动生成 `ASN-日期-流水`；单据类型默认「采购」；支持 外部单号/订单来源/来源仓库/供应商/`customer_id`/承运商/自定义字段，自动算 总数量·品类数）。供应商与客户须属同一货主，否则 400 明确报错；`supplier_contact`/`supplier_phone`/`supplier_address`/`customer_contact`/`customer_phone`/`customer_address` 可覆盖主数据快照；明细行可带 20 个商品档案 + 批次信息字段（含灭菌批号/产地/患者名称/内部批次号/货品属性/UDI/生产企业），全部可人工编辑、落库为单据快照；`goods_property` 仅接受 合格/不合格；可选 `is_virtual`/`is_direct`/`is_cold_chain`/`is_hazard`（0/1，默认 0）与 `external_doc_type`（≤32 字符，默认空），**仅记录不拦截** |
 | GET | `/api/asns` | 收货单列表，支持 `keyword`/`status`/分页（返回 来源仓库/供应商/总数量/品类数） |
 | GET | `/api/asns/<id>` | 收货单详情 + 明细行（返回规格/货号/单位/厂家/生产企业/产地/UDI/批号/灭菌批号/生产日期/失效日期/内部批次号/货品属性/患者名称/注册证号/注册人/生产许可证等快照，老单据回退物料主数据；每行附本行已生成的 `batch_receipts`） |
 | POST | `/api/asns/<id>/receive` | 收货到收货区位（部分收货，状态自动推进）；同事务写入批次信息，返回 `batch`（唯一 `batch_no`、批次档案、`internal_batch_no` 及其来源）；可传 `internal_batch_no` 覆盖（退货/外部数据场景） |
 | POST | `/api/asns/<id>/putaway` | 上架：暂存位 → 存储/拣货位（同事务一减一增） |
 | POST | `/api/asns/<id>/cancel` | 取消（仅未收货） |
-| POST | `/api/dns` | 创建出库单（行 = 物料×订购数量，校验货主一致性；单号留空自动生成 `DN-日期-流水`；支持 单据类型/外部单号/订单来源/来源仓库/承运商/自定义字段，自动算 总数量·品类数） |
+| POST | `/api/dns` | 创建出库单（行 = 物料×订购数量，校验货主一致性；单号留空自动生成 `DN-日期-流水`；支持 单据类型/外部单号/订单来源/来源仓库/承运商/自定义字段，自动算 总数量·品类数；可选 `is_virtual`/`is_direct`/`is_cold_chain`/`is_hazard`（0/1，默认 0）与 `external_doc_type`（≤32 字符，默认空），**仅记录不拦截**） |
 | GET | `/api/dns` | 出库单列表，支持 `keyword`/`status`/分页 |
 | POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库） |
 | POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存） |
@@ -218,7 +221,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ```
 main.py               Flask 入口、数据库初始化与连接管理、静态托管 web_app
 auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器）
-constants.py          状态机、流水类型、批次号前缀、温区/混放字段与推荐理由码（显式集中）
+constants.py          状态机、流水类型、批次号前缀、温区/混放字段、推荐理由码、单据标识位与 parse_doc_flags()（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
 putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，只读）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）

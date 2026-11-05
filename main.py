@@ -92,10 +92,19 @@ def gen_doc_no(db, table, prefix):
 
 
 def _migrate_m20_columns(conn):
-    """M20 幂等列迁移：库位挂仓库/储区 + 混放开关，货品加推荐储区。
+    """M20 幂等列迁移：库位挂仓库/储区 + 混放开关、货品加推荐储区、
+    ASN/DN 加 4 个单据标识位与 external_doc_type（阶段 B）。
 
     混放字段在 location 上允许 NULL，表示「继承所属储区」；zone 上是 0/1 实值。
+    单据标识位一律 0/1 并带默认值，老库补列后旧单据自动为 0 / 空串。
     """
+    doc_cols = [
+        ("is_virtual", "INTEGER NOT NULL DEFAULT 0"),
+        ("is_direct", "INTEGER NOT NULL DEFAULT 0"),
+        ("is_cold_chain", "INTEGER NOT NULL DEFAULT 0"),
+        ("is_hazard", "INTEGER NOT NULL DEFAULT 0"),
+        ("external_doc_type", "TEXT NOT NULL DEFAULT ''"),
+    ]
     wanted = {
         "location": [
             ("zone_id", "INTEGER REFERENCES zone(id)"),
@@ -105,6 +114,8 @@ def _migrate_m20_columns(conn):
             ("allow_mix_owner", "INTEGER"),
         ],
         "product": [("default_zone_id", "INTEGER REFERENCES zone(id)")],
+        "asn": doc_cols,
+        "dn": doc_cols,
     }
     for table, cols in wanted.items():
         exists = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -288,6 +299,11 @@ def init_db():
                 doc_type        TEXT    NOT NULL DEFAULT '采购',
                 external_no     TEXT    NOT NULL DEFAULT '',
                 order_source    TEXT    NOT NULL DEFAULT '',
+                is_virtual      INTEGER NOT NULL DEFAULT 0,
+                is_direct       INTEGER NOT NULL DEFAULT 0,
+                is_cold_chain   INTEGER NOT NULL DEFAULT 0,
+                is_hazard       INTEGER NOT NULL DEFAULT 0,
+                external_doc_type TEXT  NOT NULL DEFAULT '',
                 source_warehouse INTEGER REFERENCES warehouse(id),
                 supplier_id     INTEGER REFERENCES supplier(id),
                 customer_name   TEXT    NOT NULL DEFAULT '',
@@ -364,6 +380,11 @@ def init_db():
                 doc_type        TEXT    NOT NULL DEFAULT '销售',
                 external_no     TEXT    NOT NULL DEFAULT '',
                 order_source    TEXT    NOT NULL DEFAULT '',
+                is_virtual      INTEGER NOT NULL DEFAULT 0,
+                is_direct       INTEGER NOT NULL DEFAULT 0,
+                is_cold_chain   INTEGER NOT NULL DEFAULT 0,
+                is_hazard       INTEGER NOT NULL DEFAULT 0,
+                external_doc_type TEXT  NOT NULL DEFAULT '',
                 source_warehouse INTEGER REFERENCES warehouse(id),
                 carrier_name    TEXT    NOT NULL DEFAULT '',
                 total_qty       REAL    NOT NULL DEFAULT 0,

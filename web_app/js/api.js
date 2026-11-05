@@ -111,3 +111,12 @@ function statusTag(s) {
     ? '<span class="tag ok">启用</span>'
     : '<span class="tag off">停用</span>';
 }
+
+/** 单据标识位展示：把 ASN/DN 的 4 个 0/1 字段渲染成可读标签（M20 剩余）。 */
+function docFlagsText(doc) {
+  const pairs = [["is_virtual", "虚拟"], ["is_direct", "直调"],
+                 ["is_cold_chain", "冷链"], ["is_hazard", "危险"]];
+  const hit = pairs.filter(([k]) => Number(doc && doc[k]) === 1)
+                   .map(([, label]) => label);
+  return hit.length ? hit.join(" · ") : "无";
+}

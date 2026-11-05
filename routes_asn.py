@@ -102,6 +102,10 @@ def create_asn():
     lines = payload.get("lines")
     note = str(payload.get("note") or "")
 
+    # M20 剩余（v3.3）：4 个单据标识位 + 外部单据类别。这里只落字段，
+    # 混放/冷链/危险是否拦截由 M25/M26 的上架规则配置决定，本层不附加业务校验。
+    flags, external_doc_type, flag_errors = C.parse_doc_flags(payload)
+
     # 单据字段（M16）：单据类型/外部单号/订单来源/来源仓库/供应商/客户/承运商/自定义字段
     # 单据类型默认「采购」；来源仓库为必填
     doc_type = str(payload.get("doc_type") or "").strip() or "采购"
@@ -122,7 +126,7 @@ def create_asn():
                   "customer_contact", "customer_phone", "customer_address")
     }
 
-    errors = []
+    errors = list(flag_errors)
     if doc_type not in C.ASN_DOC_TYPES:
         errors.append(f"doc_type 只能是 {'/'.join(C.ASN_DOC_TYPES)}")
     try:
@@ -251,13 +255,15 @@ def create_asn():
                source_warehouse, supplier_id, customer_id, customer_name, carrier_name,
                supplier_name, supplier_contact, supplier_phone, supplier_address,
                customer_contact, customer_phone, customer_address,
-               total_qty, category_count, extra1, extra2, extra3, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               total_qty, category_count, extra1, extra2, extra3, note,
+               is_virtual, is_direct, is_cold_chain, is_hazard, external_doc_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (code, owner_id, doc_type, external_no, order_source, source_warehouse,
          supplier_id, customer_id, snap_cus_name, carrier_name,
          snap_sup_name, snap_sup_contact, snap_sup_phone, snap_sup_address,
          snap_cus_contact, snap_cus_phone, snap_cus_address,
-         total_qty, category_count, extra1, extra2, extra3, note),
+         total_qty, category_count, extra1, extra2, extra3, note)
+        + tuple(flags[k] for k in C.DOC_FLAG_FIELDS) + (external_doc_type,),
     )
     asn_id = cur.lastrowid
     db.executemany(

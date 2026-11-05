@@ -83,3 +83,39 @@ PUTAWAY_REASON_LABELS = {
     PUTAWAY_R_EMPTY: "空库位优先",
     PUTAWAY_R_CAPACITY: "剩余容量充足",
 }
+
+# ── M20 剩余：ASN/DN 单据标识位与外部单据类别 ──
+# v3.3 口径：这里只落字段与解析，**不做任何混放 / 冷链 / 危险业务校验**；
+# 是否拦截、拦到哪些货位，全部由 M25/M26 的上架规则行配置决定。
+DOC_FLAG_FIELDS = ("is_virtual", "is_direct", "is_cold_chain", "is_hazard")
+DOC_FLAG_LABELS = {
+    "is_virtual": "虚拟",
+    "is_direct": "直调",
+    "is_cold_chain": "冷链",
+    "is_hazard": "危险",
+}
+EXTERNAL_DOC_TYPE_MAXLEN = 32
+
+
+def parse_doc_flags(payload):
+    """解析 ASN/DN 的 4 个标识位与 external_doc_type。
+
+    返回 ``(flags, external_doc_type, errors)``。兼容 0/1 整数、布尔、``'0'``/``'1'``
+    字符串、``None`` 与空串；缺省按 0 / 空串处理。非法值只报字段格式错误，
+    **不附加任何业务约束**（v3.3）。
+    """
+    flags, errors = {}, []
+    for key in DOC_FLAG_FIELDS:
+        raw = payload.get(key)
+        if raw is None or raw == "":
+            flags[key] = 0
+        elif raw is True or raw == 1 or raw == "1":
+            flags[key] = 1
+        elif raw is False or raw == 0 or raw == "0":
+            flags[key] = 0
+        else:
+            errors.append(f"{key} 只能是 0/1")
+    ext = str(payload.get("external_doc_type") or "").strip()
+    if len(ext) > EXTERNAL_DOC_TYPE_MAXLEN:
+        errors.append(f"external_doc_type 最长 {EXTERNAL_DOC_TYPE_MAXLEN} 字符")
+    return flags, ext, errors
