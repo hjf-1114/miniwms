@@ -20,7 +20,7 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
 货主/物料/库位/收货/出库/移库/库存等多个管理页，创建、搜索、启停、删除与
 收货/上架/拣货/发货/移库/账目核对均直接调用后端 API。
-也可打开 `http://localhost:5100/app.html` 进入**工作台**：默认展开的左侧垂直分组菜单（顶部「收起导航 / 展开导航」按钮可伸缩，状态记忆在 localStorage）+
+也可打开 `http://localhost:5100/app.html` 进入**工作台**：左侧为**多层内嵌导航**（3 个一级域 / 7 个二级分类 / 18 个页面；默认只展开当前页所在分支，其余折叠，手动展开状态记忆在 localStorage），菜单区可独立上下滚动，顶部「收起导航 / 展开导航」按钮可伸缩侧栏（状态同样记忆）+
 多标签页，多个页面在同一窗口并存（工作台自身不会被嵌套进标签）。验收、上架各有独立作业页，可同时打开多张收货单的标签。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
@@ -239,6 +239,7 @@ routes_customer.py   客户主数据 Blueprint（出库收货方维度）
 routes_user.py        用户与角色（登录/权限）Blueprint
 routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
 web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
+web_app/js/layout.js  递归多层导航树（3 级 / 18 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
 docs/PUTAWAY_RECOMMENDATION.md  上架推荐 / 批次级库存 / 转移 / 盘点设计提案（v3.3）

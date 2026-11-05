@@ -40,7 +40,7 @@ if (EMBED) {
     "工作台不能嵌套在标签页内。<br>" +
     '<a class="btn mt12" href="/app.html" target="_blank">在新窗口打开工作台</a></div></div>';
 } else {
-  const NAV = window.MWS_NAV || [];
+  // 导航树由 /js/layout.js 暴露（window.MWS_NAV / MWS_NAV_TOOLS），工作台不另建副本
   const side = document.getElementById("wsSide");
   const navEl = document.getElementById("wsNav");
   const tabsEl = document.getElementById("wsTabs");
@@ -62,36 +62,18 @@ if (EMBED) {
       '<a class="btn secondary sm" href="/login.html">登录</a>';
   }
 
-  const GROUP_ICONS = { "基础主数据": "🗂️", "出入库作业": "📦", "系统管理": "⚙️" };
-
-  // ── 构建垂直一级菜单 + 内嵌子菜单 ──
-  const groups = [];
-  let cur = null;
-  for (const it of NAV) {
-    if (it.group) {
-      cur = { label: it.group, ico: GROUP_ICONS[it.group] || "📁", items: [] };
-      groups.push(cur);
-    } else if (cur) {
-      cur.items.push(it);
-    } else {
-      cur = { label: "其他", ico: "📁", items: [it] };
-      groups.push(cur);
-    }
-  }
-  navEl.innerHTML = groups.map((g, gi) =>
-    `<div class="nav-group-box" data-gi="${gi}">
-       <button type="button" class="nav-group-toggle" data-toggle="${gi}" title="${esc(g.label)}">
-         <span class="nav-ico">${g.ico}</span>
-         <span class="nav-label">${esc(g.label)}</span>
-         <span class="nav-arrow">▾</span>
-       </button>
-       <div class="nav-sub" data-sub="${gi}">
-         ${g.items.map((it) =>
-           `<a class="nav-item" href="#" data-href="${it.href}" title="${esc(it.label)}">` +
-           `<span class="nav-ico">${it.ico}</span><span class="nav-label">${esc(it.label)}</span></a>`
-         ).join("")}
-       </div>
-     </div>`).join("");
+  // ── 多层内嵌导航：与独立页面共用 layout.js 的树、折叠记忆与自动展开 ──
+  // 叶子点击改为「打开标签」，其余交互（折叠、当前页高亮、祖先链展开）由 mount 统一处理。
+  const navCtl = window.MWS_NAV_TOOLS.mount(navEl, {
+    mode: "tabs",
+    activeHref: "/index.html",
+    beforeToggle: () => {
+      // 侧栏收起态先展开侧栏，避免点了折叠却看不到子菜单
+      if (!side.classList.contains("pinned")) { setSide(true, true); return false; }
+      return true;
+    },
+    onLeaf: (label, href) => openTab(label, href)
+  });
 
   // ── 侧栏伸缩：默认展开；按钮显式收起/展开；状态记在 localStorage ──
   // collapsed 时禁用 hover 展开，避免「刚点收起、鼠标还在侧栏上就又弹开」的错觉。
@@ -119,21 +101,7 @@ if (EMBED) {
     setSide(saved !== "0", false); // 无记录时默认展开
   })();
 
-  // 一级菜单：折叠/展开子菜单；收起状态下先展开侧栏，避免看不到子项
-  navEl.querySelectorAll("[data-toggle]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (!side.classList.contains("pinned")) { setSide(true, true); return; }
-      btn.closest(".nav-group-box").classList.toggle("collapsed");
-    });
-  });
-
-  navEl.querySelectorAll(".nav-item").forEach((a) => {
-    a.addEventListener("click", (e) => {
-      e.preventDefault();
-      a.closest(".nav-group-box").classList.remove("collapsed");
-      openTab(a.querySelector(".nav-label").textContent, a.dataset.href);
-    });
-  });
+  // 折叠 / 叶子点击 / 当前页高亮均由 MWS_NAV_TOOLS.mount() 统一绑定，此处不再重复注册。
 
   // ── 标签页管理 ──
   let tabs = [];
@@ -182,10 +150,8 @@ if (EMBED) {
   }
 
   function highlightNav(url) {
-    const base = url.split("?")[0];
-    navEl.querySelectorAll(".nav-item").forEach((a) => {
-      a.classList.toggle("active", a.dataset.href === base && url.indexOf("detail=") === -1);
-    });
+    // 切换标签时展开该页所在分支并同步高亮
+    if (navCtl) navCtl.reveal(url);
   }
 
   function renderTabs() {
