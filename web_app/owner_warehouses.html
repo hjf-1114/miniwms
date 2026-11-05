@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>货主 × 仓库业务关系 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.grid-table th, .grid-table td { text-align: center; white-space: nowrap; }
+.grid-table th:first-child, .grid-table td:first-child { text-align: left; min-width: 180px; }
+.grid-table input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; }
+.hint { font-size: 13px; line-height: 1.8; color: var(--text-muted, #666); margin: 0 0 12px; }
+.pick-all { font-size: 12px; font-weight: 400; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>货主 × 仓库业务关系</h1><div class="crumb">MiniWMS / 系统管理 / 权限</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <div class="card">
+        <div class="card-head">
+          <h2>业务关系矩阵</h2>
+          <div>
+            <button class="btn secondary" onclick="load()">刷新</button>
+            <button class="btn" onclick="save()" id="saveBtn">保存</button>
+          </div>
+        </div>
+        <p class="hint">
+          勾选＝该货主在这个仓<b>有业务</b>。某个仓只要有一个勾，就会启用「格子过滤」：
+          即便账号有「全部货主」权限，在该仓也只能看到勾过的货主，未勾的组合一律不可见。<br>
+          把某个仓的勾<b>全部取消</b>＝关闭该仓的格子过滤，行为退回纯粹的账号授权（新系统默认状态）。
+          账号授权与格子取<b>交集</b>，两层都通过才可见；未切换仓库（不带仓库标识）的请求不启用格子。
+        </p>
+        <div class="table-wrap">
+          <table class="grid-table">
+            <thead><tr id="gridHead"></tr></thead>
+            <tbody id="gridBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+requireLogin();
+let MATRIX = null;
+
+async function load() {
+  try {
+    const d = await api("GET", "/api/owner-warehouses");
+    MATRIX = d;
+    const whs = d.warehouses, ows = d.owners;
+    const checked = new Set(d.cells.map((c) => c.warehouse_id + ":" + c.owner_id));
+    const enabled = new Set(d.enabled_warehouse_ids || []);
+
+    document.getElementById("gridHead").innerHTML =
+      "<th>货主 ／ 仓库</th>" + whs.map((w) =>
+        `<th>${esc(w.code)}<div class="muted">${esc(w.name)}</div>` +
+        `<div class="pick-all">${enabled.has(w.id) ? "已启用" : "未启用"}` +
+        ` <label>全选 <input type="checkbox" data-col="${w.id}"></label></div></th>`
+      ).join("");
+
+    document.getElementById("gridBody").innerHTML = ows.map((o) =>
+      `<tr><td><b>${esc(o.code)}</b> · ${esc(o.name)}</td>` + whs.map((w) =>
+        `<td><input type="checkbox" data-wh="${w.id}" data-ow="${o.id}"` +
+        (checked.has(w.id + ":" + o.id) ? " checked" : "") + `></td>`
+      ).join("") + "</tr>"
+    ).join("") || `<tr><td colspan="${whs.length + 1}" class="muted">暂无货主，请先在「货主」页创建</td></tr>`;
+
+    if (!whs.length) {
+      showMsg(document.getElementById("msg"), "暂无仓库，请先在「仓库」页创建", "error");
+    }
+    document.querySelectorAll("input[data-col]").forEach((box) => {
+      const cells = Array.from(document.querySelectorAll(`input[data-wh="${box.dataset.col}"]`));
+      box.checked = cells.length > 0 && cells.every((c) => c.checked);
+      box.addEventListener("change", () => {
+        document.querySelectorAll(`input[data-wh="${box.dataset.col}"]`).forEach((c) => {
+          c.checked = box.checked;
+        });
+      });
+    });
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+async function save() {
+  if (!MATRIX) return;
+  const btn = document.getElementById("saveBtn");
+  btn.disabled = true;
+  try {
+    for (const w of MATRIX.warehouses) {
+      const ids = Array.from(document.querySelectorAll(`input[data-wh="${w.id}"]:checked`))
+        .map((el) => Number(el.dataset.ow));
+      await api("PUT", "/api/owner-warehouses/" + w.id, { owner_ids: ids });
+    }
+    showMsg(document.getElementById("msg"), "已保存，格子过滤立即生效", "success");
+    await load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "保存失败：" + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+load();
+</script>
+</body>
+</html>

@@ -36,6 +36,8 @@ class DataScopeTest(unittest.TestCase):
     def _clean(self):
         db = self._db()
         try:
+            # 关系表引用 owner/warehouse，先清空，避免跨测试残留触发外键约束
+            db.execute("DELETE FROM owner_warehouse")
             for t in ("user_warehouse_grant", "user_owner_grant"):
                 db.execute(f"DELETE FROM {t}")
             for t, col in (("carrier", "code"), ("customer", "code"),

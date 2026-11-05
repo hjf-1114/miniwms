@@ -123,7 +123,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - `constants.parse_doc_flags()` 集中解析，兼容整数 / 布尔 / 字符串 `"0"`/`"1"`；非法值或超长返回 400
   - **仅记录、不校验（蓝图 v3 口径）**：`receive()` / `putaway()` 完全不因这些标识拦截，冷链 + 危险单据仍可上架到常温货位；混放 / 温区 / 危化拦截将在 M25 由**可配置上架规则**决定、M26 提供条件组编辑器，代码中无 hardcoded 红线
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/库存/角色/用户/货主仓库关系 多个管理页，零依赖原生 JS，直接调用后端 API
   - **工作台（`/app.html`）**：默认展开的左侧垂直一级菜单 + 内嵌可折叠子菜单 + 多标签页，顶部按钮收起/展开导航并记忆状态；单个页面以 iframe 标签并存；单据「明细」按钮与验收/上架作业在工作台内以新标签打开，独立打开页面时回退为新窗口；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
 
 ### 架构增强：仓库 / 货主双维数据隔离（2026-11-05，非里程碑，不占用 M 编号）
@@ -156,6 +156,16 @@ python -m unittest discover -s tests -p "test_*.py" -v
   为后续按货主做权限管控留好挂点；列表支持 `owner_id=<id>` 与 `owner_id=none` 过滤。
 - **前端**：独立页侧栏与工作台顶栏各有「当前仓库」选择器（共用 `api.js::mountWarehousePicker()`），
   切换后工作台会重载全部已打开标签，避免旧仓数据残留；首次确定当前仓会自动重载一次页面数据。
+- **业务关系格子（2026-11-05 二次优化）**：新增 `owner_warehouse(owner_id, warehouse_id, status)`
+  多对多关系表与「系统管理 → 权限 → 货主仓库关系」矩阵页，登记「哪个货主在哪个仓有业务」。
+  `scope.apply_owner_warehouse_grid()` 在 `before_request` 里把账号授权与当前仓登记取**交集**，
+  消掉「可见仓 × 可见货主」笛卡尔积里业务上并不存在的组合；13 个列表接口、写路径守门、
+  按 ID 守门自动跟着收紧（逐个路由一行未改）。某仓**无任何 active 登记行**＝该仓未启用格子过滤，
+  行为与优化前完全一致（clone 即用、老库零迁移）；清空该仓勾选即关闭。
+  未指定仓库（不带 `X-WMS-Warehouse`）的请求不启用格子，这是明确的兼容边界。
+- **数据库选型（用户 2026-11-05 确认）**：现阶段**继续 SQLite + 应用层隔离**；
+  「多 Tenant 3PL SaaS + PostgreSQL + RLS」写作**未来演进路线、非当前实现**，
+  详见 `docs/DOMAIN_BLUEPRINT.md` §9。触发条件是「第二家物流公司入驻」或「上真实生产」。
 
 ### 规划中（见 DEVELOPMENT.md）
 
@@ -250,8 +260,10 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET | `/api/scope/context` | 当前数据权限上下文 + 可切换仓库清单 + 当前仓（前端启动自检；带失效仓 header 时软解析） |
 | GET | `/api/scope/warehouses` | 当前账号可切换的仓库清单（A 作业视角） |
 | GET | `/api/scope/owners` | 当前账号可见的货主清单 |
-| POST | `/api/scope/warehouse` | 校验一次切仓是否合法并回显目标仓（真正切换靠 `X-WMS-Warehouse` header） |
+| POST | `/api/scope/warehouse` | 校验一次切仓是否合法并回显目标仓（真正切换靠 `X-WMS-Warehouse` header）；上下文摘要含 `grid_enabled` / `grid_owner_ids` |
 | GET/PUT | `/api/users/<id>/grants` | 读取 / 配置账号的仓库·货主可见范围（`all`=全部 / `grant`=按勾选授权，需 `user:manage`） |
+| GET | `/api/owner-warehouses` | 货主 × 仓库业务关系矩阵：全部货主、全部仓库、已勾选格子、已启用格子的仓（需 `user:manage`） |
+| PUT | `/api/owner-warehouses/<wid>` | 按仓全量替换登记行 `owner_ids: [...]`；空数组＝关闭该仓格子过滤（需 `user:manage`） |
 | POST | `/api/carriers` | 创建承运商；可选 `owner_id`（留空＝全系统共享，非空＝归属货主，后期可按货主管控） |
 | GET | `/api/carriers` | 承运商列表，支持 `keyword`/`carrier_type`/`status`/`owner_id`（`none`=只看共享）/分页 |
 
@@ -259,7 +271,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 ```
 main.py               Flask 入口；中央库/业务库双层连接与按仓选库、跨仓主数据同步、before_request 数据权限守门、DDL 与迁移、静态托管 web_app
-scope.py              仓库/货主双维隔离上下文切面：授权解析、owner_where() 注入器、写路径与按 ID 归属校验、ALL 显式化
+scope.py              仓库/货主双维隔离上下文切面：授权解析、owner_where() 注入器、写路径与按 ID 归属校验、ALL 显式化、owner_warehouse 格子交集
 auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器；用户/角色只读中央库）
 constants.py          状态机、流水类型、批次号前缀、温区/混放字段、推荐理由码、单据标识位与 parse_doc_flags()（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
@@ -278,15 +290,16 @@ routes_stock.py       库存账/流水/余额核对只读 Blueprint
 routes_customer.py   客户主数据 Blueprint（出库收货方维度）
 routes_user.py        用户与角色（登录/权限）Blueprint，全部走中央库
 routes_scope.py       数据权限与切仓上下文（/api/scope/*、/api/users/<id>/grants）Blueprint
+routes_owner_warehouse.py 货主 × 仓库业务关系矩阵配置（/api/owner-warehouses）Blueprint
 routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
 routes_warehouse.py   仓库主数据 Blueprint（控制面；db_path 安全校验、跨库引用检查）
-web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
-web_app/js/layout.js  递归多层导航树（3 级 / 18 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
+web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/owner_warehouses/login + app.html 工作台 + css/js）
+web_app/js/layout.js  递归多层导航树（3 级 / 19 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
 web_app/js/api.js     原生 fetch 封装 + 当前仓库上下文（X-WMS-Warehouse header / mountWarehousePicker()）+ 登录态与工作台标签工具
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
 docs/PUTAWAY_RECOMMENDATION.md  上架推荐 / 批次级库存 / 转移 / 盘点设计提案（v3.3）
-docs/DOMAIN_BLUEPRINT.md       自上而下 5 层领域蓝图、现状对照、M31+ 框架与打印方案定稿（v3）
+docs/DOMAIN_BLUEPRINT.md       自上而下 5 层领域蓝图、现状对照、M31+ 框架与打印方案定稿（v3）+ §9 多租户 PG/RLS 未来演进路线
 docs/PRD_TEMPLATE.md           PRD 页面记录模板（11 项 + 业务/功能/实现三层写法）
 docs/PRD_SOURCES.md            PRD 素材库：逐页详细记录 / API 与数据模型 / 里程碑↔页面索引
 tests/                单元测试（unittest，共享临时库+每用例清表）
@@ -305,3 +318,7 @@ DEVELOPMENT.md        里程碑开发记录
   货主 / 仓库主数据以**中央库为唯一权威写入点**，业务库持有只读副本
 - **ALL 必须显式**：账号「看全部仓 / 全部货主」由 `user.*_scope='all'` 明确给出；授权行缺失、上下文缺失一律 403 拒绝，
   绝不退化成不加条件；写入路径与按 ID 访问路径同样校验归属
+- **可见范围取交集**：最终可见货主 = 账号授权货主 ∩ 当前仓 `owner_warehouse` active 登记货主；
+  格子启用时 `owner_all` 强制置 False（「全部货主」也要被业务关系约束）。
+  格子表是**业务关系登记**而非授权表：空表＝功能未启用（向下兼容），与「授权缺失一律拒绝」是两层不同语义
+- **数据库选型不变**：继续 SQLite + 应用层隔离；多 Tenant / PostgreSQL / RLS 属未来路线，不写进当前架构描述

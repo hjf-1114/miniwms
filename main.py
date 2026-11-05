@@ -253,6 +253,10 @@ def _bind_scope():
     g.warehouse_id = row["id"] if row is not None else None
     g.warehouse_db_path = (row["db_path"] if row is not None else "") or ""
 
+    # ── 货主 × 仓库业务关系（格子）：与账号授权取交集，原地收紧 g.scope ──
+    # s 与 g.scope 是同一 dict；授权层先解析、格子层再收紧，顺序不能反。
+    g.scope = S.apply_owner_warehouse_grid(s, control, g.warehouse_id)
+
     # ── 写路径守门：请求体里带 owner_id 时，必须落在授权货主集合内 ──
     if request.method in ("POST", "PUT", "PATCH"):
         body = request.get_json(silent=True)
@@ -409,6 +413,8 @@ def _migrate_scope_columns(conn):
     - ``carrier.owner_id``：NULL = 全系统共享物流资源；非空 = 归属货主，可按货主管控
     - ``user.warehouse_scope / owner_scope``：``all``=全部、``grant``=按授权表
     - 两张授权表：账号可看哪些仓 / 哪些货主（支持「部分」也支持「全部」）
+    - ``owner_warehouse``：货主在哪些仓**有业务关系**（格子），用来消掉
+      「可见仓 × 可见货主」里业务上并不存在的组合；空表 = 功能未启用，老库零影响
 
     老库升级时只给既有 admin 一次性显式 ALL，其余账号保持 ``grant`` 最小权限；
     列已存在时不再 UPDATE，避免覆盖管理员后续收紧的授权。
@@ -445,6 +451,16 @@ def _migrate_scope_columns(conn):
             owner_id INTEGER NOT NULL REFERENCES owner(id) ON DELETE CASCADE,
             PRIMARY KEY (user_id, owner_id)
         );
+        CREATE TABLE IF NOT EXISTS owner_warehouse (
+            owner_id     INTEGER NOT NULL REFERENCES owner(id) ON DELETE CASCADE,
+            warehouse_id INTEGER NOT NULL REFERENCES warehouse(id) ON DELETE CASCADE,
+            status       TEXT    NOT NULL DEFAULT 'active',
+            note         TEXT    NOT NULL DEFAULT '',
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (owner_id, warehouse_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_owner_warehouse_wh
+            ON owner_warehouse(warehouse_id, status);
         """
     )
     if upgraded:
@@ -1203,6 +1219,7 @@ else:
     from routes_product_location import product_location_bp  # noqa: E402
     from routes_putaway import putaway_bp  # noqa: E402
     from routes_scope import scope_bp  # noqa: E402
+    from routes_owner_warehouse import ow_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1222,3 +1239,4 @@ else:
     app.register_blueprint(product_location_bp)
     app.register_blueprint(putaway_bp)
     app.register_blueprint(scope_bp)
+    app.register_blueprint(ow_bp)

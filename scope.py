@@ -5,6 +5,8 @@
   ① 连接层  main.get_db() 按 ``warehouse.db_path`` 选库（仓库容器隔离）
   ② SQL 层  本模块 ``owner_where()`` / ``assert_owner_allowed()`` 注入货主条件
   ③ 数据层  业务表带 ``owner_id`` 标识列；公共表走白名单不注入
+  ④ 业务层  ``apply_owner_warehouse_grid()`` 把「当前仓已登记的货主」与账号授权取交集，
+            消除「可见仓 × 可见货主」笛卡尔积里那些业务上并不存在的组合
 
 **核心纪律**：``ALL`` 必须是授权解析后**显式**给出的标志。上下文缺失一律拒绝，
 绝不用「没解析到就不加条件」来放行 —— 那是多租户系统最常见的越权漏洞。
@@ -28,6 +30,7 @@ OWNER_SCOPED_TABLES = (
 PUBLIC_TABLES = (
     "warehouse", "zone", "location", "product_location",
     "role", "user", "user_warehouse_grant", "user_owner_grant",
+    "owner_warehouse",
     "owner_cert", "batch_config", "asn_line", "dn_line", "dn_pick",
     "transfer_line", "putaway_rule_set", "putaway_rule",
 )
@@ -167,6 +170,52 @@ def assert_owner_allowed(scope, owner_id):
         raise ScopeError("无权操作该货主的数据", 403)
 
 
+def owner_warehouse_grid(control_db, warehouse_id):
+    """读取某个仓已登记（``status='active'``）的货主 id 列表。
+
+    **空列表 = 该仓未启用格子管控**，行为与本次增强前完全一致。这是「功能开关」，
+    不是授权上下文：账号授权层仍由 ``resolve_scope()`` 严格执行，表缺失 / 旧库未迁移
+    只表示「还没配置过业务关系」，不会把账号权限放大成 ALL。
+
+    关系表是控制面数据，始终查中央库；业务库里的同名表只是 DDL 幂等带出来的空壳。
+    """
+    if warehouse_id in (None, "", 0, "0"):
+        return []
+    try:
+        return [int(r[0]) for r in control_db.execute(
+            "SELECT owner_id FROM owner_warehouse "
+            "WHERE warehouse_id = ? AND status = 'active' ORDER BY owner_id",
+            (int(warehouse_id),)
+        ).fetchall()]
+    except Exception:
+        return []
+
+
+def apply_owner_warehouse_grid(scope, control_db, warehouse_id):
+    """把「当前仓有业务关系的货主」与账号授权取交集，原地写回 scope。
+
+    启用条件：该仓至少有一条 active 登记行，且请求明确带了当前仓（A 作业视角）。
+    启用后 ``owner_all`` 强制置 False —— 即使账号被授予「全部货主」，也只能看
+    该仓登记过的货主；这样 13 个列表接口、写路径守门、按 ID 守门全部自动生效，
+    不需要逐个路由改代码。
+
+    未指定仓 / 未配置格子时不改 scope，保留向下兼容（clone 即用、老库零迁移）。
+    """
+    s = scope or current_scope()
+    grid = owner_warehouse_grid(control_db, warehouse_id)
+    s["grid_enabled"] = bool(grid)
+    s["grid_warehouse_id"] = int(warehouse_id) if warehouse_id else None
+    s["grid_owner_ids"] = grid
+    if not grid:
+        return s
+    allowed = set(grid)
+    if not s.get("owner_all"):
+        allowed &= set(s.get("owner_ids") or [])
+    s["owner_all"] = False
+    s["owner_ids"] = sorted(allowed)
+    return s
+
+
 def check_warehouse_access(scope, warehouse_id, control_db):
     """校验当前账号能否切到指定仓库，并返回仓库行（含 db_path）。"""
     if warehouse_id in (None, "", 0, "0"):
@@ -225,5 +274,8 @@ def scope_summary(scope):
         "warehouse_ids": list(s.get("warehouse_ids") or []),
         "owner_scope": "ALL" if s.get("owner_all") else "PARTIAL",
         "owner_ids": list(s.get("owner_ids") or []),
+        "grid_enabled": bool(s.get("grid_enabled")),
+        "grid_warehouse_id": s.get("grid_warehouse_id"),
+        "grid_owner_ids": list(s.get("grid_owner_ids") or []),
         "reason": s.get("reason", ""),
     }

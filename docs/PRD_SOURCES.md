@@ -588,6 +588,7 @@ M20 阶段 B（`46e5038`）未改动本页。其余里程碑明细见 `DEVELOPME
 | v0.1 | 2026-11-05 | 建立模板与素材库骨架；回溯记录第 1 批 2 页（货主、物料）；建立 API / 数据模型单列章与 21 页覆盖进度表 | 用户第四轮规格确认 1A / 2A / 3D / 4 单列一章 / 5 是 / 6 Markdown；取证自 `web_app/owners.html`、`web_app/products.html`、`routes_owner.py`、`routes_product.py`、`routes_product_location.py`、`main.py` |
 | v0.2 | 2026-11-05 | 自审 + 独立交叉审阅修正：① 里程碑编号校准（M15 不含移库 / M17 移库 / M18 盘点 / M19 批次与验收入库追溯；移库页归属 M15→M17；工作台改列「非里程碑」）；② 删除 2 处「把未实现写成已实现」（同分类聚拢、`product.volume` 参与容量过滤），补记当前推荐引擎 6 项打分；③ 修正 DDL 演进机制表述、`product.owner_id` 归属 M2 与 `volume` 重复标注；④ 补齐 `pkg_level` 错误串全文、前端文案原文、明细行 20 字段口径（13+7、自动带出 12）、预置 3 个系统级角色与鉴权范围 | 取证自 `DEVELOPMENT.md` Roadmap、`git log --diff-filter=A`、`main.py`、`putaway_service.py`、`web_app/asns.html`、`web_app/products.html`、`routes_product.py`；交叉审阅为独立只读核对，未改代码 |
 | v0.3 | 2026-11-05 | 追加 §6「全局数据权限与隔离约束」（架构增强，非里程碑）：三层隔离、账号可见仓/货主授权、ALL 显式化、页面控件增量、端点与 DDL 增量、验收要点。**按增量追加规则不改写 §1–§5 已有内容**；21 页逐页记录进度不变（仍 2/21） | 取证自 `main.py`、`scope.py`、`routes_scope.py`、`routes_owner.py`、`routes_warehouse.py`、`routes_carrier.py`、`auth.py`、`web_app/js/api.js`、`web_app/js/layout.js`、`web_app/app.html`、`web_app/users.html`、`web_app/warehouses.html`、`web_app/carriers.html`、`tests/test_scope.py`、`DEVELOPMENT.md` 文末同名章节 |
+| v0.4 | 2026-11-05 | 追加 §6.5「货主 × 仓库业务关系格子」（架构增强第二次优化，非里程碑）：多对多关系表、可见范围取交集、矩阵配置页、兼容边界、验收基线更新为 309 例 + E2E 13/13；追加数据库选型口径（继续方案 A，PG/RLS 为未来路线）。**按增量追加规则不改写 §1–§6.4 已有内容**；21 页逐页记录进度仍为 2/21 | 取证自 `scope.py`、`main.py`、`routes_owner_warehouse.py`、`web_app/owner_warehouses.html`、`web_app/js/layout.js`、`tests/test_owner_warehouse.py`、`docs/DOMAIN_BLUEPRINT.md` §9、`DEVELOPMENT.md` 文末同名章节 |
 
 ---
 
@@ -665,4 +666,76 @@ M20 阶段 B（`46e5038`）未改动本页。其余里程碑明细见 `DEVELOPME
 - **边界**：跨仓汇总报表不在本次范围（需未来独立只读汇总通道）；授权按账号维度，无角色级模板；
   `user.owner_id` 单值字段保留为历史预留，实际隔离以 `user_owner_grant` 为准；
   新增受控表必须同步接入 `S.scoped_where()` 或按 ID 守门白名单。
+
+> **时点说明**：§6.4 记录的「299 例绿 / E2E 15/15」是 **v0.3 时点基线**，按增量追加规则保留原文；
+> 最新基线见 §6.5.4。
+
+### 6.5 货主 × 仓库业务关系「格子」（2026-11-05 第二次优化，非里程碑）
+
+#### 6.5.1 [业务] 用途与背景
+
+- 用户口径：「货主和仓库之间不是一对一关系，而是多对多关系」。典型矩阵：
+  货主 A 在杭州仓 / 上海仓有库存、南京仓无业务；货主 B 在杭州仓 / 南京仓有库存、上海仓无业务。
+- §6 初版隔离回答的是「**这个人能不能看货主 B**」（账号授权），但没有回答
+  「**货主 B 在这个仓到底有没有业务**」（业务关系）。两者必须同时成立，
+  否则账号被授权「杭州 + 上海仓」和「货主 A + B」时，`B × 上海仓` 这个并不存在的组合也会被放行。
+- 本页用途：由管理员登记货主与仓库的业务关系，让**可见范围 = 账号授权 ∩ 当前仓业务关系**，
+  用于业务评审、越权演示与后续货主门户的数据边界。
+
+#### 6.5.2 [功能] 页面与权限增量
+
+| 页面 | 归属 | 新增功能点 |
+|---|---|---|
+| 「系统管理 → 权限 → 货主仓库关系」`owner_warehouses.html`（新页） | 全局约束配套页，**不计入 21 页回溯范围** | 行＝货主、列＝仓库的勾选矩阵；表头显示仓库编码 / 名称、「已启用 / 未启用」与「全选」；保存逐仓提交；刷新重拉；每次加载按该列实际勾选回显全选框 |
+| 全部业务列表页 | 无页面改动 | 当前仓启用格子后，列表自动只显示登记货主的数据；详情 / 新建 / 编辑 / 单据动作同样被收紧 |
+| `/api/scope/context` 消费方 | 无页面改动 | 新增 `grid_enabled` / `grid_warehouse_id` / `grid_owner_ids` 三个字段，可用于前端提示与排障 |
+
+- **页面说明文案（原文，评审可引用）**：勾选＝该货主在这个仓有业务；某个仓只要有一个勾，
+  就会启用「格子过滤」，即便账号有「全部货主」权限，在该仓也只能看到勾过的货主；
+  把某个仓的勾全部取消＝关闭该仓格子过滤，行为退回纯粹账号授权；账号授权与格子取交集；
+  未切换仓库的请求不启用格子。
+- **权限**：矩阵页需登录且具备 `user:manage`；未登录由 `requireLogin()` 引导登录页。
+
+#### 6.5.3 [实现] 端点与数据模型增量
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/owner-warehouses` | 矩阵数据：`owners`、`warehouses`、`cells`（active 格子）、`enabled_warehouse_ids` |
+| PUT | `/api/owner-warehouses/<warehouse_id>` | 按仓全量替换 `owner_ids`；空数组＝关闭该仓格子；校验仓库 / 货主存在与数组类型 |
+
+```sql
+CREATE TABLE IF NOT EXISTS owner_warehouse (
+    owner_id     INTEGER NOT NULL REFERENCES owner(id) ON DELETE CASCADE,
+    warehouse_id INTEGER NOT NULL REFERENCES warehouse(id) ON DELETE CASCADE,
+    status       TEXT    NOT NULL DEFAULT 'active',
+    note         TEXT    NOT NULL DEFAULT '',
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (owner_id, warehouse_id)
+);
+CREATE INDEX IF NOT EXISTS idx_owner_warehouse_wh
+    ON owner_warehouse(warehouse_id, status);
+```
+
+- 表在**中央库（控制面）权威**；业务库只是 `init_db()` 幂等带出的空壳，跨仓同步不包含此表。
+- `scope.apply_owner_warehouse_grid()` 在 `before_request` 里执行：读当前仓 active 登记 →
+  与账号 `owner_ids` 求交集 → `owner_all` 强制置 False → 原地写回 `g.scope`。
+  13 个已接入 `S.scoped_where()` 的列表接口、写路径守门、按 ID 守门**全部自动生效，路由零改动**。
+- `owner_warehouse` 属 `PUBLIC_TABLES` 白名单，本身不按货主注入（它是控制面配置表）。
+
+#### 6.5.4 [实现] 验收要点与边界
+
+- `tests/test_owner_warehouse.py` 10 例：DDL 表与索引、零配置保持旧行为、ALL 账号被格子收紧、
+  业务列表过滤、写路径 403、按 ID 守门 403、授权与格子取交集、按仓独立、
+  配置端点回读与三类校验、清空后关闭过滤。全量 **309 例绿**（299 → 309）。
+- 真实 Chrome E2E（独立临时库 + 端口 5109 + admin token）**13/13**：矩阵渲染、状态标签、
+  切仓器与导航入口、保存回读、该仓只看到登记货主、清空后恢复、无 JS 运行时错误。
+- **兼容边界（PRD 权限章必须写明）**：
+  ① 不带 `X-WMS-Warehouse` 的请求不启用格子（后端脚本 / 直接调 API 保持原行为）；
+  ② 某仓零 active 登记＝功能未启用，**这是功能开关不是授权上下文**，
+  `resolve_scope()` 的「授权缺失一律 403」铁律未被放宽，表缺失不会把账号放大成 ALL；
+  ③ 有登记即严格白名单，清空立即关闭，无需重启（授权每次请求实时解析）；
+  ④ 按仓独立，A 仓启用不影响 B 仓。
+- **数据库选型口径**：用户 2026-11-05 确认继续方案 A（SQLite + 应用层隔离），
+  「多 Tenant 3PL SaaS + PostgreSQL + RLS」写入 `docs/DOMAIN_BLUEPRINT.md` §9
+  作为**未来演进路线、非当前实现**；PRD 中不得写成已实现能力。
 
