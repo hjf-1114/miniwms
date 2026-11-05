@@ -133,11 +133,14 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **降级暂缓**（编号保留、不排期）：补货预警（M27）、外部对接 API（M29）、CSV 导入导出（M30）
 - **M31+ 新域**（保留 M20–M30 编号不动）：M31 司机车辆 / M32 产品类型字典 / M33 序列号台账 /
   M34 货位组主数据 / M35 出库波次与 FEFO 分配 / M36 出库复核 / M37 养护 / M38 拆单合单（可选）/
-  M39 GSP 报表 / M40 工作量统计 / M41 打印模板与 PDF 预览 / M42 打印任务与自动触发
+  M39 GSP 报表 / M40 工作量统计 / M41 打印模板与 PDF 预览（字段映射 + 拖拽排版、预览可临时编辑）
+  / M42 打印任务与自动触发（**后置**，全部做好后再补充）
 
 > 完整设计与口径见 `docs/PUTAWAY_RECOMMENDATION.md`（v3.2，2026-11-05 定稿）。
-> **自上而下的 5 层领域蓝图、现状对照、实施顺序与打印方案候选**见 `docs/DOMAIN_BLUEPRINT.md`（v1，2026-11-05）。
-> 实施顺序：先收尾 M20 剩余（单据标识位 + 入库混放硬校验），再按蓝图从第 1 层基础资料补齐。
+> **5 层领域蓝图、现状对照、实施顺序与打印方案定稿**见 `docs/DOMAIN_BLUEPRINT.md`（v2，2026-11-05）。
+> 实施顺序：先收尾 M20 剩余 → **依次跑完 M21 → M26** → 再按蓝图从第 1 层基础资料补齐。
+> 打印采用演示版零安装路线：系统 Chrome headless 生成 PDF（不额外安装）+ 自动弹出预览人工确认；
+> 预览页可临时微调数量/备注/收货人等（不回写业务单据）。
 
 ## API 概览
 
@@ -234,7 +237,7 @@ web_app/              Web demo（index/owners/products/locations/zones/customers
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
 docs/PUTAWAY_RECOMMENDATION.md  上架推荐 / 批次级库存 / 转移 / 盘点设计提案（v3.2）
-docs/DOMAIN_BLUEPRINT.md       自上而下 5 层领域蓝图、现状对照、M31+ 框架与打印方案候选（v1）
+docs/DOMAIN_BLUEPRINT.md       自上而下 5 层领域蓝图、现状对照、M31+ 框架与打印方案定稿（v2）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录
 ```
