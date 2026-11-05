@@ -12,6 +12,7 @@
 """
 import math
 
+import scope as S
 from flask import Blueprint, jsonify, request
 
 import constants as C
@@ -152,6 +153,7 @@ def list_transfers():
     if keyword:
         where.append("t.code LIKE ?")
         params.append(f"%{keyword}%")
+    S.scoped_where(where, params, table="t")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()

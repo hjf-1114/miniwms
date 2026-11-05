@@ -15,6 +15,7 @@
 pip install -r requirements.txt
 python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 # 可选：MINIWMS_PORT=5101 / MINIWMS_DB=/path/to/db 覆盖端口与库路径（便于多实例/测试）
+# 可选：MINIWMS_ALLOW_ANONYMOUS=0 关闭匿名演示模式，强制登录后才能调用 API
 ```
 
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
@@ -125,6 +126,37 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/库存/角色/用户 多个管理页，零依赖原生 JS，直接调用后端 API
   - **工作台（`/app.html`）**：默认展开的左侧垂直一级菜单 + 内嵌可折叠子菜单 + 多标签页，顶部按钮收起/展开导航并记忆状态；单个页面以 iframe 标签并存；单据「明细」按钮与验收/上架作业在工作台内以新标签打开，独立打开页面时回退为新窗口；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
 
+### 架构增强：仓库 / 货主双维数据隔离（2026-11-05，非里程碑，不占用 M 编号）
+
+> 用户确认口径：「直接做完整版」；「看所有仓库」采用 **A 作业视角**（账号可切换到任意有权限的仓，
+> 但一次只查看 / 操作一个仓，不做一屏跨仓汇总）；基础资料需预留货主维度便于后续权限管控。
+
+- **连接层（仓库容器隔离）**：`main.py` 拆出中央库（控制面）与业务库（数据面）。`warehouse.db_path`
+  留空＝全部仓共用主库（默认，**clone 下载即用**）；填写项目目录内以 `.db` 结尾的相对路径后，
+  该仓业务数据写入独立 SQLite 文件，保存时自动建库并把「货主 / 仓库」跨仓主数据同步进去。
+  切仓由前端统一附加 `X-WMS-Warehouse` header，服务端无会话状态；**17 个 `routes_*` 一行未改**
+  （全部只依赖 `get_db()`），按仓分库只是换掉这个连接。
+- **SQL 层（货主 MANDT 式隔离）**：`scope.py` 集中生成 `owner_id IN (...)` 条件，
+  13 个业务列表接口（货主 / 物料 / 客户 / 供应商 / 承运商 / ASN / DN / 库存 / 流水 / 移库 /
+  盘点 / 批次档案 / 批次流水）统一调用 `S.scoped_where()`；公共表走白名单不注入。
+  `before_request` 再做两道集中守门：请求体里的 `owner_id` 写入校验、按 ID 访问的资源归属校验
+  （含 `/api/batch/profiles|receipts/<id>` 二级路径），覆盖详情 / 更新 / 删除 / 单据动作全部端点。
+- **权限模型（全部 / 部分可配）**：`user_warehouse_grant` + `user_owner_grant` 两张授权表，
+  配合 `user.warehouse_scope` / `user.owner_scope` 的 `all|grant` 显式标志；
+  在「系统管理 → 用户 → 数据权限」弹窗里可勾选部分仓 / 部分货主，或一键切「全部」。
+  默认 `admin` 显式 `all/all`，新建账号默认 `grant/grant`（未配置授权行即 403 拒绝）。
+- **铁律**：`ALL` 必须是授权解析后**显式**给出的标志；上下文缺失一律拒绝，绝不用
+  「没解析到就不加条件」放行。`auth.py::has_permission()` 也去掉了「角色名叫管理员」的隐式提权，
+  改由角色 `permissions` 里显式的 `*` 决定。
+- **匿名演示模式**：`MINIWMS_ALLOW_ANONYMOUS` 默认 `1`，未登录时显式返回
+  `mode='anonymous-demo'` 的 ALL 上下文（不影响 clone 即用）；设为 `0` 即强制登录。
+  注意这不是「上下文缺失放行」，而是配置明确给出的演示开关。
+- **基础资料预留**：`carrier.owner_id` 新增（`NULL`＝全系统共享物流资源，非空＝归属货主、
+  仅该货主可见），与已有的 `customer.owner_id` / `supplier.owner_id` 一起，
+  为后续按货主做权限管控留好挂点；列表支持 `owner_id=<id>` 与 `owner_id=none` 过滤。
+- **前端**：独立页侧栏与工作台顶栏各有「当前仓库」选择器（共用 `api.js::mountWarehousePicker()`），
+  切换后工作台会重载全部已打开标签，避免旧仓数据残留；首次确定当前仓会自动重载一次页面数据。
+
 ### 规划中（见 DEVELOPMENT.md）
 
 - M21 批次级库存明细层（stock_batch + 流水维度列 + 三层不变式）
@@ -201,9 +233,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/suppliers` | 创建供应商（归属货主，code 必填唯一） |
 | GET | `/api/suppliers` | 供应商列表，支持 `keyword`/`owner_id`/`status`/分页 |
 | GET/PUT/DELETE | `/api/suppliers/<id>` | 详情/更新/删除（被收货单引用时拒绝） |
-| POST | `/api/warehouses` | 创建仓库（全系统共享，code 必填唯一） |
-| GET | `/api/warehouses` | 仓库列表，支持 `keyword`/`status`/分页 |
-| GET/PUT/DELETE | `/api/warehouses/<id>` | 详情/更新/删除（被 ASN/DN 引用时拒绝） |
+| POST | `/api/warehouses` | 创建仓库（运营方资产、不绑定货主，code 必填唯一；可选 `db_path` 独立数据文件，留空＝共用主库） |
+| GET | `/api/warehouses` | 仓库列表，支持 `keyword`/`status`/分页（返回 `db_path`） |
+| GET/PUT/DELETE | `/api/warehouses/<id>` | 详情/更新/删除（跨所有业务库检查 ASN/DN 引用后再拒绝；`db_path` 必须是项目目录内 `.db` 相对路径） |
 | GET | `/api/stock` | 库存余额列表，支持 `owner_id`/`product_id`/`location_id`/`has_stock`/分页 |
 | GET | `/api/stock/reconcile` | 余额核对（余额 = 流水累加，返回不一致明细） |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
@@ -214,13 +246,21 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET/POST | `/api/roles` | 角色列表 / 创建（需 `user:manage`） |
 | GET/PUT/DELETE | `/api/roles/<id>` | 角色详情/更新/删除（被用户引用时拒绝） |
 | GET/POST | `/api/users` | 用户列表 / 创建（需 `user:manage`） |
-| GET/PUT/DELETE | `/api/users/<id>` | 用户详情/更新（含改密）/删除 |
+| GET/PUT/DELETE | `/api/users/<id>` | 用户详情/更新（含改密）/删除；列表/详情返回 `warehouse_scope` / `owner_scope` |
+| GET | `/api/scope/context` | 当前数据权限上下文 + 可切换仓库清单 + 当前仓（前端启动自检；带失效仓 header 时软解析） |
+| GET | `/api/scope/warehouses` | 当前账号可切换的仓库清单（A 作业视角） |
+| GET | `/api/scope/owners` | 当前账号可见的货主清单 |
+| POST | `/api/scope/warehouse` | 校验一次切仓是否合法并回显目标仓（真正切换靠 `X-WMS-Warehouse` header） |
+| GET/PUT | `/api/users/<id>/grants` | 读取 / 配置账号的仓库·货主可见范围（`all`=全部 / `grant`=按勾选授权，需 `user:manage`） |
+| POST | `/api/carriers` | 创建承运商；可选 `owner_id`（留空＝全系统共享，非空＝归属货主，后期可按货主管控） |
+| GET | `/api/carriers` | 承运商列表，支持 `keyword`/`carrier_type`/`status`/`owner_id`（`none`=只看共享）/分页 |
 
 ## 项目结构
 
 ```
-main.py               Flask 入口、数据库初始化与连接管理、静态托管 web_app
-auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器）
+main.py               Flask 入口；中央库/业务库双层连接与按仓选库、跨仓主数据同步、before_request 数据权限守门、DDL 与迁移、静态托管 web_app
+scope.py              仓库/货主双维隔离上下文切面：授权解析、owner_where() 注入器、写路径与按 ID 归属校验、ALL 显式化
+auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器；用户/角色只读中央库）
 constants.py          状态机、流水类型、批次号前缀、温区/混放字段、推荐理由码、单据标识位与 parse_doc_flags()（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
 putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，只读）
@@ -236,10 +276,13 @@ routes_asn.py         收货单与上架 Blueprint（验收入库同事务写批
 routes_dn.py          出库单（拣货/发货）Blueprint
 routes_stock.py       库存账/流水/余额核对只读 Blueprint
 routes_customer.py   客户主数据 Blueprint（出库收货方维度）
-routes_user.py        用户与角色（登录/权限）Blueprint
+routes_user.py        用户与角色（登录/权限）Blueprint，全部走中央库
+routes_scope.py       数据权限与切仓上下文（/api/scope/*、/api/users/<id>/grants）Blueprint
 routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
+routes_warehouse.py   仓库主数据 Blueprint（控制面；db_path 安全校验、跨库引用检查）
 web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
-web_app/js/layout.js  递归多层导航树（3 级 / 18 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆
+web_app/js/layout.js  递归多层导航树（3 级 / 18 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
+web_app/js/api.js     原生 fetch 封装 + 当前仓库上下文（X-WMS-Warehouse header / mountWarehousePicker()）+ 登录态与工作台标签工具
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
 docs/PUTAWAY_RECOMMENDATION.md  上架推荐 / 批次级库存 / 转移 / 盘点设计提案（v3.3）
@@ -258,3 +301,7 @@ DEVELOPMENT.md        里程碑开发记录
 - 上架推荐只读：`/api/putaway/recommend` 只算建议与理由，不写库存；采纳＝把 `location_id` 填进原有上架接口，过账路径唯一
 - 混放生效值三级作用域：库位自身非空优先 → 继承储区 → 默认全部禁止（保守口径）
 - 时间戳由 SQLite `datetime('now','localtime')` 生成
+- **数据隔离三层**：连接层按 `warehouse.db_path` 选库（仓库），SQL 层注入 `owner_id`（货主），数据层行内带标识列；
+  货主 / 仓库主数据以**中央库为唯一权威写入点**，业务库持有只读副本
+- **ALL 必须显式**：账号「看全部仓 / 全部货主」由 `user.*_scope='all'` 明确给出；授权行缺失、上下文缺失一律 403 拒绝，
+  绝不退化成不加条件；写入路径与按 ID 访问路径同样校验归属

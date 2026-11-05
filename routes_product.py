@@ -6,6 +6,7 @@
 import math
 import sqlite3
 
+import scope as S
 from flask import Blueprint, jsonify, request
 
 from main import get_db, request_payload
@@ -344,6 +345,7 @@ def list_products():
         else:
             where.append("owner_id = ?")
             params.append(owner_id)
+    S.scoped_where(where, params, allow_null=True)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()

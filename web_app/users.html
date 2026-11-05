@@ -23,7 +23,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>绑定货主</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>绑定货主</th><th>数据范围</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -73,9 +73,11 @@ async function load() {
         <td>${esc(u.username)}</td>
         <td>${esc(u.role_name || "-")}</td>
         <td>${u.owner_code ? esc(u.owner_code) : '<span class="muted">全局</span>'}</td>
+        <td><span class="muted">${scopeText(u)}</span></td>
         <td>${statusTag(u.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${u.id})">编辑</button>
+          <button class="btn secondary sm" onclick="openGrants(${u.id})">数据权限</button>
           <button class="btn danger sm" onclick="del(${u.id})">删除</button>
         </td>
       </tr>`).join("");
@@ -111,6 +113,73 @@ async function openEdit(id) {
       load();
     },
   });
+}
+
+function scopeText(u) {
+  return (u.warehouse_scope === "all" ? "全部仓库" : "指定仓库") + " · " +
+         (u.owner_scope === "all" ? "全部货主" : "指定货主");
+}
+
+/** 配置账号可访问的仓库 / 货主范围（全部或自定义部分）。 */
+async function openGrants(uid) {
+  let d;
+  try { d = await api("GET", "/api/users/" + uid + "/grants"); }
+  catch (e) { showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error"); return; }
+
+  const ov = openForm({
+    title: "数据权限配置 · " + d.user.username, submitText: "保存授权", width: 720,
+    values: { warehouse_scope: d.user.warehouse_scope, owner_scope: d.user.owner_scope },
+    fields: [
+      { type: "section", label: "数据可见范围（ALL 是显式标志，不靠空配置隐含放行）" },
+      { name: "warehouse_scope", label: "仓库范围", type: "select", options: [
+        { value: "all", label: "可切换到全部仓库（作业视角，一次只看一个仓）" },
+        { value: "grant", label: "仅可访问下方勾选的仓库" },
+      ], help: "仓库已按容器/数据库隔离，账号只能切到有权限的仓" },
+      { name: "owner_scope", label: "货主范围", type: "select", options: [
+        { value: "all", label: "可查看全部货主数据" },
+        { value: "grant", label: "仅可查看下方勾选的货主数据" },
+      ], help: "货主维度在同一仓内由 SQL 层自动注入 owner_id 条件" },
+    ],
+    onSubmit: async (p) => {
+      const whIds = Array.from(ov.querySelectorAll("[data-wh]:checked")).map((x) => Number(x.value));
+      const owIds = Array.from(ov.querySelectorAll("[data-ow]:checked")).map((x) => Number(x.value));
+      await api("PUT", "/api/users/" + uid + "/grants", {
+        warehouse_scope: p.warehouse_scope, owner_scope: p.owner_scope,
+        warehouse_ids: whIds, owner_ids: owIds,
+      });
+      showMsg(document.getElementById("msg"), "数据权限已保存（下次请求立即生效）", "success");
+      load();
+    },
+  });
+
+  const boxes = (list, checked, attr, emptyText) => {
+    if (!list.length) return '<span class="muted">（暂无可选' + emptyText + '）</span>';
+    return list.map((x) =>
+      '<label class="grant-item"><input type="checkbox" ' + attr + ' value="' + x.id + '"' +
+      (checked.indexOf(x.id) >= 0 ? " checked" : "") + '>' +
+      '<span>' + esc(x.code + " · " + x.name) + '</span></label>').join("");
+  };
+  const block = document.createElement("div");
+  block.className = "grant-grid full";
+  block.innerHTML =
+    '<div><label>可访问仓库</label><div class="grant-list" id="grantWh">' +
+      boxes(d.warehouses, d.warehouse_ids, "data-wh", "仓库") + '</div></div>' +
+    '<div><label>可查看货主</label><div class="grant-list" id="grantOw">' +
+      boxes(d.owners, d.owner_ids, "data-ow", "货主") + '</div></div>';
+  const form = ov.querySelector("#modalForm");
+  form.insertBefore(block, form.querySelector(".modal-foot"));
+
+  const whSel = ov.querySelector('[name="warehouse_scope"]');
+  const owSel = ov.querySelector('[name="owner_scope"]');
+  function sync() {
+    ov.querySelectorAll("[data-wh]").forEach((c) => { c.disabled = whSel.value === "all"; });
+    ov.querySelectorAll("[data-ow]").forEach((c) => { c.disabled = owSel.value === "all"; });
+    block.querySelector("#grantWh").style.opacity = whSel.value === "all" ? ".45" : "1";
+    block.querySelector("#grantOw").style.opacity = owSel.value === "all" ? ".45" : "1";
+  }
+  whSel.addEventListener("change", sync);
+  owSel.addEventListener("change", sync);
+  sync();
 }
 
 async function del(id) {

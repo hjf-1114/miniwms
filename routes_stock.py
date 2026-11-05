@@ -8,6 +8,7 @@ M6 的定位是「只读账房」——不写库存，只回答三个问题：
 
 过滤维度统一支持 owner_id / product_id / location_id，配合分页。
 """
+import scope as S
 from flask import Blueprint, jsonify, request
 
 from main import get_db
@@ -59,6 +60,7 @@ def list_stock():
         params.append(location_id)
     if (args.get("has_stock") or "").strip() == "1":
         where.append("s.qty != 0")
+    S.scoped_where(where, params, table="s")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
@@ -117,6 +119,7 @@ def list_movements():
     if ref_id is not None:
         where.append("m.ref_id = ?")
         params.append(ref_id)
+    S.scoped_where(where, params, table="m")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()

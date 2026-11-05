@@ -32,7 +32,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>地址</th><th>联系人</th><th>电话</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>地址</th><th>联系人</th><th>电话</th><th>数据隔离</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
       </table>
     </div>
@@ -58,6 +58,9 @@ const FIELDS = [
   { name: "address", label: "地址", full: true },
   { name: "contact", label: "联系人" },
   { name: "phone", label: "电话" },
+  { type: "section", label: "数据隔离（可选，演示按仓分库）" },
+  { name: "db_path", label: "独立数据文件", full: true,
+    help: "留空＝与全部仓库共用主库（默认，下载即用）；填写项目目录内以 .db 结尾的相对路径（如 wh_sz.db）后，该仓的业务数据写入独立 SQLite 文件，实现物理隔离；保存时自动建库并同步货主/仓库主数据。" },
   { name: "note", label: "备注", type: "textarea", full: true },
 ];
 
@@ -73,6 +76,9 @@ async function load() {
       `<tr>
         <td>${w.id}</td><td>${esc(w.code)}</td><td>${esc(w.name)}</td>
         <td>${esc(w.address)}</td><td>${esc(w.contact)}</td><td>${esc(w.phone)}</td>
+        <td>${w.db_path
+          ? '<span class="tag ok" title="该仓业务数据存放在独立 SQLite 文件">独立库</span> ' + esc(w.db_path)
+          : '<span class="muted">共用主库</span>'}</td>
         <td>${statusTag(w.status)}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${w.id})">编辑</button>

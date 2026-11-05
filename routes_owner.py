@@ -6,9 +6,10 @@ M2 先落地货主主数据，并把物料挂接到货主。
 """
 import sqlite3
 
+import scope as S
 from flask import Blueprint, jsonify, request
 
-from main import get_db, request_payload
+from main import get_control_db, request_payload
 
 owner_bp = Blueprint("owner", __name__, url_prefix="/api/owners")
 
@@ -90,7 +91,7 @@ def create_owner():
     if errors:
         return jsonify({"ok": False, "errors": errors}), 400
 
-    db = get_db()
+    db = get_control_db()
     if _code_exists(db, cleaned["code"]):
         return jsonify({"ok": False, "errors": [f"货主编码已存在: {cleaned['code']}"]}), 409
 
@@ -144,9 +145,10 @@ def list_owners():
     if status:
         where.append("status = ?")
         params.append(status)
+    S.scoped_where(where, params, column="id")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-    db = get_db()
+    db = get_control_db()
     total = db.execute(f"SELECT COUNT(*) AS n FROM owner {where_sql}", params).fetchone()["n"]
     rows = db.execute(
         f"SELECT * FROM owner {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
@@ -165,7 +167,7 @@ def list_owners():
 
 @owner_bp.route("/<int:owner_id>", methods=["GET"])
 def get_owner(owner_id):
-    row = get_db().execute("SELECT * FROM owner WHERE id = ?", (owner_id,)).fetchone()
+    row = get_control_db().execute("SELECT * FROM owner WHERE id = ?", (owner_id,)).fetchone()
     if row is None:
         return jsonify({"ok": False, "error": "货主不存在"}), 404
     return jsonify({"ok": True, "owner": dict(row)})
@@ -179,7 +181,7 @@ def update_owner(owner_id):
     if not cleaned:
         return jsonify({"ok": False, "errors": ["没有可更新的字段"]}), 400
 
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "货主不存在"}), 404
     if "code" in cleaned and _code_exists(db, cleaned["code"], exclude_id=owner_id):
@@ -198,13 +200,23 @@ def update_owner(owner_id):
 
 @owner_bp.route("/<int:owner_id>", methods=["DELETE"])
 def delete_owner(owner_id):
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "货主不存在"}), 404
-    # 货主下还有物料档案时不允许删除
-    n = db.execute(
-        "SELECT COUNT(*) AS n FROM product WHERE owner_id = ?", (owner_id,)
-    ).fetchone()["n"]
+    # 货主是跨仓主数据，物料却分布在各仓业务库，删除前必须逐个库检查引用
+    import sqlite3
+
+    from main import all_business_db_paths
+
+    n = 0
+    for path in all_business_db_paths(db):
+        conn = sqlite3.connect(path)
+        try:
+            n += conn.execute(
+                "SELECT COUNT(*) AS n FROM product WHERE owner_id = ?", (owner_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
     if n:
         return jsonify(
             {"ok": False, "error": f"该货主名下还有 {n} 个物料档案，禁止删除；请先转移或停用"}
@@ -217,7 +229,7 @@ def delete_owner(owner_id):
 # ── M11 货主证照（营业执照/医疗器械经营许可等，可多证）──
 @owner_bp.route("/<int:owner_id>/certs", methods=["GET"])
 def list_owner_certs(owner_id):
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "货主不存在"}), 404
     rows = db.execute(
@@ -237,7 +249,7 @@ def add_owner_cert(owner_id):
     valid_from = str(payload.get("valid_from") or "").strip()
     valid_to = str(payload.get("valid_to") or "").strip()
     note = str(payload.get("note") or "").strip()
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "货主不存在"}), 404
     cur = db.execute(
@@ -252,7 +264,7 @@ def add_owner_cert(owner_id):
 
 @owner_bp.route("/<int:owner_id>/certs/<int:cert_id>", methods=["DELETE"])
 def delete_owner_cert(owner_id, cert_id):
-    db = get_db()
+    db = get_control_db()
     if db.execute(
         "SELECT id FROM owner_cert WHERE id = ? AND owner_id = ?", (cert_id, owner_id)
     ).fetchone() is None:

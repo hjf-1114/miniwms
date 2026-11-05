@@ -8,7 +8,11 @@
   只需在函数上加一行装饰器即可联动本基础（详见 DEVELOPMENT.md「用户与角色」）
 
 权限约定：用 `资源:动作` 形式，如 `product:read` / `product:write`；
-通配 `*` 或 `资源:*` 表示全部。角色名「管理员」拥有全部权限。
+通配 `*` 或 `资源:*` 表示全部。**不再按角色名硬编码放行**：全部权限由角色
+`permissions` 里的 `*` 显式给出，与 scope.py 的「ALL 必须显式」保持同一纪律。
+
+用户 / 角色属于控制面，一律从中央库读取（`get_control_db()`），
+这样按仓分库后登录与鉴权不会被业务库里的副本干扰。
 """
 import hashlib
 import hmac
@@ -60,8 +64,11 @@ def verify_token(token):
 
 
 def get_current_user():
-    """从 Authorization: Bearer <token> 还原当前用户（含角色权限），无效返回 None。"""
-    from main import get_db
+    """从 Authorization: Bearer <token> 还原当前用户（含角色权限），无效返回 None。
+
+    查的是中央库（控制面）：账号、角色、授权范围在按仓分库时仍只有一份权威数据。
+    """
+    from main import get_control_db
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
@@ -69,7 +76,7 @@ def get_current_user():
     uid = verify_token(auth[7:])
     if not uid:
         return None
-    db = get_db()
+    db = get_control_db()
     row = db.execute(
         "SELECT u.*, r.name AS role_name, r.permissions AS role_permissions "
         "FROM user u LEFT JOIN role r ON r.id = u.role_id WHERE u.id = ?",
@@ -88,8 +95,7 @@ def get_current_user():
 def has_permission(user, perm):
     if not user:
         return False
-    if user.get("role_name") == "管理员":
-        return True
+    # 全部权限只认角色 permissions 里显式的 '*'，不靠角色名做隐式提权。
     perms = user.get("permissions") or []
     return perm in perms or any(
         p.endswith("*") and perm.startswith(p[:-1]) for p in perms

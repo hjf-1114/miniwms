@@ -2,6 +2,7 @@
 
 职责：
 - Flask 应用创建与配置
+- **中央库 / 业务库双层连接**（控制面 + 按仓容器隔离，见 scope.py）
 - SQLite 连接管理（请求级连接，g 上下文）
 - 数据库初始化（建表 + 列迁移）
 - 聚合各业务 Blueprint
@@ -12,12 +13,40 @@ import json
 import os
 import sqlite3
 
-from flask import Flask, g, request
+from flask import Flask, g, jsonify, request
+
+import scope as S
 
 DB_PATH = os.environ.get(
     "MINIWMS_DB",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "miniwms.db"),
 )
+# 中央库（控制面）：仓库主数据、货主主数据、用户角色、数据授权表。
+# 业务库（数据面）：默认直接复用中央库，保证「下载下来就能用」；
+# 在 warehouse.db_path 配置独立文件后，该仓的业务数据物理隔离到另一个 SQLite 文件。
+CONTROL_DB_PATH = DB_PATH
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WAREHOUSE_HEADER = "X-WMS-Warehouse"
+
+# 按 ID 访问的资源 → (业务表, 归属列, owner_id 为 NULL 是否视为公共数据放行)。
+# 集中在 before_request 做归属守门，覆盖详情 / 更新 / 删除 / 单据动作等所有端点，
+# 避免逐个路由漏挂装饰器（这正是上下文切面相对「手写 WHERE」的价值）。
+RESOURCE_OWNER_TABLES = {
+    "owners": ("owner", "id", False),
+    "products": ("product", "owner_id", True),
+    "customers": ("customer", "owner_id", False),
+    "suppliers": ("supplier", "owner_id", False),
+    "carriers": ("carrier", "owner_id", True),
+    "asns": ("asn", "owner_id", False),
+    "dns": ("dn", "owner_id", False),
+    "transfers": ("transfer", "owner_id", False),
+    "stocktakes": ("stocktake", "owner_id", False),
+}
+# /api/batch/<子资源>/<id> 的二级路径映射
+BATCH_RESOURCE_TABLES = {
+    "profiles": ("batch", "owner_id", False),
+    "receipts": ("batch_receipt", "owner_id", False),
+}
 
 app = Flask(__name__, static_folder="web_app", static_url_path="")
 
@@ -28,21 +57,240 @@ def index():
     return app.send_static_file("index.html")
 
 
+def _connect(path):
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def get_control_db():
+    """中央库连接（控制面）。所有账号、角色、仓库主数据与授权表只认这一份。"""
+    if "cdb" not in g:
+        g.cdb = _connect(CONTROL_DB_PATH)
+    return g.cdb
+
+
+_BUSINESS_INITIALIZED = set()
+
+
+def resolve_warehouse_db_path(raw):
+    """把 warehouse.db_path 解析成安全绝对路径。
+
+    空串 = 共用中央库（默认演示模式）；非空时只允许项目目录内、以 .db 结尾的文件，
+    避免把任意路径配置成数据库文件。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    p = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(BASE_DIR, raw))
+    try:
+        inside = os.path.commonpath([BASE_DIR, p]) == BASE_DIR
+    except ValueError:
+        inside = False
+    if not inside:
+        raise S.ScopeError("仓库数据文件路径必须位于项目目录内", 400)
+    if not p.lower().endswith(".db"):
+        raise S.ScopeError("仓库数据文件必须以 .db 结尾", 400)
+    return p
+
+
+def normalize_warehouse_db_path(raw):
+    """校验并返回可入库的**相对路径**（相对项目根目录），空串表示共用中央库。
+
+    用相对路径是为了保证「换台机器 clone 下来直接能用」：绝对路径会绑死本机目录。
+    """
+    p = resolve_warehouse_db_path(raw)
+    if not p:
+        return ""
+    return os.path.relpath(p, BASE_DIR).replace(os.sep, "/")
+
+
+def all_business_db_paths(control=None):
+    """列出需要检查的已存在库文件：中央库 + 各仓配置的独立库。
+
+    用于仓库删除前的引用检查 —— 分库后单据可能只存在于某个仓的库里，
+    只看中央库会漏判。
+    """
+    db = control or get_control_db()
+    paths = [CONTROL_DB_PATH]
+    try:
+        for row in db.execute("SELECT db_path FROM warehouse WHERE db_path != ''"):
+            try:
+                p = resolve_warehouse_db_path(row["db_path"])
+            except S.ScopeError:
+                continue
+            if p not in paths:
+                paths.append(p)
+    except Exception:
+        pass
+    return [p for p in paths if os.path.exists(p)]
+
+
+def sync_control_tables(conn, control):
+    """把中央库的「跨仓主数据」（货主 / 仓库）同步进业务库副本。
+
+    业务表带 ``owner_id`` / ``warehouse_id`` 外键，独立库里必须存在对应主数据行，
+    否则新建单据会触发外键失败。中央库是权威来源，这里只补齐缺失行、不覆盖已有行。
+    """
+    for table in ("owner", "warehouse"):
+        local_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        center_cols = {r[1] for r in control.execute(f"PRAGMA table_info({table})")}
+        common = [c for c in local_cols if c in center_cols]
+        if not common:
+            continue
+        collist = ",".join(common)
+        marks = ",".join("?" for _ in common)
+        sql = f"INSERT OR IGNORE INTO {table} ({collist}) VALUES ({marks})"
+        for row in control.execute(f"SELECT {collist} FROM {table}").fetchall():
+            conn.execute(sql, tuple(row))
+    conn.commit()
+
+
+def ensure_business_db(path):
+    """首次连到某个独立仓时，把完整 DDL 幂等地建一遍（每个进程只做一次）。"""
+    if path in _BUSINESS_INITIALIZED:
+        return
+    init_db(path)
+    _BUSINESS_INITIALIZED.add(path)
+
+
+def init_warehouse_db(db_path_rel):
+    """配置 ``warehouse.db_path`` 时立即建库并同步跨仓主数据，返回绝对路径。
+
+    之后切仓请求仍走 ``get_db()`` 的同一套初始化逻辑（幂等），这里只是让
+    「改完配置马上能用、文件马上可见」，不必等第一次业务请求触发懒加载。
+    """
+    path = resolve_warehouse_db_path(db_path_rel)
+    if not path or os.path.abspath(path) == os.path.abspath(CONTROL_DB_PATH):
+        return ""
+    ensure_business_db(path)
+    conn = _connect(path)
+    try:
+        sync_control_tables(conn, get_control_db())
+    finally:
+        conn.close()
+    return path
+
+
 def get_db():
-    """获取当前请求的数据库连接（懒创建，请求结束自动关闭）。"""
+    """业务库连接：默认复用中央库连接；仓库配置了 db_path 时按仓选库。
+
+    这是「连接层隔离」的唯一挂点 —— 现有 17 个 routes_* 全部只依赖 get_db()，
+    因此按仓分库不需要改任何业务路由。
+    """
     if "db" not in g:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        g.db = conn
+        raw_path = getattr(g, "warehouse_db_path", "") or ""
+        if not raw_path:
+            g.db = get_control_db()
+        else:
+            path = resolve_warehouse_db_path(raw_path)
+            if os.path.abspath(path) == os.path.abspath(CONTROL_DB_PATH):
+                g.db = get_control_db()
+            else:
+                ensure_business_db(path)
+                conn = _connect(path)
+                sync_control_tables(conn, get_control_db())
+                g.db = conn
     return g.db
+
+
+def current_scope():
+    """供业务路由读取当前请求的数据权限上下文（缺失时由 scope.py 拒绝）。"""
+    return S.current_scope()
 
 
 @app.teardown_appcontext
 def close_db(_exc):
     db = g.pop("db", None)
-    if db is not None:
+    cdb = g.pop("cdb", None)
+    if db is not None and db is not cdb:
         db.close()
+    if cdb is not None:
+        cdb.close()
+
+
+@app.errorhandler(S.ScopeError)
+def _scope_error(e):
+    return jsonify(ok=False, error=str(e)), e.status
+
+
+@app.before_request
+def _bind_scope():
+    """每个 API 请求绑定数据权限上下文与当前仓库（A 作业视角：一次只看一个仓）。
+
+    静态页面不参与门禁，保证登录页 / 工作台始终可打开；登录与上下文自检端点
+    使用「软解析」，受限时返回最小权限上下文而不是直接报错。
+    """
+    if not request.path.startswith("/api/"):
+        g.scope = None
+        g.warehouse_id = None
+        g.warehouse_db_path = ""
+        return
+
+    from auth import get_current_user
+
+    control = get_control_db()
+    user = get_current_user()
+    try:
+        s = S.resolve_scope(user, control)
+    except S.ScopeError as e:
+        if request.path in S.OPEN_API_PATHS:
+            s = S.denied_scope(str(e))
+        else:
+            return jsonify(ok=False, error=str(e)), e.status
+    g.scope = s
+    g.current_user = user
+    try:
+        row = S.check_warehouse_access(s, request.headers.get(WAREHOUSE_HEADER), control)
+    except S.ScopeError as e:
+        # 自检 / 登录端点允许带着「已失效的旧仓」进来，由前端据此重选；
+        # 业务端点一律拒绝，避免用失效上下文绕过仓库校验。
+        if request.path in S.OPEN_API_PATHS:
+            row = None
+        else:
+            return jsonify(ok=False, error=str(e)), e.status
+    g.warehouse_id = row["id"] if row is not None else None
+    g.warehouse_db_path = (row["db_path"] if row is not None else "") or ""
+
+    # ── 写路径守门：请求体里带 owner_id 时，必须落在授权货主集合内 ──
+    if request.method in ("POST", "PUT", "PATCH"):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) and request.form:
+            body = dict(request.form)
+        if isinstance(body, dict) and body.get("owner_id") not in (None, ""):
+            try:
+                S.assert_owner_allowed(s, body["owner_id"])
+            except S.ScopeError as e:
+                return jsonify(ok=False, error=str(e)), e.status
+
+    # ── 按 ID 访问的资源归属守门 ──
+    parts = request.path.strip("/").split("/")
+    spec, doc_id = None, None
+    if len(parts) >= 3 and parts[0] == "api" and parts[2].isdigit():
+        spec, doc_id = RESOURCE_OWNER_TABLES.get(parts[1]), parts[2]
+    elif (len(parts) >= 4 and parts[0] == "api" and parts[1] == "batch"
+          and parts[2] in BATCH_RESOURCE_TABLES and parts[3].isdigit()):
+        spec, doc_id = BATCH_RESOURCE_TABLES[parts[2]], parts[3]
+    if spec:
+        table, column, allow_null = spec
+        # 货主主数据是控制面权威数据，归属守门也查中央库，避免业务库副本滞后导致漏判
+        reader = get_control_db() if parts[1] == "owners" else get_db()
+        try:
+            rec = reader.execute(
+                f"SELECT {column} AS v FROM {table} WHERE id = ?", (int(doc_id),)
+            ).fetchone()
+        except Exception:
+            rec = None  # 表不存在等异常交给路由自身返回 404，不在守门层改语义
+        if rec is not None and not s.get("owner_all"):
+            v = rec["v"]
+            if v is None and not allow_null:
+                return jsonify(ok=False, error="无权操作该货主的数据"), 403
+            try:
+                if v is not None:
+                    S.assert_owner_allowed(s, v)
+            except S.ScopeError as e:
+                return jsonify(ok=False, error=str(e)), e.status
 
 
 def _seed_auth(conn):
@@ -65,9 +313,13 @@ def _seed_auth(conn):
     if conn.execute("SELECT COUNT(*) FROM user").fetchone()[0] == 0:
         salt, h = hash_password("admin123")
         admin_role = conn.execute("SELECT id FROM role WHERE name = ?", ("管理员",)).fetchone()[0]
+        # 管理员显式授予 ALL：ALL 必须是授权解析后显式给出的标志，
+        # 不能靠「角色名叫管理员」或「上下文缺失」隐式放行。
         conn.execute(
             "INSERT INTO user (username, password_salt, password_hash, role_id, status, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, 'active', datetime('now','localtime'), datetime('now','localtime'))",
+            "warehouse_scope, owner_scope, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'active', 'all', 'all', "
+            "datetime('now','localtime'), datetime('now','localtime'))",
             ("admin", salt, h, admin_role),
         )
         conn.commit()
@@ -150,9 +402,65 @@ def _seed_zones(conn):
         )
 
 
-def init_db():
-    """初始化数据库：建表与列迁移（幂等，可重复执行）。"""
-    conn = sqlite3.connect(DB_PATH)
+def _migrate_scope_columns(conn):
+    """数据权限升级（幂等）：仓库数据文件路径、承运商归属货主、用户授权范围。
+
+    - ``warehouse.db_path``：空 = 共用中央库；非空 = 该仓业务数据物理隔离到独立文件
+    - ``carrier.owner_id``：NULL = 全系统共享物流资源；非空 = 归属货主，可按货主管控
+    - ``user.warehouse_scope / owner_scope``：``all``=全部、``grant``=按授权表
+    - 两张授权表：账号可看哪些仓 / 哪些货主（支持「部分」也支持「全部」）
+
+    老库升级时只给既有 admin 一次性显式 ALL，其余账号保持 ``grant`` 最小权限；
+    列已存在时不再 UPDATE，避免覆盖管理员后续收紧的授权。
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(warehouse)")}
+    if "db_path" not in cols:
+        conn.execute("ALTER TABLE warehouse ADD COLUMN db_path TEXT NOT NULL DEFAULT ''")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(carrier)")}
+    if "owner_id" not in cols:
+        conn.execute("ALTER TABLE carrier ADD COLUMN owner_id INTEGER REFERENCES owner(id)")
+    # 新库 CREATE 自带该列、旧库刚 ALTER 补列，两种情况下索引都在此统一创建
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_carrier_owner ON carrier(owner_id)")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(user)")}
+    upgraded = False
+    if "warehouse_scope" not in cols:
+        conn.execute(
+            "ALTER TABLE user ADD COLUMN warehouse_scope TEXT NOT NULL DEFAULT 'grant'"
+        )
+        upgraded = True
+    if "owner_scope" not in cols:
+        conn.execute(
+            "ALTER TABLE user ADD COLUMN owner_scope TEXT NOT NULL DEFAULT 'grant'"
+        )
+        upgraded = True
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS user_warehouse_grant (
+            user_id      INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+            warehouse_id INTEGER NOT NULL REFERENCES warehouse(id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, warehouse_id)
+        );
+        CREATE TABLE IF NOT EXISTS user_owner_grant (
+            user_id  INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+            owner_id INTEGER NOT NULL REFERENCES owner(id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, owner_id)
+        );
+        """
+    )
+    if upgraded:
+        conn.execute(
+            "UPDATE user SET warehouse_scope = 'all', owner_scope = 'all' "
+            "WHERE username = 'admin'"
+        )
+
+
+def init_db(path=None):
+    """初始化数据库：建表与列迁移（幂等，可重复执行）。
+
+    ``path`` 为空时初始化中央库；按仓独立库时由 ``ensure_business_db(path)`` 传入，
+    保证每个业务库拥有一套完整表结构（外键与前端下拉在分库模式下同样可用）。
+    """
+    conn = sqlite3.connect(path or DB_PATH)
     try:
         conn.executescript(
             """
@@ -262,6 +570,7 @@ def init_db():
                 address     TEXT    NOT NULL DEFAULT '',
                 contact     TEXT    NOT NULL DEFAULT '',
                 phone       TEXT    NOT NULL DEFAULT '',
+                db_path     TEXT    NOT NULL DEFAULT '',
                 status      TEXT    NOT NULL DEFAULT 'active',
                 note        TEXT    NOT NULL DEFAULT '',
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -675,6 +984,7 @@ def init_db():
                 api_code      TEXT    NOT NULL DEFAULT '',
                 address       TEXT    NOT NULL DEFAULT '',
                 carrier_type  TEXT    NOT NULL DEFAULT '快递',
+                owner_id      INTEGER REFERENCES owner(id),
                 status        TEXT    NOT NULL DEFAULT 'active',
                 note          TEXT    NOT NULL DEFAULT '',
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
@@ -811,6 +1121,8 @@ def init_db():
                 password_hash  TEXT    NOT NULL DEFAULT '',
                 role_id        INTEGER REFERENCES role(id),
                 owner_id       INTEGER REFERENCES owner(id),
+                warehouse_scope TEXT  NOT NULL DEFAULT 'grant',
+                owner_scope    TEXT  NOT NULL DEFAULT 'grant',
                 status         TEXT    NOT NULL DEFAULT 'active',
                 created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
                 updated_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -854,6 +1166,7 @@ def init_db():
             """
         )
         _migrate_m20_columns(conn)
+        _migrate_scope_columns(conn)
         _seed_zones(conn)
         _seed_auth(conn)
         conn.commit()
@@ -889,6 +1202,7 @@ else:
     from routes_zone import zone_bp  # noqa: E402
     from routes_product_location import product_location_bp  # noqa: E402
     from routes_putaway import putaway_bp  # noqa: E402
+    from routes_scope import scope_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -907,3 +1221,4 @@ else:
     app.register_blueprint(zone_bp)
     app.register_blueprint(product_location_bp)
     app.register_blueprint(putaway_bp)
+    app.register_blueprint(scope_bp)

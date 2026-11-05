@@ -98,6 +98,11 @@
 > `docs/DOMAIN_BLUEPRINT.md` 第 1.2 / 7.1 节。
 > `DEVELOPMENT.md` Roadmap 仍是编号权威来源，`docs/DOMAIN_BLUEPRINT.md` 是框架级来源。
 > 原「开工前待确认」两项（混放校验挂点、冷链/危险清单）**已由第四轮答复消解**，不再阻塞阶段 0。
+>
+> **架构增强（非里程碑，不占编号）**：2026-11-05 用户确认「直接做完整版」，已落地
+> 「仓库 / 货主双维数据隔离」（中央库 / 业务库分层、MANDT 式 owner 注入、账号可见仓与可见货主授权、
+> A 作业视角切仓、基础资料货主维度预留），详见文末同名章节。**Roadmap 编号与实施顺序不变**，
+> 下一里程碑仍为 **M21 批次级库存明细层**。
 
 > 编号变更（2026-11-05，用户确认「好的」）：按 `docs/PUTAWAY_RECOMMENDATION.md` 第 14 章
 > 插入 7 个新里程碑 **M20–M26**，原 M20 预警 / M21 报表 / M22 外部对接 / M23 CSV
@@ -675,3 +680,141 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
 `os.environ.setdefault("MINIWMS_DB", ...)` 共享同一临时库路径，且每个 setUp 需清空所有关联表（先子后主）。
 
 ## M1 物料主数据（2026-10-30）
+
+---
+
+## 仓库 / 货主双维数据隔离（2026-11-05，非里程碑架构增强）
+
+> **编号说明**：本项是用户临时提出的架构级增强，**不占用任何 M 编号**，
+> `DEVELOPMENT.md` Roadmap 的 M20–M30 与 M31+ 编号一律不动。它对应领域蓝图 v3
+> 第 3 层「用户角色」，但不新增里程碑；后续 M31+ 第 1 层基础资料仍按既定顺序推进。
+
+### 目标与业务背景（用户原话与确认口径）
+
+- 用户生产系统经验：「不同仓库的数据通过数据库库隔离」，「做视图会很卡」，会「通过配置把数据放到哪个库」。
+  结论：视图过滤会把天然分区键（`warehouse_id`）降级成 WHERE 条件，单仓作业查询性能差，生产按仓分库合理。
+- 用户提问：「整体系统是否可以按 SAP 的 MANDT 方式执行」「不同仓库 / 不同货主数据能否隔离」
+  「一个账号能否看到所有仓库或部分仓库，并配置自定义货主查看权限（部分 / 全部）」。
+- 用户最终指令：**「直接做完整版」**；「看所有仓库」＝ **A 作业视角**（能切换到任意有权限仓，
+  一次只看 / 操作一个仓；不做一屏跨仓汇总）；**「预留一些功能，比如承运商、客户、供应商这些信息最好带上货主的，后期好做权限管控」**。
+- 演示系统约束（用户原话）：「虽然我只是演示的系统，但是想要别人直接下载下来就能用」——
+  因此默认配置必须零安装、零配置，独立分库只是**可选进阶能力**。
+
+### 设计依据（架构讨论结论）
+
+对齐 SAP HANA MDC / `MANDT` 与 SaaS WMS「租户上下文切面」的分层：
+
+| 层 | SAP / 行业做法 | MiniWMS 落地 | 隔离维度 |
+|---|---|---|---|
+| ① 连接层 | HANA 1 个 SystemDB + N 个 Tenant DB，每租户自含目录/持久化/日志/备份 | `main.get_db()` 按 `warehouse.db_path` 选 SQLite 文件 | **仓库** |
+| ② SQL 层 | ABAP 数据库接口自动注入 `sy-mandt`；ORM 拦截器自动追加 `WHERE tenant_id=?` | `scope.owner_where()` 生成条件 + `before_request` 两道集中守门 | **货主** |
+| ③ 数据层 | client-dependent 表首列 `CLNT(MANDT)` | 业务表带 `owner_id`；公共表走白名单 | 标识列 |
+
+仓库已天然按容器 / 库隔离，因此**不再注入 `WHERE warehouse_id=?`**（避免把路由键降级成过滤条件）；
+货主在同一仓库内共享表，才需要 MANDT 式行级注入。
+
+### 数据模型变更（全部带 DEFAULT，老库 `_migrate_scope_columns()` 幂等 ALTER）
+
+```sql
+warehouse.db_path        TEXT    NOT NULL DEFAULT ''   -- 空=共用主库；非空=独立 SQLite 文件
+carrier.owner_id         INTEGER REFERENCES owner(id)  -- NULL=全系统共享；非空=归属货主
+user.warehouse_scope     TEXT    NOT NULL DEFAULT 'grant'  -- 'all' | 'grant'
+user.owner_scope         TEXT    NOT NULL DEFAULT 'grant'  -- 'all' | 'grant'
+CREATE TABLE user_warehouse_grant (user_id, warehouse_id, PRIMARY KEY(user_id, warehouse_id));
+CREATE TABLE user_owner_grant     (user_id, owner_id,     PRIMARY KEY(user_id, owner_id));
+```
+
+- 老库升级时**一次性**给既有 `admin` 显式 `all/all`，其余账号保持 `grant`（最小权限）；
+  列已存在时不再 UPDATE，避免覆盖管理员后续收紧的授权。
+- 新库 `admin` 由 `_seed_auth()` 插入时即带 `'all','all'`。
+- 货主 / 仓库主数据是**跨仓主数据**：`routes_owner.py` / `routes_warehouse.py` 全部改走
+  `get_control_db()`（中央库唯一权威写入点）；业务库持只读副本，由 `sync_control_tables()` 补齐，
+  保证 `owner_id` / `warehouse_id` 外键在分库模式下不断链。
+
+### 核心代码挂点
+
+- `main.py`：`get_control_db()` / `get_db()`（默认复用同一连接对象，避免双连接锁）、
+  `resolve_warehouse_db_path()`（只许项目目录内 `.db`，防路径穿越）、`normalize_warehouse_db_path()`（存相对路径）、
+  `ensure_business_db()` / `init_warehouse_db()`（懒加载 + 配置即建库）、`sync_control_tables()`、
+  `all_business_db_paths()`（跨库引用检查）、`@app.before_request _bind_scope()`、
+  `@app.errorhandler(ScopeError)`、`RESOURCE_OWNER_TABLES` / `BATCH_RESOURCE_TABLES`。
+- `scope.py`（新）：`resolve_scope()` / `current_scope()` / `owner_where()` / `scoped_where()` /
+  `assert_owner_allowed()` / `check_warehouse_access()` / `visible_warehouses()` / `visible_owners()` /
+  `scope_summary()`；`OWNER_SCOPED_TABLES` 与 `PUBLIC_TABLES` 白名单。
+- `routes_scope.py`（新）：`/api/scope/context`、`/api/scope/warehouses`、`/api/scope/owners`、
+  `/api/scope/warehouse`、`/api/users/<uid>/grants` (GET/PUT)。
+- `auth.py`：`get_current_user()` 改查中央库；`has_permission()` 删除「角色名＝管理员」隐式提权，
+  改由 `permissions` 中显式的 `*` 放行。
+- 13 个业务列表接口注入 `S.scoped_where()`：owner(按 `id`) / product(允许 NULL) / customer /
+  supplier / carrier(允许 NULL) / asn / dn / stock / movements / transfer / stocktake /
+  batch profiles / batch receipts。
+- `before_request` 两道集中守门：① 写请求体顶层 `owner_id` 必须在授权集合内；
+  ② 按 ID 访问的资源（含单据动作、`/api/batch/profiles|receipts/<id>` 二级路径）先查归属再放行。
+  `/api/auth/login` 与 `/api/scope/context` 为软解析端点，带失效旧仓 header 时不直接 403。
+
+### 权限解析规则（关键纪律）
+
+| 场景 | 解析结果 |
+|---|---|
+| 匿名 + `MINIWMS_ALLOW_ANONYMOUS=1`（默认） | **显式** `mode='anonymous-demo'` 的 ALL 上下文 |
+| 匿名 + `=0` | 401 未登录 |
+| 登录 + `warehouse_scope='all'` | 可见并切换到全部仓库（A 作业视角，一次一个仓） |
+| 登录 + `warehouse_scope='grant'` | 按 `user_warehouse_grant` 显式 id 集合 |
+| 登录 + `owner_scope='all'` | 不注入 owner 条件 |
+| 登录 + `owner_scope='grant'` | 注入 `owner_id IN (...)`；`product/carrier` 的 NULL 视为公共数据仍可见 |
+| 登录 + scope=grant 但无任何授权行 | **403 拒绝**（不是全量放行） |
+| 上下文缺失 / 解析失败 | **403 拒绝**，绝不返回 ALL 兜底 |
+
+> 这是多租户系统最常见的越权漏洞点：`ALL` 必须由授权解析**显式**给出，
+> 不能用「上下文缺失 ⇒ 不加条件」实现。`scope.current_scope()` 在 `g.scope` 缺失时直接抛 `ScopeError`。
+> `ALL` 时授权行会被清空（`save_grants`），即 ALL 靠标志而非「空集合」表示。
+> 授权改动实时生效：token 只含 `{uid, exp}`，每次请求从中央库重新解析。
+
+### 前端交互
+
+- `api.js` 新增 `currentWarehouseId()` / `setCurrentWarehouseId()`（localStorage `miniwms_warehouse_id`）、
+  `mountWarehousePicker(el, onChange)`；`api()` 自动附加 `X-WMS-Warehouse`（登录接口除外）；
+  `logout()` 同时清除当前仓。
+- **一处实现、两处挂载**：独立页侧栏由 `layout.js::render()` 挂载到 `#whPickBox`；
+  工作台顶栏由 `app.html` 挂载到 `#wsWhPick`。iframe 内的 embed 模式不重复渲染。
+- 切仓后工作台调用 `refreshAllTabs()` 重载全部 iframe，避免旧仓数据残留；
+  独立页 `location.reload()`。
+- **首屏竞态修复**：页面业务请求常早于切仓器异步初始化发出（那时还没有 header），
+  因此首次确定当前仓后自动重载一次页面数据；后续不再重复（localStorage 已有值）。
+- `users.html`：新增「数据范围」列与「数据权限」弹窗（仓库 / 货主双列勾选 +
+  `all/grant` 切换时自动禁用勾选框）。
+- `warehouses.html`：表单加「独立数据文件」`db_path` 分组，列表加「数据隔离」列。
+- `carriers.html`：表单加「归属货主」下拉（留空＝全系统共享），列表加「归属货主」列。
+
+### 兼容性与默认行为（clone 即用）
+
+- 全部仓库 `db_path` 默认为空 → 所有请求复用同一个 `miniwms.db`，行为与此前版本完全一致；
+  299 个既有 + 新增单测全绿，未登录仍可浏览（匿名演示模式显式 ALL）。
+- 只有显式给某仓配置 `db_path` 才会创建独立 SQLite 文件；路径存相对路径，换机器 clone 不绑死本机目录。
+- 分库启用后，跨仓主数据（货主 / 仓库）由中央库同步到业务库副本；仓内业务数据（物料、
+  客户、供应商、承运商、单据、库存）各仓独立。
+- 跨仓汇总报表不在本次范围，需要未来独立的只读汇总通道（A 作业视角不做一屏跨仓）。
+
+### 验证结果
+
+- `./.venv/Scripts/python.exe -m unittest discover -s tests` → **299 例全绿**（原 285 + 新增 14）。
+- `tests/test_scope.py` 14 例：DDL 与显式 ALL、匿名模式开关、无授权账号 403、部分货主列表过滤、
+  all/grant 切换、写路径越权 403、详情守门 403、承运商归属货主与过滤、部分仓授权与切仓拒绝、
+  全部仓、`db_path` 路径校验、**按仓分库物理隔离**、管理员 `*` 显式权限。
+- `node --check web_app/js/api.js` / `layout.js` 通过。
+- 真实 Chrome E2E（独立临时库 + 独立端口 5107）**15/15**：侧栏 / 顶栏切仓器、
+  header 确实带出、工作台不重复渲染、数据权限弹窗与勾选禁用联动、仓库 `db_path` 字段、
+  承运商归属货主字段、7 页冒烟、无 JS 运行时错误、业务 404 为 0（favicon 噪声除外）。
+- `/api/stock/reconcile` 未受影响（未改库存过账路径）。
+
+### 已知边界 / 后续（PRD 素材提示）
+
+- 授权按「账号」维度，未做角色级数据权限模板；`user.owner_id` 单值字段仍保留为历史预留，
+  实际隔离以 `user_owner_grant` 为准。
+- 跨仓报表、缓存 key 前缀、外部对接 X-API-Key 绑定 owner_id 属后续议题（M28 / M29）。
+- `OWNER_SCOPED_TABLES` 白名单新增表时必须同步接入 `S.scoped_where()`，
+  或纳入 `before_request` 的按 ID 守门；`PUBLIC_TABLES` 里的表不按货主隔离。
+- 「看所有仓库」是 A 作业视角；若未来要 B 报表视角（一屏跨仓汇总），需另建只读汇总通道。
+
+---
+

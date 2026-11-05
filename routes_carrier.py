@@ -1,8 +1,11 @@
 """承运商主数据模块：/api/carriers 的增删改查。
 
 承运商是物流履约资源（后续发快递/零担/整车等业务的基础参照）。
-M14 落地承运商主数据，独立于多货主（承运商为全系统共享的物流资源目录）。
+M14 落地承运商主数据；数据权限增强后新增 ``owner_id`` 归属货主：
+``NULL`` = 全系统共享物流资源，非空 = 该货主专属，可按货主做权限管控。
+与「客户 / 供应商」一起构成后续按货主授权的基础资料预留位。
 """
+import scope as S
 from flask import Blueprint, jsonify, request
 
 from main import get_db, request_payload
@@ -61,6 +64,15 @@ def _validate_carrier_payload(payload, *, partial=False):
 
     if "note" in payload:
         cleaned["note"] = str(payload.get("note") or "")
+    if "owner_id" in payload:
+        raw = payload.get("owner_id")
+        if raw in (None, "", "null", "0"):
+            cleaned["owner_id"] = None  # 清空 = 回到全系统共享
+        else:
+            try:
+                cleaned["owner_id"] = int(raw)
+            except (TypeError, ValueError):
+                errors.append("owner_id 必须为整数或留空")
 
     return errors, cleaned
 
@@ -83,10 +95,16 @@ def create_carrier():
     db = get_db()
     if _code_exists(db, cleaned["code"]):
         return jsonify({"ok": False, "errors": [f"承运商编码已存在: {cleaned['code']}"]}), 409
+    if cleaned.get("owner_id") is not None and db.execute(
+        "SELECT id FROM owner WHERE id = ?", (cleaned["owner_id"],)
+    ).fetchone() is None:
+        return jsonify({"ok": False, "errors": ["货主不存在"]}), 400
 
     cur = db.execute(
-        """INSERT INTO carrier (code, name, contact, phone, api_code, address, carrier_type, status, note)
-           VALUES (:code, :name, :contact, :phone, :api_code, :address, :carrier_type, :status, :note)""",
+        """INSERT INTO carrier (code, name, contact, phone, api_code, address,
+                                carrier_type, owner_id, status, note)
+           VALUES (:code, :name, :contact, :phone, :api_code, :address,
+                   :carrier_type, :owner_id, :status, :note)""",
         {
             **cleaned,
             "contact": cleaned.get("contact", ""),
@@ -94,6 +112,7 @@ def create_carrier():
             "api_code": cleaned.get("api_code", ""),
             "address": cleaned.get("address", ""),
             "carrier_type": cleaned.get("carrier_type", "快递"),
+            "owner_id": cleaned.get("owner_id"),
             "status": cleaned.get("status", "active"),
             "note": cleaned.get("note", ""),
         },
@@ -109,6 +128,7 @@ def list_carriers():
     keyword = (args.get("keyword") or "").strip()
     carrier_type = (args.get("carrier_type") or "").strip()
     status = (args.get("status") or "").strip()
+    owner_id = (args.get("owner_id") or "").strip()
     try:
         page = max(1, int(args.get("page", 1)))
         page_size = min(MAX_PAGE_SIZE, max(1, int(args.get("page_size", DEFAULT_PAGE_SIZE))))
@@ -125,6 +145,15 @@ def list_carriers():
     if status:
         where.append("status = ?")
         params.append(status)
+    if owner_id == "none":
+        where.append("owner_id IS NULL")  # 只看全系统共享的承运商
+    elif owner_id:
+        try:
+            where.append("owner_id = ?")
+            params.append(int(owner_id))
+        except ValueError:
+            return jsonify({"ok": False, "errors": ["owner_id 必须为整数"]}), 400
+    S.scoped_where(where, params, allow_null=True)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
@@ -165,6 +194,10 @@ def update_carrier(carrier_id):
         return jsonify({"ok": False, "error": "承运商不存在"}), 404
     if "code" in cleaned and _code_exists(db, cleaned["code"], exclude_id=carrier_id):
         return jsonify({"ok": False, "errors": [f"承运商编码已存在: {cleaned['code']}"]}), 409
+    if cleaned.get("owner_id") is not None and db.execute(
+        "SELECT id FROM owner WHERE id = ?", (cleaned["owner_id"],)
+    ).fetchone() is None:
+        return jsonify({"ok": False, "errors": ["货主不存在"]}), 400
 
     set_sql = ", ".join(f"{k} = :{k}" for k in cleaned)
     cleaned["id"] = carrier_id

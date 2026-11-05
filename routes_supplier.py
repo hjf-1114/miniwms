@@ -3,6 +3,7 @@
 供应商是收货单（ASN）的上游来源，归属货主（多货主隔离，呼应客户的设计）。
 M16 落地供应商主数据，并为 ASN 提供 supplier_id 关联与名称/联系人/电话/地址快照。
 """
+import scope as S
 from flask import Blueprint, jsonify, request
 
 from main import get_db, request_payload
@@ -119,6 +120,7 @@ def list_suppliers():
     if status:
         where.append("status = ?")
         params.append(status)
+    S.scoped_where(where, params, table="s")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()

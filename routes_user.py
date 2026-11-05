@@ -8,7 +8,7 @@ import json
 
 from flask import Blueprint, jsonify, request
 
-from main import get_db, request_payload
+from main import get_control_db, request_payload
 from auth import (
     hash_password,
     verify_password,
@@ -26,7 +26,7 @@ def login():
     payload = request_payload()
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
-    db = get_db()
+    db = get_control_db()
     row = db.execute("SELECT * FROM user WHERE username = ?", (username,)).fetchone()
     if row is None or row["status"] != "active":
         return jsonify(ok=False, error="用户名或密码错误"), 401
@@ -44,6 +44,8 @@ def login():
         "username": row["username"],
         "role_name": role["name"] if role else None,
         "owner_id": row["owner_id"],
+        "warehouse_scope": row["warehouse_scope"],
+        "owner_scope": row["owner_scope"],
         "permissions": perms,
         "status": row["status"],
     })
@@ -70,7 +72,7 @@ def _role_out(db, rid):
 @user_bp.route("/roles", methods=["GET"])
 @require_permission("user:manage")
 def list_roles():
-    db = get_db()
+    db = get_control_db()
     rows = db.execute("SELECT * FROM role ORDER BY id").fetchall()
     return jsonify(ok=True, roles=[_role_out(db, r["id"]) for r in rows])
 
@@ -92,7 +94,7 @@ def create_role():
             return jsonify(ok=False, error="permissions 不是合法 JSON 数组"), 400
     else:
         perms = "[]"
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM role WHERE name = ?", (name,)).fetchone():
         return jsonify(ok=False, error="角色名已存在"), 409
     cur = db.execute(
@@ -107,7 +109,7 @@ def create_role():
 @user_bp.route("/roles/<int:rid>", methods=["GET", "PUT"])
 @require_permission("user:manage")
 def role_detail(rid):
-    db = get_db()
+    db = get_control_db()
     if request.method == "GET":
         r = _role_out(db, rid)
         if r is None:
@@ -144,7 +146,7 @@ def role_detail(rid):
 @user_bp.route("/roles/<int:rid>", methods=["DELETE"])
 @require_permission("user:manage")
 def delete_role(rid):
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM role WHERE id = ?", (rid,)).fetchone() is None:
         return jsonify(ok=False, error="角色不存在"), 404
     if db.execute("SELECT id FROM user WHERE role_id = ?", (rid,)).fetchone():
@@ -159,7 +161,8 @@ def delete_role(rid):
 def _user_out(db, uid):
     u = db.execute(
         "SELECT u.id, u.username, u.role_id, r.name AS role_name, u.owner_id, "
-        "o.code AS owner_code, u.status, u.created_at, u.updated_at "
+        "u.warehouse_scope, u.owner_scope, o.code AS owner_code, "
+        "u.status, u.created_at, u.updated_at "
         "FROM user u LEFT JOIN role r ON r.id = u.role_id "
         "LEFT JOIN owner o ON o.id = u.owner_id WHERE u.id = ?",
         (uid,),
@@ -170,10 +173,10 @@ def _user_out(db, uid):
 @user_bp.route("/users", methods=["GET"])
 @require_permission("user:manage")
 def list_users():
-    db = get_db()
+    db = get_control_db()
     rows = db.execute(
         "SELECT u.id, u.username, u.role_id, r.name AS role_name, u.owner_id, "
-        "o.code AS owner_code, u.status, u.created_at "
+        "u.warehouse_scope, u.owner_scope, o.code AS owner_code, u.status, u.created_at "
         "FROM user u LEFT JOIN role r ON r.id = u.role_id "
         "LEFT JOIN owner o ON o.id = u.owner_id ORDER BY u.id"
     ).fetchall()
@@ -197,7 +200,7 @@ def create_user():
         role_id = int(role_id)
     except (TypeError, ValueError):
         return jsonify(ok=False, error="role_id 必填且为整数"), 400
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM user WHERE username = ?", (username,)).fetchone():
         return jsonify(ok=False, error="用户名已存在"), 409
     if db.execute("SELECT id FROM role WHERE id = ?", (role_id,)).fetchone() is None:
@@ -222,7 +225,7 @@ def create_user():
 @user_bp.route("/users/<int:uid>", methods=["GET", "PUT"])
 @require_permission("user:manage")
 def user_detail(uid):
-    db = get_db()
+    db = get_control_db()
     if request.method == "GET":
         u = _user_out(db, uid)
         if u is None:
@@ -278,7 +281,7 @@ def user_detail(uid):
 @user_bp.route("/users/<int:uid>", methods=["DELETE"])
 @require_permission("user:manage")
 def delete_user(uid):
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM user WHERE id = ?", (uid,)).fetchone() is None:
         return jsonify(ok=False, error="用户不存在"), 404
     # 不允许删除最后一个管理员，避免锁死

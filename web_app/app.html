@@ -19,6 +19,7 @@
   <div class="ws-main">
     <div class="ws-top">
       <div class="ws-top-title">工作台 · 多标签作业</div>
+      <div class="wh-pick ws-wh-pick" id="wsWhPick"></div>
       <div class="ws-top-user" id="wsUserBox"></div>
     </div>
     <div class="ws-tabs" id="wsTabs"></div>
@@ -174,12 +175,23 @@ if (EMBED) {
       "从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>";
   }
 
+  // 切仓 = 换 X-WMS-Warehouse header（A 作业视角：一次只看一个仓）。
+  // 已打开的标签必须全部重载，否则旧仓数据会残留在 iframe 里造成串仓错觉。
+  function refreshAllTabs() {
+    const stamp = Date.now();
+    tabs.forEach((t, i) => {
+      const u = t.iframe.src.split("&__whrefresh=")[0];
+      t.iframe.src = u + (u.indexOf("?") === -1 ? "?" : "&") + "__whrefresh=" + stamp + "_" + i;
+    });
+  }
+
   // 供 iframe 内页面调用：openDetail(...) 在明细按钮处打开新标签
   window.openTab = openTab;
   window.togglePin = togglePin;
 
   // 默认打开概览
   openTab("概览", "/index.html");
+  mountWarehousePicker(document.getElementById("wsWhPick"), refreshAllTabs);
 }
 </script>
 </body>

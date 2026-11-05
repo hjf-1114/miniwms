@@ -587,3 +587,82 @@ M20 阶段 B（`46e5038`）未改动本页。其余里程碑明细见 `DEVELOPME
 |---|---|---|---|
 | v0.1 | 2026-11-05 | 建立模板与素材库骨架；回溯记录第 1 批 2 页（货主、物料）；建立 API / 数据模型单列章与 21 页覆盖进度表 | 用户第四轮规格确认 1A / 2A / 3D / 4 单列一章 / 5 是 / 6 Markdown；取证自 `web_app/owners.html`、`web_app/products.html`、`routes_owner.py`、`routes_product.py`、`routes_product_location.py`、`main.py` |
 | v0.2 | 2026-11-05 | 自审 + 独立交叉审阅修正：① 里程碑编号校准（M15 不含移库 / M17 移库 / M18 盘点 / M19 批次与验收入库追溯；移库页归属 M15→M17；工作台改列「非里程碑」）；② 删除 2 处「把未实现写成已实现」（同分类聚拢、`product.volume` 参与容量过滤），补记当前推荐引擎 6 项打分；③ 修正 DDL 演进机制表述、`product.owner_id` 归属 M2 与 `volume` 重复标注；④ 补齐 `pkg_level` 错误串全文、前端文案原文、明细行 20 字段口径（13+7、自动带出 12）、预置 3 个系统级角色与鉴权范围 | 取证自 `DEVELOPMENT.md` Roadmap、`git log --diff-filter=A`、`main.py`、`putaway_service.py`、`web_app/asns.html`、`web_app/products.html`、`routes_product.py`；交叉审阅为独立只读核对，未改代码 |
+| v0.3 | 2026-11-05 | 追加 §6「全局数据权限与隔离约束」（架构增强，非里程碑）：三层隔离、账号可见仓/货主授权、ALL 显式化、页面控件增量、端点与 DDL 增量、验收要点。**按增量追加规则不改写 §1–§5 已有内容**；21 页逐页记录进度不变（仍 2/21） | 取证自 `main.py`、`scope.py`、`routes_scope.py`、`routes_owner.py`、`routes_warehouse.py`、`routes_carrier.py`、`auth.py`、`web_app/js/api.js`、`web_app/js/layout.js`、`web_app/app.html`、`web_app/users.html`、`web_app/warehouses.html`、`web_app/carriers.html`、`tests/test_scope.py`、`DEVELOPMENT.md` 文末同名章节 |
+
+---
+
+## 6. 全局数据权限与隔离约束（2026-11-05 架构增强，非里程碑）
+
+> **取证纪律**：本章只记录代码里真实存在的实现，不把设计文档中的规划写成现状（见 v0.2 交叉审阅教训）。
+> **对 PRD 的影响**：这是**全局约束章**，后续 21 页逐页记录中「权限」一项只引用本章 + 写出本页特有差异，
+> 不重复展开三层架构。**不占用任何 M 编号**，Roadmap 与实施顺序不变（下一里程碑仍 M21）。
+
+### 6.1 [业务] 用途与背景
+
+- 用户生产系统经验：仓库数据按数据库分库隔离，并用配置决定某仓落到哪个库；「做视图会很卡」——
+  视图过滤会把天然分区键 `warehouse_id` 降级成 WHERE 条件，单仓作业查询性能差。
+- 3PL WMS 里两个隔离维度不同：**仓库**是运营方资产、天然按容器 / 库隔离；**货主**在同一仓内共享表，
+  需要行级隔离。因此仓库走「连接层选库」，货主走「SQL 层自动注入」，不混用一套机制。
+- 用户诉求：① 不同仓库数据隔离；② 不同货主数据隔离；③ 一个账号可看全部 / 部分仓库，
+  并可配置自定义货主查看权限（部分 / 全部）。
+- 用户确认的最终口径：**「直接做完整版」**；「看所有仓库」＝ **A 作业视角**（可切换到任意有权限仓，
+  一次只看一个仓，不做一屏跨仓汇总）；基础资料（承运商 / 客户 / 供应商）预留货主维度便于后期权限管控；
+  演示系统必须「下载下来就能用」。
+
+### 6.2 [功能] 权限模型与页面影响
+
+| 维度 | 规则 | 页面 / 控件 |
+|---|---|---|
+| 仓库（连接层） | `warehouse.db_path` 留空＝共用主库（默认）；非空＝该仓业务数据独立 SQLite 文件 | `warehouses.html`：表单「数据隔离」分组的 `db_path`、列表「数据隔离」列（独立库 / 共用主库） |
+| 仓库（切换） | 前端统一附加 `X-WMS-Warehouse`；一次只看一个仓 | 独立页侧栏 `#whPickBox`、工作台顶栏 `#wsWhPick` 的「当前仓库」下拉（共用 `api.js::mountWarehousePicker()`）；工作台切仓后重载全部 iframe 标签 |
+| 货主（SQL 层） | 账号授权集合自动注入 `owner_id IN (...)`；`product/carrier` 的 NULL 视为公共数据仍可见 | 13 个业务列表页的可见数据范围；无独立控件 |
+| 授权配置 | `all`＝全部 / `grant`＝按勾选；授权行缺失即 403 拒绝 | `users.html`：新增「数据范围」列 +「数据权限」弹窗（仓库 / 货主双列勾选，切到「全部」时勾选框自动禁用） |
+| 基础资料预留 | `carrier.owner_id` 新增（NULL＝全系统共享） | `carriers.html`：表单「归属货主」下拉、列表「归属货主」列；`owner_id=none` 只看共享承运商 |
+
+**关键纪律（PRD 权限章必须写明）**：`ALL` 是授权解析后**显式**给出的标志（`user.warehouse_scope` /
+`user.owner_scope` = `all`），不是「上下文缺失 ⇒ 不加条件」；缺失上下文一律 403 拒绝。
+`auth.py::has_permission()` 同样去掉「角色名＝管理员」的隐式提权，改由角色 `permissions` 里显式的 `*` 放行。
+匿名演示模式由 `MINIWMS_ALLOW_ANONYMOUS`（默认 `1`）显式给出 `mode='anonymous-demo'` 的 ALL 上下文；
+设为 `0` 强制登录，保证 clone 即用与生产可收紧两者兼顾。
+
+### 6.3 [实现] 端点与数据模型增量
+
+**DDL 增量**（老库由 `main._migrate_scope_columns()` 幂等 `ALTER` 补列，新库写进 CREATE）：
+
+| 表 | 新增 | 口径 |
+|---|---|---|
+| `warehouse` | `db_path TEXT NOT NULL DEFAULT ''` | 空＝共用主库；只许项目目录内 `.db` 相对路径（防路径穿越） |
+| `carrier` | `owner_id INTEGER REFERENCES owner(id)` | NULL＝全系统共享，非空＝归属货主 |
+| `user` | `warehouse_scope` / `owner_scope` `TEXT NOT NULL DEFAULT 'grant'` | `all` / `grant` |
+| 新增 | `user_warehouse_grant(user_id, warehouse_id)` | 复合主键 |
+| 新增 | `user_owner_grant(user_id, owner_id)` | 复合主键 |
+
+**控制面 / 数据面**：`get_control_db()` 管 `warehouse` / `owner` / `role` / `user` / 两张授权表
+（`routes_owner.py`、`routes_warehouse.py`、`routes_user.py` 全部走它）；`get_db()` 是业务库唯一挂点，
+17 个业务 Blueprint 未改连接代码。分库时 `sync_control_tables()` 把货主 / 仓库主数据同步为业务库只读副本。
+
+**新增端点**（`routes_scope.py`）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/scope/context` | 权限摘要 + 可切换仓清单 + 当前仓；软解析端点 |
+| GET | `/api/scope/warehouses` | A 作业视角可见仓清单 |
+| GET | `/api/scope/owners` | 可见货主清单 |
+| POST | `/api/scope/warehouse` | 校验切仓合法性并回显目标仓 |
+| GET / PUT | `/api/users/<id>/grants` | 读取 / 配置账号仓库·货主范围（PUT 需 `user:manage`） |
+
+**集中守门**（`main.py::@app.before_request _bind_scope()`）：① 写请求体顶层 `owner_id` 归属校验；
+② 按 ID 访问资源的归属校验（`RESOURCE_OWNER_TABLES` 9 类 + `BATCH_RESOURCE_TABLES` 2 类二级路径），
+覆盖详情 / 更新 / 删除 / 单据动作端点。货主主数据归属守门查中央库，避免业务库副本滞后漏判。
+
+### 6.4 [实现] 验收要点与边界
+
+- `tests/test_scope.py` 14 例：DDL、admin 显式 ALL、匿名模式开关、无授权账号 403、部分货主过滤、
+  all/grant 切换、写路径越权、详情守门、承运商归属货主、部分仓授权与切仓拒绝、全部仓、
+  `db_path` 路径校验、按仓分库物理隔离、管理员 `*` 显式权限。全量 **299 例绿**。
+- 真实 Chrome E2E **15/15**：侧栏 / 顶栏切仓器与 header、工作台不重复渲染、授权弹窗勾选联动、
+  仓库 `db_path` 字段、承运商归属货主字段、7 页冒烟、无 JS 错误、业务 404 为 0。
+- **边界**：跨仓汇总报表不在本次范围（需未来独立只读汇总通道）；授权按账号维度，无角色级模板；
+  `user.owner_id` 单值字段保留为历史预留，实际隔离以 `user_owner_grant` 为准；
+  新增受控表必须同步接入 `S.scoped_where()` 或按 ID 守门白名单。
+

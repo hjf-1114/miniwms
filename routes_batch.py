@@ -9,6 +9,7 @@
 """
 import json
 
+import scope as S
 from flask import Blueprint, jsonify, request
 
 import constants as C
@@ -174,6 +175,7 @@ def list_profiles():
                 params.append(int(v))
             except ValueError:
                 return jsonify({"ok": False, "errors": [f"{col} 必须为整数"]}), 400
+    S.scoped_where(where, params, table="b")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
@@ -270,6 +272,7 @@ def list_receipts():
     if gp:
         where.append("br.goods_property = ?")
         params.append(gp)
+    S.scoped_where(where, params, table="br")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()

@@ -212,6 +212,7 @@
       try { return localStorage.getItem("miniwms_token"); } catch (e) { return ""; }
     })();
     let html = '<div class="brand"><span class="logo">📦</span>MiniWMS</div>' +
+      '<div class="wh-pick" id="whPickBox"></div>' +
       '<nav class="nav" id="sideNav"></nav>';
     if (token) {
       html += '<a class="nav-item" href="#" onclick="logout();return false;"><span class="nav-ico">🚪</span><span>退出登录</span></a>';
@@ -221,6 +222,10 @@
     html += '<div class="side-foot">轻量多货主 WMS · 本地演示</div>';
     el.innerHTML = html;
     mount(el.querySelector("#sideNav"), { mode: "link", activeHref: location.pathname });
+    // 独立页侧栏也有当前仓库选择器；工作台只在顶栏放一个（iframe 内是 embed 模式，不重复渲染）
+    if (typeof mountWarehousePicker === "function") {
+      mountWarehousePicker(el.querySelector("#whPickBox"));
+    }
   }
 
   // 等待 DOM 就绪（脚本一般在 body 末尾，通常已就绪）

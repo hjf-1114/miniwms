@@ -4,6 +4,7 @@
 货主 A 的客户与货主 B 的客户彼此隔离，避免跨货主串用。
 M7 落地客户主数据，并由此补上「出库需要客户资料」这一此前遗漏的维度。
 """
+import scope as S
 from flask import Blueprint, jsonify, request
 
 from main import get_db, request_payload
@@ -147,6 +148,7 @@ def list_customers():
             params.append(int(owner_id))
         except ValueError:
             return jsonify({"ok": False, "errors": ["owner_id 必须为整数"]}), 400
+    S.scoped_where(where, params, table="c")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()

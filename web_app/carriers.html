@@ -39,7 +39,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>类型</th><th>联系人</th><th>电话</th><th>外部编码</th><th>地址</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>归属货主</th><th>类型</th><th>联系人</th><th>电话</th><th>外部编码</th><th>地址</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
       </table>
     </div>
@@ -58,6 +58,8 @@
     <script src="/js/layout.js"></script>
 <script>
 let page = 1, pageSize = 20;
+let ownerOptions = [{ value: "", label: "（全系统共享，不绑定货主）" }];
+let ownerNames = {};
 
 const FIELDS = [
   { name: "code", label: "编码 *", required: true, autocode: true, autocodePrefix: "CAR" },
@@ -71,6 +73,8 @@ const FIELDS = [
   { name: "contact", label: "联系人" },
   { name: "phone", label: "电话" },
   { name: "api_code", label: "外部编码（对接用）" },
+  { name: "owner_id", label: "归属货主", type: "select", nullable: true, options: ownerOptions,
+    help: "留空＝全系统共享物流资源；指定货主后仅该货主可见，便于后续按货主做权限管控" },
   { name: "address", label: "地址", full: true },
   { name: "note", label: "备注", type: "textarea", full: true },
 ];
@@ -88,6 +92,9 @@ async function load() {
     document.getElementById("tbody").innerHTML = data.carriers.map((c) =>
       `<tr>
         <td>${c.id}</td><td>${esc(c.code)}</td><td>${esc(c.name)}</td>
+        <td>${c.owner_id
+          ? esc(ownerNames[c.owner_id] || ("#" + c.owner_id))
+          : '<span class="muted">全系统共享</span>'}</td>
         <td>${esc(c.carrier_type)}</td><td>${esc(c.contact)}</td><td>${esc(c.phone)}</td>
         <td>${esc(c.api_code)}</td><td>${esc(c.address)}</td>
         <td>${statusTag(c.status)}</td>
@@ -150,7 +157,19 @@ async function del(id) {
   }
 }
 
-load();
+async function loadOwners() {
+  try {
+    const d = await api("GET", "/api/owners?page_size=100");
+    ownerOptions.length = 0;
+    ownerOptions.push({ value: "", label: "（全系统共享，不绑定货主）" });
+    d.owners.forEach((o) => {
+      ownerOptions.push({ value: o.id, label: o.code + " · " + o.name });
+      ownerNames[o.id] = o.code + " · " + o.name;
+    });
+  } catch (e) { /* 权限不足时下拉为空，不影响列表浏览 */ }
+}
+
+loadOwners().then(load);
 </script>
 </body>
 </html>

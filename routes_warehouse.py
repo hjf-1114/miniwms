@@ -6,7 +6,7 @@ M16 落地多仓库主数据，补齐此前「只支持多货主、未支持多�
 """
 from flask import Blueprint, jsonify, request
 
-from main import get_db, request_payload
+from main import get_control_db, request_payload
 
 warehouse_bp = Blueprint("warehouse", __name__, url_prefix="/api/warehouses")
 
@@ -50,8 +50,26 @@ def _validate_warehouse_payload(payload, *, partial=False):
             cleaned["status"] = status
     if "note" in payload:
         cleaned["note"] = str(payload.get("note") or "")
+    if "db_path" in payload:
+        # 数据隔离配置：空 = 共用中央库；非空 = 该仓业务数据独立 SQLite 文件。
+        # 必须过安全校验（项目目录内 + .db 结尾），并归一化为相对路径。
+        from main import normalize_warehouse_db_path
+        from scope import ScopeError
+        try:
+            cleaned["db_path"] = normalize_warehouse_db_path(
+                str(payload.get("db_path") or "").strip()
+            )
+        except ScopeError as e:
+            errors.append(str(e))
 
     return errors, cleaned
+
+
+def _maybe_init_db(cleaned):
+    """配置了独立数据文件时立即建库，避免「改完配置却看不到文件」的困惑。"""
+    if cleaned.get("db_path"):
+        from main import init_warehouse_db
+        init_warehouse_db(cleaned["db_path"])
 
 
 def _code_exists(db, code, exclude_id=None):
@@ -69,13 +87,13 @@ def create_warehouse():
     if errors:
         return jsonify({"ok": False, "errors": errors}), 400
 
-    db = get_db()
+    db = get_control_db()
     if _code_exists(db, cleaned["code"]):
         return jsonify({"ok": False, "errors": [f"仓库编码已存在: {cleaned['code']}"]}), 409
 
     cur = db.execute(
-        """INSERT INTO warehouse (code, name, address, contact, phone, status, note)
-           VALUES (:code, :name, :address, :contact, :phone, :status, :note)""",
+        """INSERT INTO warehouse (code, name, address, contact, phone, status, note, db_path)
+           VALUES (:code, :name, :address, :contact, :phone, :status, :note, :db_path)""",
         {
             **cleaned,
             "address": cleaned.get("address", ""),
@@ -83,9 +101,11 @@ def create_warehouse():
             "phone": cleaned.get("phone", ""),
             "status": cleaned.get("status", "active"),
             "note": cleaned.get("note", ""),
+            "db_path": cleaned.get("db_path", ""),
         },
     )
     db.commit()
+    _maybe_init_db(cleaned)
     row = db.execute("SELECT * FROM warehouse WHERE id = ?", (cur.lastrowid,)).fetchone()
     return jsonify({"ok": True, "warehouse": dict(row)}), 201
 
@@ -110,7 +130,7 @@ def list_warehouses():
         params.append(status)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-    db = get_db()
+    db = get_control_db()
     total = db.execute(f"SELECT COUNT(*) AS n FROM warehouse {where_sql}", params).fetchone()["n"]
     rows = db.execute(
         f"SELECT * FROM warehouse {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
@@ -129,7 +149,7 @@ def list_warehouses():
 
 @warehouse_bp.route("/<int:warehouse_id>", methods=["GET"])
 def get_warehouse(warehouse_id):
-    row = get_db().execute("SELECT * FROM warehouse WHERE id = ?", (warehouse_id,)).fetchone()
+    row = get_control_db().execute("SELECT * FROM warehouse WHERE id = ?", (warehouse_id,)).fetchone()
     if row is None:
         return jsonify({"ok": False, "error": "仓库不存在"}), 404
     return jsonify({"ok": True, "warehouse": dict(row)})
@@ -143,7 +163,7 @@ def update_warehouse(warehouse_id):
     if not cleaned:
         return jsonify({"ok": False, "errors": ["没有可更新的字段"]}), 400
 
-    db = get_db()
+    db = get_control_db()
     if db.execute("SELECT id FROM warehouse WHERE id = ?", (warehouse_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "仓库不存在"}), 404
     if "code" in cleaned and _code_exists(db, cleaned["code"], exclude_id=warehouse_id):
@@ -156,25 +176,37 @@ def update_warehouse(warehouse_id):
         cleaned,
     )
     db.commit()
+    _maybe_init_db(cleaned)
     row = db.execute("SELECT * FROM warehouse WHERE id = ?", (warehouse_id,)).fetchone()
     return jsonify({"ok": True, "warehouse": dict(row)})
 
 
 @warehouse_bp.route("/<int:warehouse_id>", methods=["DELETE"])
 def delete_warehouse(warehouse_id):
-    db = get_db()
+    import sqlite3
+
+    from main import all_business_db_paths
+
+    db = get_control_db()
     if db.execute("SELECT id FROM warehouse WHERE id = ?", (warehouse_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "仓库不存在"}), 404
-    ref = db.execute(
-        "SELECT id, code FROM asn WHERE source_warehouse = ? LIMIT 1", (warehouse_id,)
-    ).fetchone()
-    if ref is not None:
-        return jsonify({"ok": False, "errors": [f"仓库已被收货单引用（ASN {ref['code']}），不可删除"]}), 409
-    ref2 = db.execute(
-        "SELECT id, code FROM dn WHERE source_warehouse = ? LIMIT 1", (warehouse_id,)
-    ).fetchone()
-    if ref2 is not None:
-        return jsonify({"ok": False, "errors": [f"仓库已被出库单引用（DN {ref2['code']}），不可删除"]}), 409
+    # 分库后单据可能只存在于某个仓的独立库里，必须逐个库检查引用
+    for path in all_business_db_paths(db):
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        try:
+            for table, label in (("asn", "ASN"), ("dn", "DN")):
+                ref = conn.execute(
+                    f"SELECT id, code FROM {table} WHERE source_warehouse = ? LIMIT 1",
+                    (warehouse_id,),
+                ).fetchone()
+                if ref is not None:
+                    return jsonify({"ok": False, "errors": [
+                        f"仓库已被{'收货单' if table == 'asn' else '出库单'}引用"
+                        f"（{label} {ref['code']}），不可删除"
+                    ]}), 409
+        finally:
+            conn.close()
     db.execute("DELETE FROM warehouse WHERE id = ?", (warehouse_id,))
     db.commit()
     return jsonify({"ok": True})
