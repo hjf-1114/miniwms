@@ -15,6 +15,10 @@
     <div class="side-foot nav-label">轻量多货主 WMS · 本地演示</div>
   </aside>
   <div class="ws-main">
+    <div class="ws-top">
+      <div class="ws-top-title">工作台 · 多标签作业</div>
+      <div class="ws-top-user" id="wsUserBox"></div>
+    </div>
     <div class="ws-tabs" id="wsTabs"></div>
     <div class="ws-stage" id="wsStage">
       <div class="ws-empty"><div><span class="ico">🗂️</span>从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>
@@ -39,6 +43,22 @@ if (EMBED) {
   const navEl = document.getElementById("wsNav");
   const tabsEl = document.getElementById("wsTabs");
   const stageEl = document.getElementById("wsStage");
+
+  // ── 顶栏账号区：有 token 显示账号名 + 退出登录；未登录显示登录入口 ──
+  // 与独立页面 layout.js 保持一致：本项目登录是可选增强，未登录仍可浏览，故不强制跳转。
+  const userBox = document.getElementById("wsUserBox");
+  if (getToken()) {
+    const u = currentUser();
+    userBox.innerHTML =
+      '<span class="ws-avatar">👤</span>' +
+      '<span class="ws-user-name">' + esc(u.username || "已登录") + "</span>" +
+      (u.role_name ? '<span class="ws-user-role">' + esc(u.role_name) + "</span>" : "") +
+      '<button class="btn secondary sm" onclick="logout()">退出登录</button>';
+  } else {
+    userBox.innerHTML =
+      '<span class="ws-user-name">未登录</span>' +
+      '<a class="btn secondary sm" href="/login.html">登录</a>';
+  }
 
   const GROUP_ICONS = { "基础主数据": "🗂️", "出入库作业": "📦", "系统管理": "⚙️" };
 

@@ -45,7 +45,11 @@ document.getElementById("loginForm").addEventListener("submit", async (ev) => {
       username: fd.get("username").trim(),
       password: fd.get("password"),
     });
-    try { localStorage.setItem("miniwms_token", data.token); } catch (e) {}
+    try {
+      localStorage.setItem("miniwms_token", data.token);
+      // 保存一份用户摘要，供工作台顶栏展示账号名/角色；不是凭证，token 仍是唯一鉴权依据
+      localStorage.setItem("miniwms_user", JSON.stringify(data.user || {}));
+    } catch (e) {}
     location.href = "/index.html";
   } catch (e) {
     err.textContent = "登录失败：" + e.message;

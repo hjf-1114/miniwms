@@ -12,10 +12,24 @@ function getToken() {
   try { return localStorage.getItem("miniwms_token") || ""; } catch (e) { return ""; }
 }
 
-/** 退出登录：清除令牌并跳转到登录页。 */
+/** 读取登录时保存的用户摘要（仅用于界面展示，token 仍是唯一鉴权依据）。 */
+function currentUser() {
+  try { return JSON.parse(localStorage.getItem("miniwms_user") || "{}") || {}; }
+  catch (e) { return {}; }
+}
+
+/** 退出登录：清除令牌与用户摘要，并让顶层窗口跳到登录页（避免登录页被嵌进 iframe）。 */
 function logout() {
-  try { localStorage.removeItem("miniwms_token"); } catch (e) {}
-  location.href = "/login.html";
+  try {
+    localStorage.removeItem("miniwms_token");
+    localStorage.removeItem("miniwms_user");
+  } catch (e) {}
+  try {
+    const top = (window.parent && window.parent !== window) ? window.parent : window;
+    top.location.href = "/login.html";
+  } catch (e) {
+    location.href = "/login.html";
+  }
 }
 
 /** 若未登录则跳转到登录页（用于需要权限的页面）。 */
