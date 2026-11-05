@@ -241,8 +241,10 @@ routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
 web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
-docs/PUTAWAY_RECOMMENDATION.md  上架推荐 / 批次级库存 / 转移 / 盘点设计提案（v3.2）
-docs/DOMAIN_BLUEPRINT.md       自上而下 5 层领域蓝图、现状对照、M31+ 框架与打印方案定稿（v2）
+docs/PUTAWAY_RECOMMENDATION.md  上架推荐 / 批次级库存 / 转移 / 盘点设计提案（v3.3）
+docs/DOMAIN_BLUEPRINT.md       自上而下 5 层领域蓝图、现状对照、M31+ 框架与打印方案定稿（v3）
+docs/PRD_TEMPLATE.md           PRD 页面记录模板（11 项 + 业务/功能/实现三层写法）
+docs/PRD_SOURCES.md            PRD 素材库：逐页详细记录 / API 与数据模型 / 里程碑↔页面索引
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录
 ```
