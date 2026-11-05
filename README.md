@@ -128,14 +128,16 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - M22 库存调整单 + 盘点增强（全盘 / 部分 / 盲盘 / 动碰，动碰支持手工时间窗 + 交易类型）
 - M23 指定客户专属库存 + 销退口径
 - M24 库存转移单（只改批次信息、数量净零；分配库存会真实占用可用库存）
-- M25 上架推荐规则引擎（条件组分流 + fallback + 可解释推荐）
-- M26 规则配置与推荐交互
-- 补货预警（M27）、报表统计（M28）
-- **外部对接（M29）**：出入库单据对外开放——X-API-Key 鉴权（密钥绑定货主、多货主隔离）+ 外部写入端点 + 单据状态变更回传（webhook 回调，带签名）
-- CSV 导入导出（M30）
-- 出库分配：口径待专项沟通，暂不占编号
+- M25 上架推荐规则引擎（条件组分流 + fallback + 可解释推荐）· M26 规则配置与推荐交互 — **继续安排**
+- 报表统计（M28，归入蓝图第 4 层经营报表）
+- **降级暂缓**（编号保留、不排期）：补货预警（M27）、外部对接 API（M29）、CSV 导入导出（M30）
+- **M31+ 新域**（保留 M20–M30 编号不动）：M31 司机车辆 / M32 产品类型字典 / M33 序列号台账 /
+  M34 货位组主数据 / M35 出库波次与 FEFO 分配 / M36 出库复核 / M37 养护 / M38 拆单合单（可选）/
+  M39 GSP 报表 / M40 工作量统计 / M41 打印模板与 PDF 预览 / M42 打印任务与自动触发
 
 > 完整设计与口径见 `docs/PUTAWAY_RECOMMENDATION.md`（v3.2，2026-11-05 定稿）。
+> **自上而下的 5 层领域蓝图、现状对照、实施顺序与打印方案候选**见 `docs/DOMAIN_BLUEPRINT.md`（v1，2026-11-05）。
+> 实施顺序：先收尾 M20 剩余（单据标识位 + 入库混放硬校验），再按蓝图从第 1 层基础资料补齐。
 
 ## API 概览
 
@@ -231,6 +233,8 @@ routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
 web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/login + app.html 工作台 + css/js）
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
+docs/PUTAWAY_RECOMMENDATION.md  上架推荐 / 批次级库存 / 转移 / 盘点设计提案（v3.2）
+docs/DOMAIN_BLUEPRINT.md       自上而下 5 层领域蓝图、现状对照、M31+ 框架与打印方案候选（v1）
 tests/                单元测试（unittest，共享临时库+每用例清表）
 DEVELOPMENT.md        里程碑开发记录
 ```
