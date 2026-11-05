@@ -53,6 +53,17 @@ def _validate_product_payload(payload, *, partial=False):
     if has("unit"):
         cleaned["unit"] = str(payload.get("unit") or "").strip() or "件"
 
+    # M20：货品推荐储区（上架推荐的第 2 优先级，留空＝不指定）
+    if has("default_zone_id"):
+        raw = payload.get("default_zone_id")
+        if raw in (None, ""):
+            cleaned["default_zone_id"] = None
+        else:
+            try:
+                cleaned["default_zone_id"] = int(raw)
+            except (TypeError, ValueError):
+                errors.append("default_zone_id 必须为整数或留空")
+
     for key in ("barcode", "brand", "spec"):
         if has(key):
             cleaned[key] = str(payload.get(key) or "").strip()
@@ -166,8 +177,27 @@ def _check_owner(db, owner_id):
     return None
 
 
+def _check_zone(db, cleaned):
+    """推荐储区必须存在且启用。"""
+    zid = cleaned.get("default_zone_id")
+    if zid is None:
+        return None
+    z = db.execute("SELECT id, status FROM zone WHERE id = ?", (zid,)).fetchone()
+    if z is None:
+        return "推荐储区不存在"
+    if z["status"] != "active":
+        return "推荐储区已停用"
+    return None
+
+
 def _row_to_dict(row, db=None):
     d = dict(row)
+    if db is not None and d.get("default_zone_id"):
+        z = db.execute(
+            "SELECT code, name FROM zone WHERE id = ?", (d["default_zone_id"],)
+        ).fetchone()
+        if z is not None:
+            d["default_zone_name"] = f"{z['code']} {z['name']}"
     if db is not None and d.get("owner_id"):
         o = db.execute(
             "SELECT code, name FROM owner WHERE id = ?", (d["owner_id"],)
@@ -200,6 +230,9 @@ def create_product():
     owner_err = _check_owner(db, cleaned.get("owner_id"))
     if owner_err:
         return jsonify({"ok": False, "errors": [owner_err]}), 400
+    zone_err = _check_zone(db, cleaned)
+    if zone_err:
+        return jsonify({"ok": False, "errors": [zone_err]}), 400
 
     # 体积：未显式填写则按长宽高自动换算 cm³（长×宽×高）
     if "volume" not in cleaned:
@@ -252,6 +285,7 @@ def create_product():
         "extra1": cleaned.get("extra1", ""),
         "extra2": cleaned.get("extra2", ""),
         "extra3": cleaned.get("extra3", ""),
+        "default_zone_id": cleaned.get("default_zone_id"),
     }
     cur = db.execute(
         """
@@ -262,7 +296,7 @@ def create_product():
                              product_type, origin, business_scope, reg_cert_no, registrant,
                              mfg_enterprise, mfg_license, external_code, main_category,
                              temp_range, humidity_range, hazard_type, is_serial, is_shelf_control,
-                             extra1, extra2, extra3)
+                             extra1, extra2, extra3, default_zone_id)
         VALUES (:sku, :name, :category, :unit, :barcode, :brand, :spec,
                 :weight_kg, :length_cm, :width_cm, :height_cm, :volume, :shelf_life_days,
                 :purchase_price, :sale_price, :stock_qty, :min_stock, :status, :note, :owner_id,
@@ -270,7 +304,7 @@ def create_product():
                 :product_type, :origin, :business_scope, :reg_cert_no, :registrant,
                 :mfg_enterprise, :mfg_license, :external_code, :main_category,
                 :temp_range, :humidity_range, :hazard_type, :is_serial, :is_shelf_control,
-                :extra1, :extra2, :extra3)
+                :extra1, :extra2, :extra3, :default_zone_id)
         """,
         params,
     )
@@ -359,6 +393,10 @@ def update_product(product_id):
         owner_err = _check_owner(db, cleaned["owner_id"])
         if owner_err:
             return jsonify({"ok": False, "errors": [owner_err]}), 400
+    if "default_zone_id" in cleaned:
+        zone_err = _check_zone(db, cleaned)
+        if zone_err:
+            return jsonify({"ok": False, "errors": [zone_err]}), 400
 
     # 体积联动：改了长宽高且无显式体积时，按新值重算；都没动则保持原值
     if "volume" not in cleaned and any(

@@ -91,6 +91,54 @@ def gen_doc_no(db, table, prefix):
     return f"{prefix}-{day}-{n + 1:03d}"
 
 
+def _migrate_m20_columns(conn):
+    """M20 幂等列迁移：库位挂仓库/储区 + 混放开关，货品加推荐储区。
+
+    混放字段在 location 上允许 NULL，表示「继承所属储区」；zone 上是 0/1 实值。
+    """
+    wanted = {
+        "location": [
+            ("zone_id", "INTEGER REFERENCES zone(id)"),
+            ("warehouse_id", "INTEGER REFERENCES warehouse(id)"),
+            ("allow_mix_product", "INTEGER"),
+            ("allow_mix_batch", "INTEGER"),
+            ("allow_mix_owner", "INTEGER"),
+        ],
+        "product": [("default_zone_id", "INTEGER REFERENCES zone(id)")],
+    }
+    for table, cols in wanted.items():
+        exists = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in cols:
+            if name not in exists:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_location_zone_id ON location(zone_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_location_warehouse ON location(warehouse_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_product_default_zone ON product(default_zone_id)")
+
+
+def _seed_zones(conn):
+    """播种预置储区：3 个全仓共享 + 每个仓库一个常温默认区（幂等，不覆盖用户改动）。"""
+    shared = (
+        ("ZONE-SHARED", "全仓共享默认区", "常温"),
+        ("ZONE-COLD", "冷藏区", "冷藏"),
+        ("ZONE-NG", "不合格隔离区", "常温"),
+    )
+    for code, name, temp in shared:
+        conn.execute(
+            "INSERT OR IGNORE INTO zone (code, name, warehouse_id, temp_class, "
+            "allow_mix_product, allow_mix_batch, allow_mix_owner, status, note) "
+            "VALUES (?, ?, NULL, ?, 0, 0, 0, 'active', '')",
+            (code, name, temp),
+        )
+    for wh in conn.execute("SELECT id, code FROM warehouse").fetchall():
+        conn.execute(
+            "INSERT OR IGNORE INTO zone (code, name, warehouse_id, temp_class, "
+            "allow_mix_product, allow_mix_batch, allow_mix_owner, status, note) "
+            "VALUES (?, ?, ?, '常温', 0, 0, 0, 'active', '')",
+            (f"ZONE-{wh[1]}-DEFAULT", f"{wh[1]} 默认储区", wh[0]),
+        )
+
+
 def init_db():
     """初始化数据库：建表与列迁移（幂等，可重复执行）。"""
     conn = sqlite3.connect(DB_PATH)
@@ -750,6 +798,42 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_user_status ON user(status);
             """
         )
+        # ── M20：储区主数据 + 仓库维度 + 混放开关 + 货品绑定货位 ──
+        # zone.warehouse_id 为空表示全仓共享；库位 warehouse_id 与储区 warehouse_id
+        # 必须一致（或储区共享），由 routes_location 校验。
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS zone (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                code              TEXT    NOT NULL UNIQUE,
+                name              TEXT    NOT NULL,
+                warehouse_id      INTEGER REFERENCES warehouse(id),
+                temp_class        TEXT    NOT NULL DEFAULT '常温',
+                allow_mix_product INTEGER NOT NULL DEFAULT 0,
+                allow_mix_batch   INTEGER NOT NULL DEFAULT 0,
+                allow_mix_owner   INTEGER NOT NULL DEFAULT 0,
+                status            TEXT    NOT NULL DEFAULT 'active',
+                note              TEXT    NOT NULL DEFAULT '',
+                created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_zone_warehouse ON zone(warehouse_id);
+            CREATE INDEX IF NOT EXISTS idx_zone_status    ON zone(status);
+            CREATE TABLE IF NOT EXISTS product_location (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id  INTEGER NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+                location_id INTEGER NOT NULL REFERENCES location(id) ON DELETE CASCADE,
+                priority    INTEGER NOT NULL DEFAULT 0,
+                note        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                UNIQUE(product_id, location_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pl_product   ON product_location(product_id);
+            CREATE INDEX IF NOT EXISTS idx_pl_location ON product_location(location_id);
+            """
+        )
+        _migrate_m20_columns(conn)
+        _seed_zones(conn)
         _seed_auth(conn)
         conn.commit()
     finally:
@@ -781,6 +865,9 @@ else:
     from routes_transfer import transfer_bp  # noqa: E402
     from routes_stocktake import stocktake_bp  # noqa: E402
     from routes_batch import batch_bp  # noqa: E402
+    from routes_zone import zone_bp  # noqa: E402
+    from routes_product_location import product_location_bp  # noqa: E402
+    from routes_putaway import putaway_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -796,3 +883,6 @@ else:
     app.register_blueprint(transfer_bp)
     app.register_blueprint(stocktake_bp)
     app.register_blueprint(batch_bp)
+    app.register_blueprint(zone_bp)
+    app.register_blueprint(product_location_bp)
+    app.register_blueprint(putaway_bp)

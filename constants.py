@@ -59,3 +59,27 @@ INTERNAL_BATCH_EXTERNAL = "external"
 INTERNAL_BATCH_SOURCES = (
     INTERNAL_BATCH_FIRST_IN, INTERNAL_BATCH_RETURN, INTERNAL_BATCH_EXTERNAL,
 )
+
+# ── M20 储区 / 混放 / 上架推荐 ──
+TEMP_CLASSES = ("常温", "阴凉", "冷藏", "冷冻")
+MIX_FIELDS = ("allow_mix_product", "allow_mix_batch", "allow_mix_owner")
+MIX_LABELS = {
+    "allow_mix_product": "允许产品混放",
+    "allow_mix_batch": "允许批号混放",
+    "allow_mix_owner": "允许货主混放",
+}
+# 推荐理由码：前端与日志共用，避免散落中文字符串
+PUTAWAY_R_BIND = "bound_location"        # 货品绑定货位
+PUTAWAY_R_ZONE = "default_zone"          # 货品推荐储区
+PUTAWAY_R_SAME_PRODUCT = "same_product"  # 同产品聚拢
+PUTAWAY_R_SAME_BATCH = "same_batch"      # 同批号聚拢
+PUTAWAY_R_EMPTY = "empty_location"       # 空库位
+PUTAWAY_R_CAPACITY = "capacity_fit"      # 剩余容量充足
+PUTAWAY_REASON_LABELS = {
+    PUTAWAY_R_BIND: "货品绑定货位",
+    PUTAWAY_R_ZONE: "货品推荐储区",
+    PUTAWAY_R_SAME_PRODUCT: "同产品聚拢",
+    PUTAWAY_R_SAME_BATCH: "同批号聚拢",
+    PUTAWAY_R_EMPTY: "空库位优先",
+    PUTAWAY_R_CAPACITY: "剩余容量充足",
+}

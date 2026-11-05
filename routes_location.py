@@ -7,6 +7,7 @@ M4 收货上架与 M5 拣货发货将在库位上产生库存变动。
 from flask import Blueprint, jsonify, request
 import math
 
+import constants as C
 from main import get_db, request_payload
 
 location_bp = Blueprint("location", __name__, url_prefix="/api/locations")
@@ -47,6 +48,22 @@ def _validate_location_payload(payload, *, partial=False):
 
     if "zone" in payload:
         cleaned["zone"] = str(payload.get("zone") or "").strip() or "默认区"
+
+    # M20：仓库 / 储区维度与混放开关（库位上留空＝继承储区，是三级作用域的第 1 级）
+    for key in ("zone_id", "warehouse_id"):
+        if key in payload:
+            raw = payload.get(key)
+            if raw in (None, ""):
+                cleaned[key] = None
+            else:
+                try:
+                    cleaned[key] = int(raw)
+                except (TypeError, ValueError):
+                    errors.append(f"{key} 必须为整数或留空")
+    for f in C.MIX_FIELDS:
+        if f in payload:
+            raw = payload.get(f)
+            cleaned[f] = None if raw in (None, "") else (1 if raw else 0)
 
     if "aisle" in payload:
         cleaned["aisle"] = str(payload.get("aisle") or "").strip()
@@ -114,9 +131,64 @@ def _code_exists(db, code, exclude_id=None):
     return db.execute(sql, params).fetchone() is not None
 
 
-def _row_to_dict(row):
+def _check_zone_warehouse(db, cleaned, current=None):
+    """仓库 / 储区维度一致性：储区为全仓共享(NULL)时不限，否则必须与库位同仓。
+
+    current 为更新前的库位行，用于只传其中一个字段时补齐另一个。
+    """
+    def pick(key):
+        if key in cleaned:
+            return cleaned[key]
+        return current[key] if current is not None and key in current.keys() else None
+
+    wid = pick("warehouse_id")
+    zid = pick("zone_id")
+    if wid is not None:
+        if db.execute("SELECT id FROM warehouse WHERE id = ?", (wid,)).fetchone() is None:
+            return "仓库不存在"
+    if zid is None:
+        return None
+    z = db.execute("SELECT id, warehouse_id, status FROM zone WHERE id = ?", (zid,)).fetchone()
+    if z is None:
+        return "储区不存在"
+    if z["status"] != "active":
+        return "储区已停用，不能挂新库位"
+    if wid is not None and z["warehouse_id"] is not None and z["warehouse_id"] != wid:
+        return "储区所属仓库与库位所属仓库不一致"
+    return None
+
+
+def _row_to_dict(row, db=None):
     d = dict(row)
     d["loc_type_label"] = LOC_TYPE_LABELS.get(d["loc_type"], d["loc_type"])
+    if db is None:
+        return d
+    d["zone_name"] = ""
+    d["warehouse_name"] = ""
+    zone_row = None
+    if d.get("zone_id"):
+        zone_row = db.execute("SELECT * FROM zone WHERE id = ?", (d["zone_id"],)).fetchone()
+        if zone_row:
+            d["zone_name"] = zone_row["name"]
+    if d.get("warehouse_id"):
+        wh = db.execute(
+            "SELECT code, name FROM warehouse WHERE id = ?", (d["warehouse_id"],)
+        ).fetchone()
+        if wh:
+            d["warehouse_name"] = f"{wh['code']} {wh['name']}"
+    eff = {}
+    for f in C.MIX_FIELDS:
+        own = d.get(f)
+        if own is not None:
+            eff[f] = int(own)
+            eff[f + "_source"] = "location"
+        elif zone_row is not None:
+            eff[f] = int(zone_row[f] or 0)
+            eff[f + "_source"] = "zone"
+        else:
+            eff[f] = 0
+            eff[f + "_source"] = "default"
+    d["effective_mix"] = eff
     return d
 
 
@@ -129,6 +201,9 @@ def create_location():
     db = get_db()
     if _code_exists(db, cleaned["code"]):
         return jsonify({"ok": False, "errors": [f"库位编码已存在: {cleaned['code']}"]}), 409
+    ref_err = _check_zone_warehouse(db, cleaned)
+    if ref_err:
+        return jsonify({"ok": False, "errors": [ref_err]}), 400
 
     # M13 库位组：留空则按编码前缀自动生成；体积库容按 长宽高 计算（m³）
     group = cleaned.get("location_group", "")
@@ -157,17 +232,26 @@ def create_location():
         "width_cm": width_cm,
         "height_cm": height_cm,
         "capacity_volume": capacity_volume,
+        "zone_id": cleaned.get("zone_id"),
+        "warehouse_id": cleaned.get("warehouse_id"),
+        "allow_mix_product": cleaned.get("allow_mix_product"),
+        "allow_mix_batch": cleaned.get("allow_mix_batch"),
+        "allow_mix_owner": cleaned.get("allow_mix_owner"),
     }
     cur = db.execute(
         """INSERT INTO location (code, name, zone, loc_type, capacity, aisle, bay, level, barcode,
-                                status, note, location_group, length_cm, width_cm, height_cm, capacity_volume)
+                                status, note, location_group, length_cm, width_cm, height_cm,
+                                capacity_volume, zone_id, warehouse_id,
+                                allow_mix_product, allow_mix_batch, allow_mix_owner)
            VALUES (:code, :name, :zone, :loc_type, :capacity, :aisle, :bay, :level, :barcode,
-                   :status, :note, :location_group, :length_cm, :width_cm, :height_cm, :capacity_volume)""",
+                   :status, :note, :location_group, :length_cm, :width_cm, :height_cm,
+                   :capacity_volume, :zone_id, :warehouse_id,
+                   :allow_mix_product, :allow_mix_batch, :allow_mix_owner)""",
         params,
     )
     db.commit()
     row = db.execute("SELECT * FROM location WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return jsonify({"ok": True, "location": _row_to_dict(row)}), 201
+    return jsonify({"ok": True, "location": _row_to_dict(row, db)}), 201
 
 
 @location_bp.route("", methods=["GET"])
@@ -178,11 +262,15 @@ def list_locations():
     loc_type = (args.get("loc_type") or "").strip()
     location_group = (args.get("location_group") or "").strip()
     status = (args.get("status") or "").strip()
+    zone_id = (args.get("zone_id") or "").strip()
+    warehouse_id = (args.get("warehouse_id") or "").strip()
     try:
         page = max(1, int(args.get("page", 1)))
         page_size = min(MAX_PAGE_SIZE, max(1, int(args.get("page_size", DEFAULT_PAGE_SIZE))))
+        zid = int(zone_id) if zone_id else None
+        wid = int(warehouse_id) if warehouse_id else None
     except ValueError:
-        return jsonify({"ok": False, "errors": ["page/page_size 必须为整数"]}), 400
+        return jsonify({"ok": False, "errors": ["page/page_size/zone_id/warehouse_id 必须为整数"]}), 400
 
     where, params = [], []
     if keyword:
@@ -200,6 +288,12 @@ def list_locations():
     if status:
         where.append("status = ?")
         params.append(status)
+    if zid is not None:
+        where.append("zone_id = ?")
+        params.append(zid)
+    if wid is not None:
+        where.append("warehouse_id = ?")
+        params.append(wid)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
@@ -214,7 +308,7 @@ def list_locations():
             "total": total,
             "page": page,
             "page_size": page_size,
-            "locations": [_row_to_dict(r) for r in rows],
+            "locations": [_row_to_dict(r, db) for r in rows],
         }
     )
 
@@ -234,7 +328,7 @@ def get_location(location_id):
     row = get_db().execute("SELECT * FROM location WHERE id = ?", (location_id,)).fetchone()
     if row is None:
         return jsonify({"ok": False, "error": "库位不存在"}), 404
-    return jsonify({"ok": True, "location": _row_to_dict(row)})
+    return jsonify({"ok": True, "location": _row_to_dict(row, db)})
 
 
 @location_bp.route("/<int:location_id>", methods=["PUT"])
@@ -250,6 +344,13 @@ def update_location(location_id):
         return jsonify({"ok": False, "error": "库位不存在"}), 404
     if "code" in cleaned and _code_exists(db, cleaned["code"], exclude_id=location_id):
         return jsonify({"ok": False, "errors": [f"库位编码已存在: {cleaned['code']}"]}), 409
+    if any(k in cleaned for k in ("zone_id", "warehouse_id")):
+        cur = db.execute(
+            "SELECT zone_id, warehouse_id FROM location WHERE id = ?", (location_id,)
+        ).fetchone()
+        ref_err = _check_zone_warehouse(db, cleaned, cur)
+        if ref_err:
+            return jsonify({"ok": False, "errors": [ref_err]}), 400
 
     # M13 体积库容：提交任意维度时按「新值覆盖 + 旧值补齐」重算体积（m³）
     dim_keys = ("length_cm", "width_cm", "height_cm")
@@ -278,7 +379,7 @@ def update_location(location_id):
     )
     db.commit()
     row = db.execute("SELECT * FROM location WHERE id = ?", (location_id,)).fetchone()
-    return jsonify({"ok": True, "location": _row_to_dict(row)})
+    return jsonify({"ok": True, "location": _row_to_dict(row, db)})
 
 
 @location_bp.route("/<int:location_id>", methods=["DELETE"])
