@@ -104,7 +104,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **M15 主数据体验增强**（2026-11-04）：物料体积手填/自动换算 · 条码与包装可编辑+包装等级(1-6) · 承运商演示数据(顺丰/京东/跨越/货拉拉等) · 货主合作起止时间(date 选择器)
 - **M16 供应链与单据主数据增强**（2026-11-04）：供应商主数据(归属货主/多货主隔离) + 多仓库主数据(全系统共享，此前仅支持多货主) + ASN/DN 自动单号(英文开头+日期流水，留空自动生成) + ASN/DN 单据字段增强(单据类型/外部单号/订单来源/来源仓库/供应商快照/承运商/自定义字段/订单总数量·品类数汇总)
 - **M17 移库单（Stock Transfer）**（`routes_transfer.py` + `inventory_service.stock_move`）：单据驱动库位间转移——创建移库单（货主×物料×来源位×目标位×数量，含归属/启停/来源≠目标校验），执行时在同一事务内源位扣减、目标位增加，落 move_out/move_in 两条流水且余额始终可由流水核对；仅未执行单可取消
-- **M18 盘点单（Stocktake）**（`routes_stocktake.py` + `inventory_service.adjust_stock`）：账实核对——冻结快照账存 → 盲盘录入实盘 → 差异生成 adjustment 调整流水 → 解冻结案，全程余额仍可由流水核对；含未盘行拦截、负数拦截、状态机守卫
+- **M18 盘点单（Stocktake）**（`routes_stocktake.py` + `inventory_service.adjust_stock`）：账实核对——冻结快照账存 → 盲盘录入实盘 → 差异处理 → 解冻结案，全程余额仍可由流水核对；含未盘行拦截、负数拦截、状态机守卫。**M22 起差异不再直接写 adjustment 流水**，改为人工生成库存调整单、审核后过账（见下文 M22 章）
 - **M19 批次与验收入库追溯**（`batch_fields.py` / `batch_service.py` / `routes_batch.py` / `web_app/batches.html`）：
   - **批次字段配置**：20 个批次字段可配置「是否关键 / 启用 / 默认值 / 标签 / 备注」；默认关键字段＝批号、生产日期、失效日期、灭菌批号、UDI、产地、生产企业
   - **批次档案**：按 `货主 + 物料 + 关键字段值` 指纹去重，配置的关键批次信息一致即同一档案；支持手动「预配置批次」
@@ -123,7 +123,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - `constants.parse_doc_flags()` 集中解析，兼容整数 / 布尔 / 字符串 `"0"`/`"1"`；非法值或超长返回 400
   - **仅记录、不校验（蓝图 v3 口径）**：`receive()` / `putaway()` 完全不因这些标识拦截，冷链 + 危险单据仍可上架到常温货位；混放 / 温区 / 危化拦截将在 M25 由**可配置上架规则**决定、M26 提供条件组编辑器，代码中无 hardcoded 红线
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/批次库存/库存/角色/用户/货主仓库关系 多个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/盘点方案/库存调整/批次/批次库存/库存/角色/用户/货主仓库关系 多个管理页，零依赖原生 JS，直接调用后端 API
   - **工作台（`/app.html`）**：默认展开的左侧垂直一级菜单 + 内嵌可折叠子菜单 + 多标签页，顶部按钮收起/展开导航并记忆状态；单个页面以 iframe 标签并存；单据「明细」按钮与验收/上架作业在工作台内以新标签打开，独立打开页面时回退为新窗口；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
 
 ### 架构增强：仓库 / 货主双维数据隔离（2026-11-05，非里程碑，不占用 M 编号）
@@ -188,9 +188,28 @@ python -m unittest discover -s tests -p "test_*.py" -v
   一键「账目核对」分三段显示 I1 / I2 / I3。新增 `batch_location` 记录上架实物分布。
 - 验证：unittest **331 绿**（新增 22 例）、真实 Chrome E2E **10/10**；M6 的 I1 与 309 例旧测试零改动全绿。
 
+### M22 库存调整单 + 盘点增强（2026-11-06 里程碑 ✅）
+
+- **数量变化唯一入口**：新增 `stock_adjustment` / `stock_adjustment_line`（`ADJ-YYYYMMDD-NNN`）。
+  手工报损报溢、盘点差异、冲销都必须有调整单；制单只产生 `draft`，**审核通过才过账**
+  （`MOVEMENT_ADJUSTMENT`，`ref_id = adjustment_id`）。原 `/api/stocktakes/<id>/adjust` 直接改账旁路
+  已移除（返回 410）；冲销生成反向 draft 单，仍需人工审核。
+- **状态机**：`open → frozen → adjusted → closed`。盘点差异由明细页人工按钮生成调整单；
+  差异全 0 直接结案；调整单审核成功自动把盘点单置 `closed`；调整单取消后可重新生成。
+- **盘点方案**：新增 `stocktake_plan`，支持全盘 / 部分 / 动碰三类范围、明盘 / 隐藏账存 / 隐藏差异
+  三种盲盘模式；动碰可选「上次结案 / 近 N 天 / 手工时间窗」，并支持 8 种交易类型白名单。
+  方案在创建盘点单时快照，`freeze()` 落 `scope_snapshot`，**改方案不影响历史单据**。
+- **按批号盘点**（依赖 M21）：`stocktake_line` 唯一键扩到含 `batch_no`，带批次条件时按
+  `stock_batch` 分行；指定批号的差异过账会补齐完整批次维度，盘亏在该批号内按 FEFO 分摊。
+- **真盲盘分级接口**：`GET /<id>/count-sheet` 与 `POST /<id>/count` 是作业录入视角
+  （不返回账存 / 已录数 / 差异，`count` 只回 `counted_lines`）；`GET /<id>` 与
+  `GET /<id>/diff-preview` 是复核视角，照常返回差异。
+- **页面**：新增「盘点方案」「库存调整」两页，增强「盘点」页（三级导航 20 → 22 页）。
+- 验证：unittest **356 绿**（新增 25 例）、真实 Chrome E2E **28/28**；既有 331 例中 10 例断言
+  按新状态机适配，M21 批次库存 / 格子矩阵 / 数据隔离 E2E 复跑无回归。
+
 ### 规划中（见 DEVELOPMENT.md）
 
-- M22 库存调整单 + 盘点增强（全盘 / 部分 / 盲盘 / 动碰，动碰支持手工时间窗 + 交易类型）
 - M23 指定客户专属库存 + 销退口径
 - M24 库存转移单（只改批次信息、数量净零；分配库存会真实占用可用库存）
 - M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback + **配置化硬约束** + 可解释推荐）· M26 规则配置与推荐交互（13 维起步、编辑器预留扩展位）— **继续安排**；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**
@@ -242,13 +261,24 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET | `/api/transfers/<id>` | 移库单详情（联表带出来源/目标库位编码） |
 | POST | `/api/transfers/<id>/move` | 执行移库（同事务一减一增，写 move_out/move_in 流水） |
 | POST | `/api/transfers/<id>/cancel` | 取消（仅未执行） |
-| POST | `/api/stocktakes` | 创建盘点单（货主×编码唯一，code 必填） |
-| GET | `/api/stocktakes` | 盘点单列表，支持 `keyword`/`status`/分页 |
-| GET | `/api/stocktakes/<id>` | 盘点单详情（联表带出 物料/库位编码 + 差异 diff=counted-book） |
-| POST | `/api/stocktakes/<id>/freeze` | 冻结并快照账存到盘点行（状态→frozen） |
-| POST | `/api/stocktakes/<id>/count` | 盲盘录入实盘（逐行 counted_qty，负数 400，状态保持 frozen） |
-| POST | `/api/stocktakes/<id>/adjust` | 差异调整（有未盘行 400；对差异行生成 adjustment 流水，状态→adjusted） |
-| POST | `/api/stocktakes/<id>/close` | 解冻结案（仅已调整单，状态→closed） |
+| POST | `/api/stocktakes` | 创建盘点单（货主×编码唯一；可选 `plan_id` 与一次性 `scope` / `blind_mode` 覆盖，配置在创建时快照） |
+| GET | `/api/stocktakes` | 盘点单列表，支持 `keyword`/`status`/分页（带出 `plan_code`） |
+| GET | `/api/stocktakes/<id>` | 盘点单详情（复核视角：物料/库位编码 + `book_qty` / `counted_qty` / `diff`） |
+| POST | `/api/stocktakes/<id>/freeze` | 按方案范围生成盘点行并落 `scope_snapshot`（状态→frozen）；全盘/部分/按批号/动碰 |
+| GET | `/api/stocktakes/<id>/count-sheet` | M22 作业录入视角；`blind_mode != none` 时**不返回账存 / 已录数 / 差异** |
+| POST | `/api/stocktakes/<id>/count` | M22 盲盘录入，只回 `counted_lines`（负数 400，响应不含账存 / 已录数 / 差异） |
+| GET | `/api/stocktakes/<id>/diff-preview` | M22 复核视角，返回全量行 / `diff_lines` / `diff_count` / `uncounted` |
+| POST | `/api/stocktakes/<id>/generate-adjustment` | M22 **人工按钮**：按差异生成一张 `draft` 调整单（不自动过账）；差异全 0 直接结案 |
+| POST | `/api/stocktakes/<id>/close` | 结案兜底（`adjusted` 且无待审核调整单时） |
+| POST | `/api/stocktakes/<id>/adjust` | **已停用（410）**：M22 起差异不再由盘点路由直接过账 |
+| GET/POST | `/api/stock-adjustments` | M22 调整单列表（按明细行货主隔离）/ 手工制单（仅生成 `draft`） |
+| GET | `/api/stock-adjustments/<id>` | M22 调整单详情 + 明细行（带出物料 / 库位编码、`qty_before`） |
+| POST | `/api/stock-adjustments/<id>/approve` | M22 审核过账：逐行 `adjust_stock()`，成功后来源盘点单自动 `closed` |
+| POST | `/api/stock-adjustments/<id>/cancel` | M22 取消 `draft` 单；来源盘点单保持 `adjusted`，可重新生成 |
+| POST | `/api/stock-adjustments/<id>/reverse` | M22 生成反向 `draft` 冲销单（仍需人工审核），原单保持 `approved` |
+| GET/POST | `/api/stocktake-plans` | M22 盘点方案列表 / 新建 |
+| GET/PUT/DELETE | `/api/stocktake-plans/<id>` | M22 方案详情 / 更新 / 删除（被盘点单引用时拒绝，引导停用） |
+| POST | `/api/stocktake-plans/trial`、`/<id>/trial` | M22 按请求体或已存方案试算将生成的盘点行数与时间窗 |
 | GET | `/api/batch/fields` | 批次字段字典（20 个字段及默认是否关键），前端表单据此动态渲染 |
 | GET | `/api/batch/config` | 批次字段配置列表 + 当前生效的关键字段 |
 | PUT | `/api/batch/config/<field_name>` | 编辑配置（是否关键/启用/默认值/标签/备注/排序）；至少保留一个关键字段 |
@@ -297,6 +327,8 @@ scope.py              仓库/货主双维隔离上下文切面：授权解析、
 auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器；用户/角色只读中央库）
 constants.py          状态机、流水类型、批次号前缀、温区/混放字段、推荐理由码、单据标识位与 parse_doc_flags()（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）；M21 起同时维护 stock_batch 明细层，按 FEFO 自动分摊批次维度，禁止路由直写明细
+adjustment_service.py  M22 库存调整单服务层：制单/审核过账/取消/冲销；指定批号时从 stock_batch 补齐完整批次维度
+stocktake_service.py  M22 盘点方案服务层：生效配置解析、范围条件组编译、动碰时间窗与交易类型、盘点行试算
 putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，只读）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则）
@@ -313,10 +345,13 @@ routes_customer.py   客户主数据 Blueprint（出库收货方维度）
 routes_user.py        用户与角色（登录/权限）Blueprint，全部走中央库
 routes_scope.py       数据权限与切仓上下文（/api/scope/*、/api/users/<id>/grants）Blueprint
 routes_owner_warehouse.py 货主 × 仓库业务关系矩阵配置（/api/owner-warehouses）Blueprint
+routes_stocktake.py   盘点单 Blueprint（M22 重写：按方案冻结、真盲盘分级接口、人工生成调整单）
+routes_stock_adjustment.py M22 库存调整单（/api/stock-adjustments）Blueprint
+routes_stocktake_plan.py   M22 盘点方案（/api/stocktake-plans，含试算）Blueprint
 routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
 routes_warehouse.py   仓库主数据 Blueprint（控制面；db_path 安全校验、跨库引用检查）
-web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock_batch/stock/roles/users/owner_warehouses/login + app.html 工作台 + css/js）
-web_app/js/layout.js  递归多层导航树（3 级 / 20 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
+web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/stocktake_plans/stock_adjustments/batches/stock_batch/stock/roles/users/owner_warehouses/login + app.html 工作台 + css/js）
+web_app/js/layout.js  递归多层导航树（3 级 / 22 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
 web_app/js/api.js     原生 fetch 封装 + 当前仓库上下文（X-WMS-Warehouse header / mountWarehousePicker()）+ 登录态与工作台标签工具
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
@@ -340,6 +375,9 @@ DEVELOPMENT.md        里程碑开发记录
   一次动作 N 个批次写 N 条流水、主账只 UPDATE 一次，`Σ qty_delta` 必须等于主账变动量；
   I1 / I2 / I3 三条不变式容差 `1e-9`，`allocated_delta` 只做审计不进核对；
   `batches=None` 时由 `inventory_service` 自动推断维度，不允许「老链路不写明细」造成 I3 漂移
+- **数量变化唯一入口（M22）**：手工调整 / 盘点差异 / 冲销都必须有一张 `stock_adjustment`，
+  `draft` 不过账、审核通过才写流水（`ref_id = adjustment_id`）；盘点路由不得直接调 `adjust_stock()`，
+  冲销是生成反向单而非回改原单；盲盘录入接口不返回账存与差异，复核接口才返回
 - **数据隔离三层**：连接层按 `warehouse.db_path` 选库（仓库），SQL 层注入 `owner_id`（货主），数据层行内带标识列；
   货主 / 仓库主数据以**中央库为唯一权威写入点**，业务库持有只读副本
 - **ALL 必须显式**：账号「看全部仓 / 全部货主」由 `user.*_scope='all'` 明确给出；授权行缺失、上下文缺失一律 403 拒绝，

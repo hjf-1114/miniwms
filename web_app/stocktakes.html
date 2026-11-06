@@ -5,66 +5,87 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>盘点管理 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
+.diff-box { border: 1px dashed var(--border, #ddd); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
+</style>
 </head>
 <body>
 <div class="app">
   <aside class="sidebar" id="sidebar"></aside>
   <div class="main">
     <header class="topbar">
-      <div><h1>盘点作业</h1><div class="crumb">MiniWMS / 出入库作业</div></div>
+      <div><h1>盘点作业</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯</div></div>
       <span class="env-badge">本地演示 · :5100</span>
     </header>
     <div class="content">
       <div id="msg" class="msg"></div>
-  <div class="card">
-    <div class="card-head">
-      <h2>盘点单列表</h2>
-      <button class="btn" onclick="openCreate()">+ 新建盘点单</button>
-    </div>
-    <div class="toolbar">
-      <input id="kw" placeholder="单号搜索">
-      <select id="statusFilter">
-        <option value="">全部状态</option>
-        <option value="open">待冻结</option>
-        <option value="frozen">盘点中</option>
-        <option value="adjusted">待结案</option>
-        <option value="closed">已结案</option>
-      </select>
-      <button class="btn secondary" onclick="load()">查询</button>
-    </div>
-    <div class="table-wrap">
-      <table>
-      <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
-      <tbody id="tbody"></tbody>
-    </table>
-    </div>
-  </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>盘点单列表</h2>
+          <button class="btn" onclick="openCreate()">+ 新建盘点单</button>
+        </div>
+        <p class="hint">
+          四类盘点由「盘点方案」决定：全盘 / 部分 / 盲盘 / 动碰。差异<b>不再直接改账</b>，
+          复核后人工点「生成库存调整单」，到「库存调整」页审核过账才生效。
+        </p>
+        <div class="toolbar">
+          <input id="kw" placeholder="单号搜索">
+          <select id="statusFilter">
+            <option value="">全部状态</option>
+            <option value="open">待冻结</option>
+            <option value="frozen">盘点中</option>
+            <option value="adjusted">待结案</option>
+            <option value="closed">已结案</option>
+          </select>
+          <button class="btn secondary" onclick="load()">查询</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>单号</th><th>货主</th><th>方案</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
 
-  <div class="card" id="detailCard" style="display:none">
-    <h2 id="detailTitle">盘点单明细</h2>
-    <div class="toolbar" id="detailActions"></div>
-    <div class="table-wrap">
-      <table>
-      <thead><tr><th>行</th><th>SKU</th><th>物料</th><th>库位</th><th>账存</th><th>实盘</th><th>差异</th></tr></thead>
-      <tbody id="lineBody"></tbody>
-    </table>
+      <div class="card" id="detailCard" style="display:none">
+        <div class="card-head">
+          <h2 id="detailTitle">盘点单明细</h2>
+          <button class="btn secondary sm" onclick="document.getElementById('detailCard').style.display='none'">关闭</button>
+        </div>
+        <div class="toolbar" id="detailActions"></div>
+        <div id="diffBox" class="diff-box" style="display:none"></div>
+        <div class="table-wrap">
+          <table>
+            <thead id="lineHead"></thead>
+            <tbody id="lineBody"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </div>
-      </div>
-    </div>
 
-    <script src="/js/api.js"></script>
-    <script src="/js/modal.js"></script>
-    <script src="/js/layout.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/layout.js"></script>
 <script>
 let currentSt = null;
+let sheetLines = [];
 let ownerOptions = [];
+let planOptions = [];
+let plans = [];
 let stList = [];
 
 async function loadOptions() {
   const o = await api("GET", "/api/owners?page_size=100");
   ownerOptions = o.owners.map((x) => ({ value: x.id, label: `${x.code} · ${x.name}` }));
+  const p = await api("GET", "/api/stocktake-plans");
+  plans = p.plans;
+  planOptions = [{ value: "", label: "默认全盘（明盘）" }].concat(plans.map((x) => ({
+    value: x.id,
+    label: `${x.code} · ${x.name} · ${{ full: "全盘", partial: "部分", dynamic: "动碰" }[x.scope_type] || x.scope_type}`,
+  })));
 }
 
 async function load() {
@@ -76,15 +97,14 @@ async function load() {
   try {
     const data = await api("GET", "/api/stocktakes?" + qs);
     stList = data.stocktakes;
-    document.getElementById("tbody").innerHTML = data.stocktakes.map((d) =>
-      `<tr>
+    document.getElementById("tbody").innerHTML = data.stocktakes.map((d) => `
+      <tr>
         <td>${d.id}</td><td>${esc(d.code)}</td>
         <td>${esc(d.owner_code || "")} · ${esc(d.owner_name || "")}</td>
+        <td>${esc(d.plan_code || "默认全盘")}</td>
         <td>${stTag(d.status)}</td>
         <td class="muted">${esc(d.created_at)}</td>
-        <td>
-          <button class="btn secondary sm" onclick="openStDetail(${d.id})">明细</button>
-        </td>
+        <td><button class="btn secondary sm" onclick="openStDetail(${d.id})">明细</button></td>
       </tr>`).join("");
   } catch (e) {
     showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
@@ -98,49 +118,78 @@ function stTag(s) {
 }
 
 async function showDetail(id) {
-  const data = await api("GET", "/api/stocktakes/" + id);
-  currentSt = data;
-  document.getElementById("detailCard").style.display = "";
-  document.getElementById("detailTitle").textContent =
-    `盘点单明细：${data.stocktake.code}（${data.stocktake.status}）`;
-  renderActions();
-  renderLines();
+  try {
+    const data = await api("GET", "/api/stocktakes/" + id);
+    currentSt = data;
+    const blind = data.stocktake.blind_mode !== "none";
+    if (blind) {
+      // 真盲盘：录入区只取作业视角字段，页面不渲染账存 / 差异
+      const sheet = await api("GET", `/api/stocktakes/${id}/count-sheet`);
+      sheetLines = sheet.lines;
+    } else {
+      sheetLines = data.lines;
+    }
+    currentSt.blind = blind;
+    document.getElementById("detailCard").style.display = "";
+    document.getElementById("detailTitle").textContent =
+      `盘点单明细：${data.stocktake.code}（${data.stocktake.status}）`
+      + (blind ? " · 盲盘录入视角" : "");
+    document.getElementById("diffBox").style.display = "none";
+    renderActions();
+    renderLines();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载明细失败：" + e.message, "error");
+  }
 }
 
 function renderActions() {
-  const s = currentSt.stocktake.status;
+  const st = currentSt.stocktake;
+  const s = st.status;
   const el = document.getElementById("detailActions");
   let html = "";
-  if (s === "open") html += `<button class="btn" onclick="doFreeze()">冻结并快照账存</button>`;
+  if (s === "open") html += `<button class="btn" onclick="doFreeze()">按方案冻结并生成盘点行</button>`;
   if (s === "frozen") {
     html += `<button class="btn" onclick="saveCount()">保存盲盘</button>`;
-    html += `<button class="btn secondary" onclick="doAdjust()">差异调整</button>`;
+    html += `<button class="btn secondary" onclick="viewDiff()">查看差异（复核）</button>`;
+    html += `<button class="btn secondary" onclick="doGenerate()">生成库存调整单</button>`;
+  }
+  if (s === "adjusted" || s === "closed") {
+    html += `<button class="btn secondary" onclick="viewDiff()">查看差异（复核）</button>`;
+    if (st.adjustment_id) {
+      html += `<button class="btn secondary" onclick="openAdjustment(${st.adjustment_id})">查看调整单</button>`;
+    }
   }
   if (s === "adjusted") html += `<button class="btn" onclick="doClose()">解冻结案</button>`;
   el.innerHTML = html;
 }
 
 function renderLines() {
-  const d = currentSt;
-  const frozen = d.stocktake.status === "frozen";
-  document.getElementById("lineBody").innerHTML = d.lines.map((l) => {
-    const counted = l.counted_qty === null ? l.book_qty : l.counted_qty;
-    const diff = l.diff === null ? "" : (l.diff > 0 ? "+" + l.diff : l.diff);
+  const st = currentSt.stocktake;
+  const frozen = st.status === "frozen";
+  const blind = currentSt.blind;
+  document.getElementById("lineHead").innerHTML = blind
+    ? "<tr><th>行</th><th>SKU</th><th>物料</th><th>库位</th><th>批号</th><th>实盘</th></tr>"
+    : "<tr><th>行</th><th>SKU</th><th>物料</th><th>库位</th><th>批号</th><th>账存</th><th>实盘</th><th>差异</th></tr>";
+  document.getElementById("lineBody").innerHTML = sheetLines.map((l) => {
+    const counted = l.counted_qty === null || l.counted_qty === undefined ? "" : l.counted_qty;
+    const init = blind ? "" : (l.book_qty || 0);
     const input = frozen
-      ? `<input id="cnt-${l.id}" type="number" step="0.01" value="${counted}" style="width:90px">`
-      : (l.counted_qty === null ? "—" : l.counted_qty);
-    return `<tr>
-      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.product_name)}</td>
-      <td>${esc(l.location_code)}</td><td>${l.book_qty}</td>
-      <td>${input}</td><td>${diff}</td>
-    </tr>`;
+      ? `<input id="cnt-${l.line_id || l.id}" type="number" step="0.01" value="${init}" style="width:90px">`
+      : (counted === "" ? "—" : counted);
+    const diff = l.diff === null || l.diff === undefined ? "" :
+      (l.diff > 0 ? "+" + l.diff : l.diff);
+    const base = `<td>${l.line_id || l.id}</td><td>${esc(l.sku)}</td>`
+      + `<td>${esc(l.product_name)}</td><td>${esc(l.location_code)}</td>`
+      + `<td>${esc(l.batch_no) || "—"}</td>`;
+    return blind ? `<tr>${base}<td>${input}</td></tr>`
+                 : `<tr>${base}<td>${l.book_qty}</td><td>${input}</td><td>${diff}</td></tr>`;
   }).join("");
 }
 
 async function doFreeze() {
   try {
-    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/freeze`);
-    showMsg(document.getElementById("msg"), `已冻结，快照 ${r.lines.length} 行账存`, "success");
+    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/freeze`, {});
+    showMsg(document.getElementById("msg"), `已冻结，按方案生成 ${r.line_count} 行盘点明细`, "success");
     await showDetail(currentSt.stocktake.id);
     load();
   } catch (e) {
@@ -149,35 +198,62 @@ async function doFreeze() {
 }
 
 async function saveCount() {
-  const lines = currentSt.lines.map((l) => ({
-    line_id: l.id,
-    counted_qty: parseFloat(document.getElementById("cnt-" + l.id).value),
+  const lines = sheetLines.map((l) => ({
+    line_id: l.line_id || l.id,
+    counted_qty: parseFloat(document.getElementById("cnt-" + (l.line_id || l.id)).value),
   }));
   try {
-    await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/count`, { lines });
-    showMsg(document.getElementById("msg"), "盲盘已保存", "success");
+    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/count`, { lines });
+    showMsg(document.getElementById("msg"), `已保存 ${r.counted_lines} 行实盘数（盲盘不返回差异）`, "success");
     await showDetail(currentSt.stocktake.id);
   } catch (e) {
     showMsg(document.getElementById("msg"), "保存失败：" + e.message, "error");
   }
 }
 
-async function doAdjust() {
-  if (!confirm("确认按盘点差异生成调整流水？（账存将修正为实盘）")) return;
+async function viewDiff() {
   try {
-    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/adjust`);
-    showMsg(document.getElementById("msg"), `差异调整完成，单据状态：${r.status}`, "success");
-    await showDetail(currentSt.stocktake.id);
+    const pv = await api("GET", `/api/stocktakes/${currentSt.stocktake.id}/diff-preview`);
+    const box = document.getElementById("diffBox");
+    box.style.display = "";
+    box.innerHTML = `复核视角：共 ${pv.lines.length} 行，差异 <b>${pv.diff_count}</b> 行，未盘 <b>${pv.uncounted}</b> 行。`
+      + (pv.diff_lines.length
+        ? "<br>" + pv.diff_lines.map((l) =>
+            `${esc(l.sku)} @ ${esc(l.location_code)} ${l.diff > 0 ? "+" : ""}${l.diff}`).join("；")
+        : "（账实一致，无需调整单）");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "查看差异失败：" + e.message, "error");
+  }
+}
+
+async function doGenerate() {
+  const sid = currentSt.stocktake.id;
+  try {
+    const pv = await api("GET", `/api/stocktakes/${sid}/diff-preview`);
+    if (pv.uncounted > 0) {
+      showMsg(document.getElementById("msg"), `还有 ${pv.uncounted} 行未盘，请先完成录入`, "error");
+      return;
+    }
+    if (!confirm(`共 ${pv.diff_count} 行差异，确认生成一张库存调整单？\n生成后仅保存为 draft，不会立即改账。`)) return;
+    const r = await api("POST", `/api/stocktakes/${sid}/generate-adjustment`, {});
+    showMsg(document.getElementById("msg"), r.no_diff
+      ? "账实一致，无需调整单，盘点单已结案"
+      : `已生成调整单 ${r.adjustment_code}，请到「库存调整」页审核过账`, "success");
+    await showDetail(sid);
     load();
   } catch (e) {
-    showMsg(document.getElementById("msg"), "调整失败：" + e.message, "error");
+    showMsg(document.getElementById("msg"), "生成失败：" + e.message, "error");
   }
+}
+
+function openAdjustment(id) {
+  openDetail("库存调整 " + id, "/stock_adjustments.html?detail=" + id);
 }
 
 async function doClose() {
   if (!confirm("确认解冻结案？")) return;
   try {
-    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/close`);
+    const r = await api("POST", `/api/stocktakes/${currentSt.stocktake.id}/close`, {});
     showMsg(document.getElementById("msg"), `已结案，状态：${r.status}`, "success");
     await showDetail(currentSt.stocktake.id);
     load();
@@ -193,11 +269,21 @@ async function openCreate() {
     fields: [
       { name: "code", label: "单号 *", required: true, autocode: true, autocodePrefix: "ST" },
       { name: "owner_id", label: "货主 *", type: "select", required: true, options: ownerOptions },
+      { name: "plan_id", label: "盘点方案", type: "select", options: planOptions, coerce: "int", nullable: true },
       { name: "note", label: "备注", type: "textarea", full: true },
+      { type: "section", label: "选用方案后，冻结时按该方案的范围 / 盲盘模式生成盘点行；创建时会把配置快照下来，之后改方案不影响本单。" },
     ],
     onSubmit: async (p) => {
       await api("POST", "/api/stocktakes", p);
-      showMsg(document.getElementById("msg"), "创建成功", "success");
+      let extra = "";
+      if (p.plan_id) {
+        try {
+          const t = await api("POST", `/api/stocktake-plans/${p.plan_id}/trial`,
+                              { owner_id: p.owner_id });
+          extra = `，预计生成 ${t.count} 行盘点明细`;
+        } catch (e) { extra = `（试算未成功：${e.message}）`; }
+      }
+      showMsg(document.getElementById("msg"), "创建成功" + extra, "success");
       load();
     },
   });

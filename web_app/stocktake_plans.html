@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>盘点方案 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
+.form-grid { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px 16px; margin-bottom: 12px; }
+.form-grid label { display: block; font-size: 13px; color: var(--text-muted, #666); }
+.form-grid input, .form-grid select, .form-grid textarea { width: 100%; box-sizing: border-box; margin-top: 4px; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; margin: 8px 0 14px; }
+.checks label { display: inline-flex; gap: 5px; align-items: center; }
+.trial { border: 1px dashed var(--border, #ddd); border-radius: 8px; padding: 10px 14px; font-size: 13px; }
+.wide { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>盘点方案</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>方案列表</h2>
+          <button class="btn" onclick="resetForm()">+ 新建方案</button>
+        </div>
+        <p class="hint">
+          方案是「怎么选行、怎么盘」的模板：<b>全盘 / 部分 / 动碰</b> 三类范围，
+          <b>明盘 / 录入隐藏账存 / 隐藏差异</b> 三种盲盘模式；动碰支持<b>手工时间窗 + 交易类型</b>白名单。
+          创建盘点单时配置会快照，<b>改方案不影响历史单据</b>。差异生成调整单的开关默认关闭（必须人工点按钮）。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>编码</th><th>名称</th><th>范围</th><th>盲盘</th>
+              <th>动碰基准</th><th>启用</th><th>操作</th>
+            </tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="formCard">
+        <div class="card-head">
+          <h2 id="formTitle">新建方案</h2>
+          <button class="btn secondary sm" onclick="resetForm()">清空</button>
+        </div>
+        <div class="form-grid">
+          <label>编码 *<input id="f-code" placeholder="PLAN-FULL"></label>
+          <label>名称 *<input id="f-name" placeholder="全仓全盘"></label>
+          <label>范围类型
+            <select id="f-scope_type">
+              <option value="full">全盘</option>
+              <option value="partial">部分盘点</option>
+              <option value="dynamic">动碰盘点</option>
+            </select>
+          </label>
+          <label>盲盘模式
+            <select id="f-blind_mode">
+              <option value="none">明盘（可见账存）</option>
+              <option value="hide_book">录入隐藏账存（推荐）</option>
+              <option value="hide_diff">录入隐藏差异</option>
+            </select>
+          </label>
+          <label>动碰基准
+            <select id="f-dynamic_baseline">
+              <option value="last_closed">上次结案时间</option>
+              <option value="since_days">近 N 天</option>
+              <option value="explicit">创建盘点单时指定</option>
+              <option value="manual_window">方案手工时间窗</option>
+            </select>
+          </label>
+          <label>近 N 天<input id="f-lookback_days" type="number" min="0" value="7"></label>
+          <label>时间窗起<input id="f-movement_from" placeholder="YYYY-MM-DD HH:MM:SS，可空"></label>
+          <label>时间窗止<input id="f-movement_to" placeholder="空 = 至今"></label>
+          <label>备注<input id="f-note" placeholder="可选"></label>
+          <label class="wide">范围条件组（JSON，维度间 AND；空对象 = 不限）
+            <textarea id="f-scope" rows="3" placeholder='{"location_ids":[1],"category_l1":"医疗器械","batch_no":["BAT-20261106-001"]}'></textarea>
+          </label>
+        </div>
+        <div class="checks" id="movementTypes"></div>
+        <div class="checks">
+          <label><input type="checkbox" id="f-include_zero"> 包含零行库存</label>
+          <label><input type="checkbox" id="f-auto_adjust"> 自动生成调整单（不建议）</label>
+          <label><input type="checkbox" id="f-enabled" checked> 启用</label>
+        </div>
+        <div class="toolbar">
+          <button class="btn" id="saveBtn" onclick="save()">保存方案</button>
+          <input id="trialOwner" type="number" placeholder="试算货主 ID" style="width:140px">
+          <button class="btn secondary" id="trialBtn" onclick="runTrial()">试算行数</button>
+        </div>
+        <div class="trial" id="trialBox" style="margin-top:12px">试算结果：尚未运行</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+const MOV = [
+  ["asn_receive", "收货"], ["asn_putaway_out", "上架出"], ["asn_putaway_in", "上架入"],
+  ["dn_pick", "拣货分配"], ["dn_ship", "发货"], ["move_out", "移库出"],
+  ["move_in", "移库入"], ["adjustment", "库存调整"],
+];
+const SCOPE_LABEL = { full: "全盘", partial: "部分", dynamic: "动碰" };
+const BLIND_LABEL = { none: "明盘", hide_book: "隐藏账存", hide_diff: "隐藏差异" };
+let editingId = null;
+let plans = [];
+
+function renderTypeChecks(values) {
+  const set = new Set(values || []);
+  document.getElementById("movementTypes").innerHTML = MOV.map(([v, label]) =>
+    `<label><input type="checkbox" class="mv" value="${v}" ${set.has(v) ? "checked" : ""}> ${label}</label>`
+  ).join("");
+}
+
+function formBody() {
+  let scope = {};
+  const raw = document.getElementById("f-scope").value.trim();
+  if (raw) {
+    try { scope = JSON.parse(raw); } catch (e) {
+      throw new Error("范围条件组不是合法 JSON：" + e.message);
+    }
+  }
+  return {
+    code: document.getElementById("f-code").value.trim(),
+    name: document.getElementById("f-name").value.trim(),
+    scope_type: document.getElementById("f-scope_type").value,
+    blind_mode: document.getElementById("f-blind_mode").value,
+    dynamic_baseline: document.getElementById("f-dynamic_baseline").value,
+    lookback_days: Number(document.getElementById("f-lookback_days").value || 0),
+    movement_from: document.getElementById("f-movement_from").value.trim(),
+    movement_to: document.getElementById("f-movement_to").value.trim(),
+    movement_types: Array.from(document.querySelectorAll(".mv:checked")).map((x) => x.value),
+    scope,
+    include_zero: document.getElementById("f-include_zero").checked ? 1 : 0,
+    auto_adjust: document.getElementById("f-auto_adjust").checked ? 1 : 0,
+    enabled: document.getElementById("f-enabled").checked ? 1 : 0,
+    note: document.getElementById("f-note").value.trim(),
+  };
+}
+
+function resetForm() {
+  editingId = null;
+  document.getElementById("formTitle").textContent = "新建方案";
+  const ids = ["f-code", "f-name", "f-movement_from", "f-movement_to", "f-note"];
+  ids.forEach((id) => { document.getElementById(id).value = ""; });
+  document.getElementById("f-scope").value = "{}";
+  document.getElementById("f-scope_type").value = "full";
+  document.getElementById("f-blind_mode").value = "hide_book";
+  document.getElementById("f-dynamic_baseline").value = "last_closed";
+  document.getElementById("f-lookback_days").value = 7;
+  document.getElementById("f-include_zero").checked = false;
+  document.getElementById("f-auto_adjust").checked = false;
+  document.getElementById("f-enabled").checked = true;
+  renderTypeChecks([]);
+  document.getElementById("trialBox").textContent = "试算结果：尚未运行";
+}
+
+function fillForm(p) {
+  editingId = p.id;
+  document.getElementById("formTitle").textContent = `编辑方案：${p.code}`;
+  document.getElementById("f-code").value = p.code;
+  document.getElementById("f-name").value = p.name;
+  document.getElementById("f-scope_type").value = p.scope_type;
+  document.getElementById("f-blind_mode").value = p.blind_mode;
+  document.getElementById("f-dynamic_baseline").value = p.dynamic_baseline;
+  document.getElementById("f-lookback_days").value = p.lookback_days;
+  document.getElementById("f-movement_from").value = p.movement_from || "";
+  document.getElementById("f-movement_to").value = p.movement_to || "";
+  document.getElementById("f-note").value = p.note || "";
+  document.getElementById("f-scope").value = JSON.stringify(p.scope || {}, null, 2);
+  document.getElementById("f-include_zero").checked = !!p.include_zero;
+  document.getElementById("f-auto_adjust").checked = !!p.auto_adjust;
+  document.getElementById("f-enabled").checked = !!p.enabled;
+  renderTypeChecks(p.movement_types || []);
+}
+
+async function load() {
+  try {
+    const data = await api("GET", "/api/stocktake-plans");
+    plans = data.plans;
+    document.getElementById("tbody").innerHTML = plans.map((p) => `
+      <tr>
+        <td>${p.id}</td><td>${esc(p.code)}</td><td>${esc(p.name)}</td>
+        <td>${SCOPE_LABEL[p.scope_type] || esc(p.scope_type)}</td>
+        <td>${BLIND_LABEL[p.blind_mode] || esc(p.blind_mode)}</td>
+        <td>${esc(p.dynamic_baseline)}</td>
+        <td>${p.enabled ? "是" : "否"}</td>
+        <td>
+          <button class="btn secondary sm" onclick="editPlan(${p.id})">编辑</button>
+          <button class="btn secondary sm" onclick="deletePlan(${p.id})">删除</button>
+        </td>
+      </tr>`).join("") || `<tr><td colspan="8" class="muted">暂无方案，可直接用默认全盘</td></tr>`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function editPlan(id) {
+  const p = plans.find((x) => x.id === id);
+  if (p) fillForm(p);
+}
+
+async function save() {
+  let body;
+  try { body = formBody(); } catch (e) {
+    showMsg(document.getElementById("msg"), e.message, "error"); return;
+  }
+  try {
+    if (editingId) await api("PUT", "/api/stocktake-plans/" + editingId, body);
+    else await api("POST", "/api/stocktake-plans", body);
+    showMsg(document.getElementById("msg"), "方案已保存", "success");
+    resetForm();
+    await load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "保存失败：" + e.message, "error");
+  }
+}
+
+async function deletePlan(id) {
+  if (!confirm("确认删除该方案？被盘点单引用时不能删除，请改用取消「启用」。")) return;
+  try {
+    await api("DELETE", "/api/stocktake-plans/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    await load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+async function runTrial() {
+  const ownerId = Number(document.getElementById("trialOwner").value);
+  if (!ownerId) {
+    showMsg(document.getElementById("msg"), "请先填写试算货主 ID", "error"); return;
+  }
+  let body;
+  try { body = formBody(); } catch (e) {
+    showMsg(document.getElementById("msg"), e.message, "error"); return;
+  }
+  body.owner_id = ownerId;
+  const path = editingId ? `/api/stocktake-plans/${editingId}/trial`
+                         : "/api/stocktake-plans/trial";
+  try {
+    const r = await api("POST", path, body);
+    document.getElementById("trialBox").innerHTML =
+      `预计生成 <b>${r.count}</b> 行盘点明细`
+      + (r.batch_mode ? "（按批号分行）" : "")
+      + (r.baseline_from ? ` · 动碰时间窗 ${esc(r.baseline_from)} ~ ${esc(r.baseline_to || "至今")}` : "");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "试算失败：" + e.message, "error");
+  }
+}
+
+resetForm();
+load();
+</script>
+</body>
+</html>

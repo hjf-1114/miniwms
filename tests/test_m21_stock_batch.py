@@ -339,8 +339,12 @@ class M21StockBatchTest(unittest.TestCase):
         line_id = frozen["lines"][0]["id"]
         self.client.post(f"/api/stocktakes/{sid}/count", json={
             "lines": [{"line_id": line_id, "counted_qty": 12}]})
-        adj = self.client.post(f"/api/stocktakes/{sid}/adjust", json={})
-        self.assertEqual(adj.status_code, 200, adj.get_data(as_text=True))
+        # M22：差异不再由盘点路由直接过账，须生成调整单并审核
+        gen = self.client.post(f"/api/stocktakes/{sid}/generate-adjustment", json={})
+        self.assertEqual(gen.status_code, 200, gen.get_data(as_text=True))
+        ap = self.client.post(
+            f"/api/stock-adjustments/{gen.get_json()['adjustment_id']}/approve", json={})
+        self.assertEqual(ap.status_code, 200, ap.get_data(as_text=True))
         rows = self._rows("SELECT batch_no, qty FROM stock_batch WHERE location_id = ?",
                           self.sto)
         self.assertEqual(sum(x["qty"] for x in rows), 12)
@@ -359,8 +363,11 @@ class M21StockBatchTest(unittest.TestCase):
         line_id = frozen["lines"][0]["id"]
         self.client.post(f"/api/stocktakes/{sid}/count", json={
             "lines": [{"line_id": line_id, "counted_qty": 7}]})
-        adj = self.client.post(f"/api/stocktakes/{sid}/adjust", json={})
-        self.assertEqual(adj.status_code, 200, adj.get_data(as_text=True))
+        gen = self.client.post(f"/api/stocktakes/{sid}/generate-adjustment", json={})
+        self.assertEqual(gen.status_code, 200, gen.get_data(as_text=True))
+        ap = self.client.post(
+            f"/api/stock-adjustments/{gen.get_json()['adjustment_id']}/approve", json={})
+        self.assertEqual(ap.status_code, 200, ap.get_data(as_text=True))
         rows = self._rows("SELECT SUM(qty) AS q FROM stock_batch WHERE location_id = ?",
                           self.sto)
         self.assertEqual(rows[0]["q"], 7)

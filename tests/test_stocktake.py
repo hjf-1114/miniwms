@@ -24,6 +24,9 @@ class StocktakeApiTest(unittest.TestCase):
         import sqlite3
         conn = sqlite3.connect(os.environ["MINIWMS_DB"])
         try:
+            conn.execute("DELETE FROM stock_adjustment_line")
+            conn.execute("DELETE FROM stock_adjustment")
+            conn.execute("DELETE FROM stocktake_plan")
             conn.execute("DELETE FROM stocktake_line")
             conn.execute("DELETE FROM stocktake")
             conn.execute("DELETE FROM batch_location")
@@ -145,8 +148,12 @@ class StocktakeApiTest(unittest.TestCase):
         r = self.client.post(f"/api/stocktakes/{tid}/count",
                              json={"lines": [{"line_id": line_id, "counted_qty": 7}]}).get_json()
         self.assertEqual(r["status"], C.STOCKTAKE_FROZEN)
-        self.assertEqual(r["lines"][0]["counted_qty"], 7.0)
-        self.assertEqual(r["lines"][0]["diff"], -3.0)
+        # M22 真盲盘：录入接口只回已录行数，差异只能从复核接口查看
+        self.assertEqual(r["counted_lines"], 1)
+        self.assertNotIn("lines", r)
+        pv = self.client.get(f"/api/stocktakes/{tid}/diff-preview").get_json()
+        self.assertEqual(pv["lines"][0]["counted_qty"], 7.0)
+        self.assertEqual(pv["lines"][0]["diff"], -3.0)
 
     def test_count_negative_400(self):
         oid = self._mk_owner()
@@ -178,12 +185,18 @@ class StocktakeApiTest(unittest.TestCase):
         line_id = fr["lines"][0]["id"]
         self.client.post(f"/api/stocktakes/{tid}/count",
                          json={"lines": [{"line_id": line_id, "counted_qty": 7}]})
-        r = self.client.post(f"/api/stocktakes/{tid}/adjust").get_json()
-        self.assertEqual(r["status"], C.STOCKTAKE_ADJUSTED)
-        # 账存被修正为实盘 7
+        # M22：人工按钮只生成 draft 调整单，生成后库存不变
+        gen = self.client.post(f"/api/stocktakes/{tid}/generate-adjustment").get_json()
+        self.assertEqual(gen["status"], C.STOCKTAKE_ADJUSTED)
+        self.assertFalse(gen["no_diff"])
+        self.assertEqual(self._stock_qty(oid, pid, fa), 10.0)
+        # 审核过账后才修正为实盘 7，流水挂在调整单上
+        adj_id = gen["adjustment_id"]
+        ap = self.client.post(f"/api/stock-adjustments/{adj_id}/approve").get_json()
+        self.assertEqual(ap["status"], "approved")
         self.assertEqual(self._stock_qty(oid, pid, fa), 7.0)
-        # 产生一条 adjustment 流水
-        mv = self.client.get(f"/api/movements?ref_type=adjustment&ref_id={tid}").get_json()["movements"]
+        mv = self.client.get(
+            f"/api/movements?ref_type=adjustment&ref_id={adj_id}").get_json()["movements"]
         self.assertEqual(len(mv), 1)
         self.assertEqual(mv[0]["qty_delta"], -3.0)
         # 余额仍可由流水核对
@@ -197,15 +210,17 @@ class StocktakeApiTest(unittest.TestCase):
         self._inbound(oid, pid, fa, 10)
         tid = self._mk_stocktake(oid)
         self.client.post(f"/api/stocktakes/{tid}/freeze")
-        # 不复盘直接调整
-        r = self.client.post(f"/api/stocktakes/{tid}/adjust")
+        # 不复盘直接生成调整单
+        r = self.client.post(f"/api/stocktakes/{tid}/generate-adjustment")
         self.assertEqual(r.status_code, 400)
 
     def test_adjust_non_frozen_409(self):
         oid = self._mk_owner()
         tid = self._mk_stocktake(oid)
-        r = self.client.post(f"/api/stocktakes/{tid}/adjust")
+        r = self.client.post(f"/api/stocktakes/{tid}/generate-adjustment")
         self.assertEqual(r.status_code, 409)
+        # 旧的直接过账旁路已停用
+        self.assertEqual(self.client.post(f"/api/stocktakes/{tid}/adjust").status_code, 410)
 
     def test_adjust_no_diff_still_adjusted(self):
         oid = self._mk_owner()
@@ -217,8 +232,11 @@ class StocktakeApiTest(unittest.TestCase):
         line_id = fr["lines"][0]["id"]
         self.client.post(f"/api/stocktakes/{tid}/count",
                          json={"lines": [{"line_id": line_id, "counted_qty": 10}]})
-        r = self.client.post(f"/api/stocktakes/{tid}/adjust").get_json()
-        self.assertEqual(r["status"], C.STOCKTAKE_ADJUSTED)
+        # 差异全 0：无需调整单，直接结案（M22 状态机）
+        r = self.client.post(f"/api/stocktakes/{tid}/generate-adjustment").get_json()
+        self.assertTrue(r["no_diff"])
+        self.assertEqual(r["status"], C.STOCKTAKE_CLOSED)
+        self.assertIsNone(r["adjustment_id"])
         self.assertEqual(self._stock_qty(oid, pid, fa), 10.0)
 
     # ---------- 解冻结案 ----------
@@ -232,12 +250,18 @@ class StocktakeApiTest(unittest.TestCase):
         line_id = fr["lines"][0]["id"]
         self.client.post(f"/api/stocktakes/{tid}/count",
                          json={"lines": [{"line_id": line_id, "counted_qty": 7}]})
-        self.client.post(f"/api/stocktakes/{tid}/adjust")
-        # 未调整单不能结案
+        gen = self.client.post(f"/api/stocktakes/{tid}/generate-adjustment").get_json()
+        adj_id = gen["adjustment_id"]
+        # 未调整单不能结案；调整单待审核时也不能结案
         tid2 = self._mk_stocktake(oid, code="ST-002")
         self.client.post(f"/api/stocktakes/{tid2}/freeze")
         self.assertEqual(self.client.post(f"/api/stocktakes/{tid2}/close").status_code, 409)
-        # 已调整单结案
+        self.assertEqual(self.client.post(f"/api/stocktakes/{tid}/close").status_code, 409)
+        # 调整单取消后盘点单保持 adjusted，可重新生成或走兜底结案
+        self.client.post(f"/api/stock-adjustments/{adj_id}/cancel")
+        self.assertEqual(
+            self.client.get(f"/api/stocktakes/{tid}").get_json()["stocktake"]["status"],
+            C.STOCKTAKE_ADJUSTED)
         r = self.client.post(f"/api/stocktakes/{tid}/close").get_json()
         self.assertEqual(r["status"], C.STOCKTAKE_CLOSED)
 

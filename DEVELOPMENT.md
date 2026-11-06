@@ -56,7 +56,7 @@
 - M19 批次与验收入库追溯（批次字段配置 + 批次档案 + 每次入库唯一批次流水）✅
 - M20 储区与上架作业基础（**阶段 A 已交付 2026-11-05**：储区主数据 / 仓库维度 / 混放字段 / 推荐储区 / 固定货位 / 简版上架推荐 / 验收·上架作业页；**阶段 B 已交付 2026-11-05**：asn·dn 各 4 个单据标识 + external_doc_type 的字段 / 表单 / 17 例单测）✅ **M20 收尾完成**；混放·冷链·危险拦截改为配置化规则并入 M25/M26，过渡期不拦截
 - M21 批次级库存明细层（stock_batch + stock_movement 扩维度列 + I2/I3 硬校验 + 一次性回填）✅ **2026-11-06 已交付**：五动作同步钩子 + batch_location + I2/I3 端点 + 老库回填 + 批次库存页，详见文末同名章节；331 测全绿
-- M22 库存调整单 + 盘点增强（stock_adjustment 唯一手工数量入口 / stocktake_plan 全盘·部分·盲盘·动碰；动碰支持手工时间窗 + 交易类型 / 差异由人工按钮生成调整单）
+- M22 库存调整单 + 盘点增强（stock_adjustment 唯一手工数量入口 / stocktake_plan 全盘·部分·盲盘·动碰；动碰支持手工时间窗 + 交易类型 / 差异由人工按钮生成调整单）✅ **2026-11-06 已交付**：3 张新表 + 真盲盘分级接口 + 按批号盘点 + 审核过账 / 取消 / 冲销 + 3 个页面，详见文末同名章节；356 测全绿
 - M23 指定客户专属库存 + 销退口径（designated_customer_id 只在明细行 / 出库校验规则 / 销退外部批次号）
 - M24 库存转移单（只改批次信息、数量净零 / 制单→分配库存（真实占用可用库存）→审核生效终态 / 未分配可关闭删除 / 取消分配 / 冲销留痕）
 - M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback 链 + **配置化硬约束** + 可解释 Top-N）**继续安排**；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**
@@ -1080,6 +1080,85 @@ CREATE TABLE IF NOT EXISTS batch_location (... 批次实物分布 ...);
 - 盘点差异本轮仍直接过账（M18 行为），**M22 改成人工点按钮生成库存调整单**，
   并移除 `adjust()` 旁路；本轮先保证明细层与流水跟着动。
 - `batch_location` 目前只在上架时记录，跨库位拆批 / 回溯查询在后续章节按需扩展。
+
+---
+
+## M22 库存调整单 + 盘点增强（2026-11-06）✅
+
+> **用户口径**：2026-11-06「继续完善」＝按推荐沿 Roadmap 开 M22；
+> 18-E / 18-F 两个非阻塞口径按设计文档默认值执行（「按货位盘带能」＝按货位盘点；
+> 部分盘点范围暂不做排除条件，只做维度间 AND 正向筛选）。
+> 规格来源：`docs/PUTAWAY_RECOMMENDATION.md` v3.3 §7.6 / §14 / §18（18-A~18-D 早已确认）。
+
+### 交付内容
+
+| # | 决策 | 理由 |
+|---|---|---|
+| 1 | **数量变化的唯一手工入口＝库存调整单**，`/api/stocktakes/<id>/adjust` 直接过账旁路**移除**（保留 410 明确提示） | 用户原话「库存数量只能做库存调整，或者盘点单根据差异生成库存调整」；旁路会让「没有调整单却改了数量」继续存在 |
+| 2 | 盘点差异**人工点按钮**生成 `draft` 调整单，`auto_adjust` 默认 0；审核通过才在 `BEGIN IMMEDIATE` 里过账 | v3.2 18-D 定稿；「差异按钮不自动过账」是验收标准 |
+| 3 | 状态机 `open → frozen → adjusted → closed`；差异全 0 时**直接 closed**（不生成空单）；调整单审核成功把来源盘点单自动置 `closed` | §18.7 状态机原文；避免「已过账但盘点单还挂在待结案」 |
+| 4 | 调整单被取消后盘点单保持 `adjusted`，**可重新生成** | §18.7「调整单被驳回时盘点单保持 adjusted，可重新生成」 |
+| 5 | 冲销＝生成一张反向 `draft` 单（`source_type=reversal`），**仍需人工审核**；原单保持 `approved` | 冲销本身也是数量变化，必须同样可追溯、可审核，不能靠改原单状态回滚 |
+| 6 | 方案配置在**创建盘点单时即快照**进 `config_override`，`freeze()` 再把生效范围 + 时间窗 + 行数写进 `scope_snapshot` | 「方案只是模板」；与 M19「改配置不重算历史指纹」同一原则，方案后续被改不影响历史单据 |
+| 7 | 指定批号的调整单过账时，从 `stock_batch` **补齐完整批次维度**再传 `batches=` | 只传 `batch_no` 会让 `upsert_stock_batch()` 误判为「新维度」并插入一条负数明细，I3 虽仍相等但实物分布全错（本轮实测踩坑，见下） |
+
+### 数据模型（`main.py::_migrate_m22()`，幂等）
+
+- 新增 `stock_adjustment`：`code`（`ADJ-YYYYMMDD-NNN`）/ `source_type`（`manual | stocktake_diff | reversal`）/ `source_id` / `reason_code` / `status`（`draft → approved | cancelled`）/ `creator` / `approver` / `created_at` / `approved_at` / `note`。
+- 新增 `stock_adjustment_line`：`owner_id / product_id / location_id / batch_no / delta_qty / qty_before / reason`。调整单头**不带** `owner_id`，列表隔离按明细行 `EXISTS` + `S.owner_where(scope, table="al")`。
+- 新增 `stocktake_plan`：`scope_type`（`full | partial | dynamic`）/ `scope`（JSON 条件组）/ `blind_mode`（`none | hide_book | hide_diff`）/ `dynamic_baseline`（`last_closed | since_days | explicit | manual_window`）/ `lookback_days` / `movement_from` / `movement_to` / `movement_types`（JSON）/ `auto_adjust` / `include_zero` / `enabled`。
+- `stocktake` 幂等扩 7 列：`plan_id / scope_type / blind_mode / config_override / scope_snapshot / adjustment_id / closed_at`。
+- `stocktake_line` 唯一键从 `(stocktake_id, product_id, location_id)` 扩到 **4 列含 `batch_no`**：SQLite 不能 ALTER 表级 UNIQUE，检测旧 `sqlite_master.sql` 后按「RENAME 旧表 → 建新表 → 复制（`batch_no=''`）→ DROP 旧表」重建，历史行不丢；`init_db()` 重复执行不会再重建。
+
+### 代码挂点
+
+| 文件 | 职责 |
+|---|---|
+| `stocktake_service.py`（新） | `effective_config()` 解析方案 + 一次性覆盖；`clean_scope()` 范围维度白名单（**强制忽略 `owner_id` 覆盖**，防越权扩范围）；`collect_lines()` 编译条件组 SQL；`resolve_baseline()` / `_dynamic_keys()` 动碰时间窗与交易类型；`trial()` 试算 |
+| `adjustment_service.py`（新） | `create_adjustment()` 制单（校验非零 delta、货主授权、主数据存在、记录 `qty_before`）；`approve_adjustment()` 逐行 `adjust_stock()`（`ref_id = adjustment_id`）；`cancel_adjustment()`；`reverse_adjustment()`；`_batches_for_line()` 补齐批次维度、盘亏在该批号内按 FEFO 分摊 |
+| `routes_stock_adjustment.py`（新） | `/api/stock-adjustments` 列表 / 手工制单 / 详情 / `approve` / `cancel` / `reverse` |
+| `routes_stocktake_plan.py`（新） | `/api/stocktake-plans` CRUD + `/trial`、`/<id>/trial` 试算；被盘点单引用时拒绝删除，引导改用「停用」 |
+| `routes_stocktake.py`（重写） | `freeze()` 按方案生成行 + 落 `scope_snapshot`；新增 `count-sheet` / `diff-preview` / `generate-adjustment`；`count()` 只回 `counted_lines`；`close()` 作兜底结案；`/adjust` → 410 |
+| `constants.py` | 新增调整单状态 / 来源 / 前缀、盘点范围 / 盲盘 / 动碰基准枚举、`SCOPE_DIMENSIONS`、`DYNAMIC_MOVEMENT_TYPES` |
+
+### 四类盘点与真盲盘
+
+- **全盘**：默认 `full`，主表 `stock a JOIN product p JOIN location l`，`book_qty = a.qty`，默认排除零行。
+- **部分盘点**：`scope` 维度间 AND，数组走 `IN`、标量走 `=`；可用维度 `warehouse_id / zone_id / location_group（M34 前按 location.zone 文本）/ location_ids / loc_type / product_ids / category_l1 / category_l2 / main_category / product_type / batch_no / batch_key / goods_property / has_stock`。
+- **按批号盘点**：出现 `batch_no` / `batch_key` / `goods_property` 任一条件时切 `batch_mode`，主表改 `stock_batch a`，按 `(owner, product, location, batch_no)` 分组取 `SUM(qty)`，同一库位多批次生成多行。
+- **动碰盘点**：从 `stock_movement` 取 `DISTINCT` 动碰集合，排除 `ABS(qty_delta) <= 1e-9` 的纯分配流水；时间窗优先级＝手工 `movement_from/to` > 创建时 `baseline_at` > `since_days` > `last_closed`（同货主最近 `closed_at`）；`movement_types` 白名单来自 `MOVEMENT_*`；M21 的批次维度让动碰可自然升级为按批次动碰。
+- **真盲盘分级接口（18-C 口径：仅录入时隐藏账存，复核可见差异）**：
+  `GET /<id>/count-sheet` 在 `blind_mode != none` 时只返回 `line_id / sku / product_name / location_code / batch_no`；
+  `POST /<id>/count` 只回 `counted_lines`；
+  `GET /<id>`（复核）与 `GET /<id>/diff-preview` 照常返回 `book_qty / counted_qty / diff`。
+  权限码 `stocktake:plan` / `stocktake:count` / `stocktake:review` / `adjustment:approve` 按规格「角色矩阵后置」，本版只留钩子。
+
+### 页面（三级导航 20 → 22 页）
+
+- `web_app/stocktake_plans.html`（新）：方案 CRUD、范围条件组 JSON 编辑、盲盘模式、**动碰时间窗 + 8 种交易类型多选**、试算行数。
+- `web_app/stock_adjustments.html`（新）：列表 / 明细 / 手工制单（动态多行）/ 审核过账 / 取消 / 生成冲销单；支持 `?detail=` 从盘点页跳转。
+- `web_app/stocktakes.html`（增强）：列表加方案列；创建弹窗加方案下拉并在创建后试算预估行数；明细按 `blind_mode` 切列（盲盘不渲染账存 / 差异列）；复核「查看差异」面板；显式「生成库存调整单」按钮；「查看调整单」入口。
+
+### 踩坑与修正（本轮真实调试记录）
+
+1. `_validate()` 创建方案时 `has()` 恒为真，未传 `enabled` 被写成 0 → 改为「仅当请求体显式给出时才覆盖，新建才填默认值」；PUT 漏传字段不再误置 0。
+2. `update_plan()` 的 `SET` 拼接误用未定义变量 `v` → 改写成 `updated_at = datetime('now','localtime')` 字面量表达式，不参与参数绑定。
+3. **批次维度补齐**：调整单行只带 `batch_no` 时，`upsert_stock_batch()` 因 `batch_key / goods_property` 为空而新建一条负数明细，测试 `test_25` 出现 `-3.0`；修 `_batches_for_line()` 从 `stock_batch` 真实行取完整 `BATCH_DIMS`，盘亏在该批号内按 FEFO 分摊、盘盈落到该批号已有明细。修后 I1/I2/I3 与实物分布同时正确。
+4. M22 有意改变盘点行为，`tests/test_stocktake.py` 8 例断言与 `tests/test_m21_stock_batch.py` 2 例改为「生成调整单 → 审核」链路，并新增断言旧 `/adjust` 返回 410；这是**规格要求的语义变更**，不是回归。
+
+### 验证
+
+- `./.venv/Scripts/python.exe -m unittest discover -s tests` → **356 例全绿**（331 基线 + 新增 25 例 `tests/test_m22_adjustment.py`）。
+- `node --check`：`layout.js` 与三个页面内联脚本通过。
+- 真实 Chrome E2E：M22 新链路 **28/28**；M21 批次库存 **10/10**、格子矩阵 **13/13**、数据隔离全站 **ok=15 fail=[]** 均复跑无回归。
+- E2E 覆盖：方案编辑回填 + 试算、盲盘表头无账存/差异、冻结按方案生成 1 行、保存盲盘不回差异、复核看差异、生成 draft 库存不变、审核后 10→7、盘点单自动结案、手工制单 draft 不过账、I2/I3 通过、无 JS 错误。
+
+### 已知边界 / 后续里程碑
+
+- 「取消分配」属于 **M24 库存转移单**（`inventory_transfer:unallocate`），本轮不含；M21 章末尾把它记为 M22 系笔误，以此处为准。
+- `location_group` 在 M34 货位组主数据落地前按 `location.zone` 文本近似；部分盘点暂不支持排除条件（18-F 默认口径）。
+- 录入人与复核人的权限分离只留钩子，角色矩阵后置；`auto_adjust` 字段已落库但**代码不实现自动生成**（规格要求人工按钮）。
+- 盘点差异按批号分摊时，同一批号若存在多条不同 `goods_property` 明细，按 FEFO 选取；专属客户 / 质量状态四值 / 净零库存转移留 M23 / M24。
 
 ---
 

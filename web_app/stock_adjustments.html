@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>库存调整单 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
+.tag.approved { background: #e6f6ec; color: #1d7a4d; }
+.tag.draft { background: #fff3d9; color: #986a00; }
+.tag.cancelled { background: #f0f0f0; color: #777; }
+.line-form input, .line-form select { width: 100%; box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>库存调整单</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>调整单列表</h2>
+          <button class="btn" onclick="toggleForm(true)">+ 手工制单</button>
+        </div>
+        <p class="hint">
+          库存数量变化的<b>唯一手工入口</b>：报损 / 报溢 / 错账更正、盘点差异、冲销都必须有调整单。
+          制单只生成 <b>draft</b>，<b>审核通过才过账</b>；盘点差异单由盘点明细页的人工按钮生成，不自动过账。
+        </p>
+        <div class="toolbar">
+          <input id="kw" placeholder="单号搜索">
+          <select id="statusFilter">
+            <option value="">全部状态</option>
+            <option value="draft">待审核</option>
+            <option value="approved">已审核</option>
+            <option value="cancelled">已取消</option>
+          </select>
+          <select id="sourceFilter">
+            <option value="">全部来源</option>
+            <option value="manual">手工制单</option>
+            <option value="stocktake_diff">盘点差异</option>
+            <option value="reversal">冲销</option>
+          </select>
+          <button class="btn secondary" onclick="load()">查询</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>单号</th><th>来源</th><th>原因</th><th>状态</th>
+              <th>行数</th><th>创建时间</th><th>操作</th>
+            </tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="formCard" style="display:none">
+        <div class="card-head">
+          <h2>手工制单（draft）</h2>
+          <button class="btn secondary sm" onclick="toggleForm(false)">收起</button>
+        </div>
+        <div class="toolbar">
+          <label>原因
+            <select id="reasonCode">
+              <option value="报损">报损</option>
+              <option value="报溢">报溢</option>
+              <option value="错账更正">错账更正</option>
+              <option value="盘点差异">盘点差异</option>
+            </select>
+          </label>
+          <button class="btn secondary" onclick="addLine()">+ 添加一行</button>
+        </div>
+        <div class="table-wrap line-form">
+          <table>
+            <thead><tr>
+              <th>货主 ID</th><th>物料 ID</th><th>库位 ID</th><th>批号（可空）</th>
+              <th>增减数量</th><th>行原因</th><th></th>
+            </tr></thead>
+            <tbody id="lineForm"></tbody>
+          </table>
+        </div>
+        <div class="toolbar" style="margin-top:12px">
+          <button class="btn" id="submitBtn" onclick="submitManual()">保存为 draft</button>
+          <span class="muted" id="formHint">增减数量：正数入库、负数出库；0 会被拒绝。</span>
+        </div>
+      </div>
+
+      <div class="card" id="detailCard" style="display:none">
+        <div class="card-head">
+          <h2 id="detailTitle">调整单明细</h2>
+          <button class="btn secondary sm" onclick="document.getElementById('detailCard').style.display='none'">关闭</button>
+        </div>
+        <div class="toolbar" id="detailActions"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>行</th><th>物料</th><th>库位</th><th>批号</th>
+              <th>变动量</th><th>过账前余额</th><th>原因</th>
+            </tr></thead>
+            <tbody id="detailBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+const SRC = { manual: "手工制单", stocktake_diff: "盘点差异", reversal: "冲销" };
+const TAG = { draft: "待审核", approved: "已审核", cancelled: "已取消" };
+let current = null;
+
+function toggleForm(on) {
+  document.getElementById("formCard").style.display = on ? "" : "none";
+  if (on && !document.getElementById("lineForm").children.length) addLine();
+}
+
+function addLine() {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><input type="number" class="f-owner" placeholder="1"></td>
+    <td><input type="number" class="f-product" placeholder="1"></td>
+    <td><input type="number" class="f-loc" placeholder="1"></td>
+    <td><input class="f-batch" placeholder="留空=自动推断维度"></td>
+    <td><input type="number" step="0.01" class="f-delta" placeholder="-2"></td>
+    <td><input class="f-reason" placeholder="报损"></td>
+    <td><button class="btn secondary sm" onclick="this.closest('tr').remove()">删</button></td>`;
+  document.getElementById("lineForm").appendChild(tr);
+}
+
+async function load() {
+  const qs = new URLSearchParams({ page_size: 50 });
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const src = document.getElementById("sourceFilter").value;
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  if (src) qs.set("source_type", src);
+  try {
+    const data = await api("GET", "/api/stock-adjustments?" + qs);
+    document.getElementById("tbody").innerHTML = data.adjustments.map((d) => `
+      <tr>
+        <td>${d.id}</td><td>${esc(d.code)}</td><td>${SRC[d.source_type] || esc(d.source_type)}</td>
+        <td>${esc(d.reason_code)}</td>
+        <td><span class="tag ${d.status}">${TAG[d.status] || esc(d.status)}</span></td>
+        <td>${d.line_count}</td><td class="muted">${esc(d.created_at)}</td>
+        <td><button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button></td>
+      </tr>`).join("") || `<tr><td colspan="8" class="muted">暂无调整单</td></tr>`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+async function submitManual() {
+  const rows = Array.from(document.querySelectorAll("#lineForm tr"));
+  const lines = rows.map((tr) => ({
+    owner_id: Number(tr.querySelector(".f-owner").value),
+    product_id: Number(tr.querySelector(".f-product").value),
+    location_id: Number(tr.querySelector(".f-loc").value),
+    batch_no: tr.querySelector(".f-batch").value.trim(),
+    delta_qty: Number(tr.querySelector(".f-delta").value),
+    reason: tr.querySelector(".f-reason").value.trim(),
+  }));
+  if (!lines.length) { showMsg(document.getElementById("msg"), "请至少添加一行", "error"); return; }
+  try {
+    await api("POST", "/api/stock-adjustments", {
+      reason_code: document.getElementById("reasonCode").value, lines,
+    });
+    showMsg(document.getElementById("msg"), "已生成 draft 调整单，审核后才过账", "success");
+    document.getElementById("lineForm").innerHTML = "";
+    toggleForm(false);
+    await load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "制单失败：" + e.message, "error");
+  }
+}
+
+async function showDetail(id) {
+  try {
+    const data = await api("GET", "/api/stock-adjustments/" + id);
+    current = data.adjustment;
+    const a = current;
+    document.getElementById("detailCard").style.display = "";
+    document.getElementById("detailTitle").textContent =
+      `调整单明细：${a.code}（${TAG[a.status] || a.status}）`;
+    document.getElementById("detailBody").innerHTML = a.lines.map((l) => `
+      <tr>
+        <td>${l.id}</td><td>${esc(l.sku)} · ${esc(l.product_name)}</td>
+        <td>${esc(l.location_code)}</td><td>${esc(l.batch_no) || "—"}</td>
+        <td>${l.delta_qty > 0 ? "+" + l.delta_qty : l.delta_qty}</td>
+        <td>${l.qty_before}</td><td>${esc(l.reason)}</td>
+      </tr>`).join("");
+    const acts = [];
+    if (a.status === "draft") {
+      acts.push(`<button class="btn" onclick="act('approve')">审核过账</button>`);
+      acts.push(`<button class="btn secondary" onclick="act('cancel')">取消该单</button>`);
+    }
+    if (a.status === "approved") {
+      acts.push(`<button class="btn secondary" onclick="act('reverse')">生成冲销单</button>`);
+    }
+    document.getElementById("detailActions").innerHTML = acts.join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载明细失败：" + e.message, "error");
+  }
+}
+
+async function act(name) {
+  if (!current) return;
+  const label = { approve: "审核过账（将改变库存）", cancel: "取消该单", reverse: "生成冲销单" }[name];
+  if (!confirm(`确认${label}？`)) return;
+  try {
+    const r = await api("POST", `/api/stock-adjustments/${current.id}/${name}`, {});
+    showMsg(document.getElementById("msg"),
+      name === "reverse" ? `已生成冲销单 ${r.code}，仍需人工审核` : "操作成功", "success");
+    await load();
+    await showDetail(current.id);
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "操作失败：" + e.message, "error");
+  }
+}
+
+load().then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
+</script>
+</body>
+</html>

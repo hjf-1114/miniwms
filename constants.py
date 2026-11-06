@@ -47,6 +47,47 @@ STOCKTAKE_ADJUSTED = "adjusted"  # 已按盘点差异生成调整流水
 STOCKTAKE_CLOSED = "closed"      # 已解冻结案
 STOCKTAKE_STATUSES = (STOCKTAKE_OPEN, STOCKTAKE_FROZEN, STOCKTAKE_ADJUSTED, STOCKTAKE_CLOSED)
 
+# ── M22 库存调整单 ──
+ADJUSTMENT_PREFIX = "ADJ"            # ADJ-YYYYMMDD-NNN
+ADJUSTMENT_DRAFT = "draft"           # 已制单，未过账
+ADJUSTMENT_APPROVED = "approved"     # 已审核过账（终态）
+ADJUSTMENT_CANCELLED = "cancelled"   # 已取消（仅 draft 可取消，盘点单可重新生成）
+ADJUSTMENT_STATUSES = (ADJUSTMENT_DRAFT, ADJUSTMENT_APPROVED, ADJUSTMENT_CANCELLED)
+ADJUSTMENT_MANUAL = "manual"             # 手工报损 / 报溢 / 数量修正
+ADJUSTMENT_STOCKTAKE_DIFF = "stocktake_diff"  # 盘点差异人工生成
+ADJUSTMENT_REVERSAL = "reversal"         # 冲销（反向单，仍需人工审核）
+ADJUSTMENT_SOURCE_TYPES = (ADJUSTMENT_MANUAL, ADJUSTMENT_STOCKTAKE_DIFF,
+                           ADJUSTMENT_REVERSAL)
+REASON_CODES = ("报损", "报溢", "盘点差异", "错账更正", "冲销")
+
+# ── M22 盘点方案 ──
+SCOPE_FULL = "full"          # 全盘
+SCOPE_PARTIAL = "partial"    # 部分盘点（范围条件组）
+SCOPE_DYNAMIC = "dynamic"    # 动碰盘点
+SCOPE_TYPES = (SCOPE_FULL, SCOPE_PARTIAL, SCOPE_DYNAMIC)
+BLIND_NONE = "none"              # 明盘
+BLIND_HIDE_BOOK = "hide_book"    # 录入时隐藏账存，复核可见差异
+BLIND_HIDE_DIFF = "hide_diff"    # 录入时隐藏差异
+BLIND_MODES = (BLIND_NONE, BLIND_HIDE_BOOK, BLIND_HIDE_DIFF)
+BASELINE_LAST_CLOSED = "last_closed"    # 上次结案时间（默认）
+BASELINE_SINCE_DAYS = "since_days"      # 近 N 天
+BASELINE_EXPLICIT = "explicit"          # 创建盘点单时手工指定
+BASELINE_MANUAL_WINDOW = "manual_window"  # 方案里的手工时间窗
+BASELINE_TYPES = (BASELINE_LAST_CLOSED, BASELINE_SINCE_DAYS, BASELINE_EXPLICIT,
+                  BASELINE_MANUAL_WINDOW)
+# 部分盘点范围条件组允许的维度（维度间 AND；null / 空数组 = 不限）
+SCOPE_DIMENSIONS = (
+    "owner_id", "warehouse_id", "zone_id", "location_group", "location_ids",
+    "loc_type", "product_ids", "category_l1", "category_l2", "main_category",
+    "product_type", "batch_no", "batch_key", "goods_property", "has_stock",
+)
+# 动碰交易类型白名单可选项（来自 MOVEMENT_*，空数组 = 不限）
+DYNAMIC_MOVEMENT_TYPES = (
+    MOVEMENT_ASN_RECEIVE, MOVEMENT_ASN_PUTAWAY_OUT, MOVEMENT_ASN_PUTAWAY_IN,
+    MOVEMENT_DN_PICK, MOVEMENT_DN_SHIP, MOVEMENT_MOVE_OUT, MOVEMENT_MOVE_IN,
+    MOVEMENT_ADJUSTMENT,
+)
+
 # 批次（M19，医疗器械 / GSP 口径）：每次验收入库生成唯一批次号
 BATCH_RECEIPT_PREFIX = "BAT"          # 入库批次流水号：BAT-YYYYMMDD-NNN
 BATCH_PROFILE_PREFIX = "BP"           # 批次档案号（关键批次信息主档）

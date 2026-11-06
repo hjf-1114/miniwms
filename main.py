@@ -584,6 +584,109 @@ def _migrate_m21_columns(conn):
                 upsert_stock_batch(conn, key[0], key[1], key[2], legacy_dims(), 0, 0)
 
 
+def _ensure_columns(conn, table, additions):
+    """幂等补列：老库与新建库执行同一段迁移，不依赖「库是否是新版创建」。"""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in additions:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+def _migrate_m22(conn):
+    """M22 库存调整单 / 盘点方案 DDL + 盘点明细行批次维度（幂等）。
+
+    ``stocktake_line`` 老表的表级 UNIQUE 只有 3 列，SQLite 无法 ALTER CONSTRAINT；
+    检测到旧定义时按「建新表 → 复制（batch_no=''）→ 删旧表」重建，历史行不丢。
+    """
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS stock_adjustment (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            code         TEXT    NOT NULL UNIQUE,
+            source_type  TEXT    NOT NULL DEFAULT 'manual',
+            source_id    INTEGER,
+            reason_code  TEXT    NOT NULL DEFAULT '',
+            status       TEXT    NOT NULL DEFAULT 'draft',
+            creator      TEXT    NOT NULL DEFAULT '',
+            approver     TEXT    NOT NULL DEFAULT '',
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            approved_at  TEXT    NOT NULL DEFAULT '',
+            note         TEXT    NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_adjustment_status ON stock_adjustment(status);
+        CREATE INDEX IF NOT EXISTS idx_adjustment_source ON stock_adjustment(source_type, source_id);
+        CREATE TABLE IF NOT EXISTS stock_adjustment_line (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            adjustment_id  INTEGER NOT NULL REFERENCES stock_adjustment(id) ON DELETE CASCADE,
+            owner_id       INTEGER NOT NULL,
+            product_id     INTEGER NOT NULL,
+            location_id    INTEGER NOT NULL,
+            batch_no       TEXT    NOT NULL DEFAULT '',
+            delta_qty      REAL    NOT NULL,
+            qty_before     REAL    NOT NULL DEFAULT 0,
+            reason         TEXT    NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_adjustment_line_adj ON stock_adjustment_line(adjustment_id);
+        CREATE TABLE IF NOT EXISTS stocktake_plan (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            code          TEXT    NOT NULL UNIQUE,
+            name          TEXT    NOT NULL,
+            scope_type    TEXT    NOT NULL DEFAULT 'full',
+            scope         TEXT    NOT NULL DEFAULT '{}',
+            blind_mode    TEXT    NOT NULL DEFAULT 'hide_book',
+            dynamic_baseline TEXT NOT NULL DEFAULT 'last_closed',
+            lookback_days INTEGER NOT NULL DEFAULT 7,
+            movement_from TEXT    NOT NULL DEFAULT '',
+            movement_to   TEXT    NOT NULL DEFAULT '',
+            movement_types TEXT   NOT NULL DEFAULT '[]',
+            auto_adjust   INTEGER NOT NULL DEFAULT 0,
+            include_zero  INTEGER NOT NULL DEFAULT 0,
+            enabled       INTEGER NOT NULL DEFAULT 1,
+            note          TEXT    NOT NULL DEFAULT '',
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        """
+    )
+    _ensure_columns(conn, "stocktake", (
+        ("plan_id", "INTEGER"),
+        ("scope_type", "TEXT NOT NULL DEFAULT 'full'"),
+        ("blind_mode", "TEXT NOT NULL DEFAULT 'none'"),
+        ("config_override", "TEXT NOT NULL DEFAULT '{}'"),
+        ("scope_snapshot", "TEXT NOT NULL DEFAULT '{}'"),
+        ("adjustment_id", "INTEGER"),
+        ("closed_at", "TEXT NOT NULL DEFAULT ''"),
+    ))
+    old = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='stocktake_line'"
+    ).fetchone()
+    if old is not None and "batch_no" not in (old[0] or ""):
+        conn.executescript(
+            """
+            ALTER TABLE stocktake_line RENAME TO stocktake_line_m22_old;
+            CREATE TABLE stocktake_line (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                stocktake_id     INTEGER NOT NULL REFERENCES stocktake(id),
+                owner_id         INTEGER NOT NULL REFERENCES owner(id),
+                product_id       INTEGER NOT NULL REFERENCES product(id),
+                location_id      INTEGER NOT NULL REFERENCES location(id),
+                batch_no         TEXT    NOT NULL DEFAULT '',
+                book_qty         REAL    NOT NULL DEFAULT 0,
+                counted_qty      REAL    DEFAULT NULL,
+                UNIQUE(stocktake_id, product_id, location_id, batch_no)
+            );
+            INSERT INTO stocktake_line
+                (id, stocktake_id, owner_id, product_id, location_id,
+                 batch_no, book_qty, counted_qty)
+            SELECT id, stocktake_id, owner_id, product_id, location_id,
+                   '', book_qty, counted_qty FROM stocktake_line_m22_old;
+            DROP TABLE stocktake_line_m22_old;
+            CREATE INDEX IF NOT EXISTS idx_stocktake_line_st ON stocktake_line(stocktake_id);
+            """
+        )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1298,6 +1401,7 @@ def init_db(path=None):
         _migrate_m20_columns(conn)
         _migrate_scope_columns(conn)
         _migrate_m21_columns(conn)
+        _migrate_m22(conn)
         _seed_zones(conn)
         _seed_auth(conn)
         conn.commit()
@@ -1335,6 +1439,8 @@ else:
     from routes_putaway import putaway_bp  # noqa: E402
     from routes_scope import scope_bp  # noqa: E402
     from routes_owner_warehouse import ow_bp  # noqa: E402
+    from routes_stock_adjustment import adj_bp  # noqa: E402
+    from routes_stocktake_plan import plan_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1355,3 +1461,5 @@ else:
     app.register_blueprint(putaway_bp)
     app.register_blueprint(scope_bp)
     app.register_blueprint(ow_bp)
+    app.register_blueprint(adj_bp)
+    app.register_blueprint(plan_bp)
