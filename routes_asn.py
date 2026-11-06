@@ -426,15 +426,25 @@ def receive(asn_id):
             raise ValueError(f"收货数量必须为正且不超过剩余 {remaining}")
         _check_location(db, location_id, ("receiving",), "收货目标")
 
-        stock_up(db, asn["owner_id"], line["product_id"], location_id, qty,
-                 C.MOVEMENT_ASN_RECEIVE, asn_id, note=f"ASN {asn['code']} 收货")
-        # 验收入库 → 写入批次信息（批次档案按关键批次信息去重，每次收货一个唯一批次号）
+        # 先登记批次流水拿到唯一批次号，再把**同一维度**写进库存明细层（M21）
         batch = record_receipt(
             db, owner_id=asn["owner_id"], product_id=line["product_id"],
             location_id=location_id, asn_id=asn_id, asn_line_id=line_id,
             qty=qty, doc_type=asn["doc_type"] or "",
             line_info=_line_snapshot(line), internal_batch_no=internal_batch_no,
         )
+        info = batch["info"]
+        stock_up(db, asn["owner_id"], line["product_id"], location_id, qty,
+                 C.MOVEMENT_ASN_RECEIVE, asn_id, note=f"ASN {asn['code']} 收货",
+                 batches=[{
+                     "batch_no": batch["batch_no"],
+                     "batch_key": batch["batch_key"],
+                     "internal_batch_no": batch["internal_batch_no"],
+                     "goods_property": info.get("goods_property", ""),
+                     "expiry_date": info.get("expiry_date", ""),
+                     "production_date": info.get("production_date", ""),
+                     "qty": qty,
+                 }])
         db.execute(
             "UPDATE asn_line SET received_qty = received_qty + ? WHERE id = ?",
             (qty, line_id),
@@ -485,9 +495,19 @@ def putaway(asn_id):
         _check_location(db, from_loc, ("receiving",), "上架来源")
         _check_location(db, to_loc, ("storage", "picking"), "上架目标")
 
-        stock_move(db, asn["owner_id"], line["product_id"], from_loc, to_loc, qty,
-                   C.MOVEMENT_ASN_PUTAWAY_OUT, C.MOVEMENT_ASN_PUTAWAY_IN, asn_id,
-                   note=f"ASN {asn['code']} 上架")
+        moved = stock_move(db, asn["owner_id"], line["product_id"], from_loc, to_loc, qty,
+                           C.MOVEMENT_ASN_PUTAWAY_OUT, C.MOVEMENT_ASN_PUTAWAY_IN, asn_id,
+                           note=f"ASN {asn['code']} 上架")
+        # M21：记录一次收货批次拆到多个库位的实物分布（明细层由 stock_move 自动搬运）
+        for b in moved or []:
+            db.execute(
+                """INSERT INTO batch_location
+                   (batch_no, owner_id, product_id, from_location_id, to_location_id,
+                    qty, asn_id, asn_line_id, ref_type, ref_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (b["batch_no"], asn["owner_id"], line["product_id"], from_loc, to_loc,
+                 abs(b["qty"]), asn_id, line_id, C.MOVEMENT_ASN_PUTAWAY_IN, asn_id),
+            )
         db.execute("UPDATE asn_line SET putaway_qty = putaway_qty + ? WHERE id = ?",
                    (qty, line_id))
         lines = _load_lines(db, asn_id)

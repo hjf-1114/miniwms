@@ -26,6 +26,8 @@ class StocktakeApiTest(unittest.TestCase):
         try:
             conn.execute("DELETE FROM stocktake_line")
             conn.execute("DELETE FROM stocktake")
+            conn.execute("DELETE FROM batch_location")
+            conn.execute("DELETE FROM stock_batch")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")

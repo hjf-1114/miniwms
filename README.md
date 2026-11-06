@@ -123,7 +123,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - `constants.parse_doc_flags()` 集中解析，兼容整数 / 布尔 / 字符串 `"0"`/`"1"`；非法值或超长返回 400
   - **仅记录、不校验（蓝图 v3 口径）**：`receive()` / `putaway()` 完全不因这些标识拦截，冷链 + 危险单据仍可上架到常温货位；混放 / 温区 / 危化拦截将在 M25 由**可配置上架规则**决定、M26 提供条件组编辑器，代码中无 hardcoded 红线
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/库存/角色/用户/货主仓库关系 多个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/批次/批次库存/库存/角色/用户/货主仓库关系 多个管理页，零依赖原生 JS，直接调用后端 API
   - **工作台（`/app.html`）**：默认展开的左侧垂直一级菜单 + 内嵌可折叠子菜单 + 多标签页，顶部按钮收起/展开导航并记忆状态；单个页面以 iframe 标签并存；单据「明细」按钮与验收/上架作业在工作台内以新标签打开，独立打开页面时回退为新窗口；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
 
 ### 架构增强：仓库 / 货主双维数据隔离（2026-11-05，非里程碑，不占用 M 编号）
@@ -167,9 +167,29 @@ python -m unittest discover -s tests -p "test_*.py" -v
   「多 Tenant 3PL SaaS + PostgreSQL + RLS」写作**未来演进路线、非当前实现**，
   详见 `docs/DOMAIN_BLUEPRINT.md` §9。触发条件是「第二家物流公司入驻」或「上真实生产」。
 
+### M21 批次级库存明细层（2026-11-06 里程碑 ✅）
+
+- **两层模型**：`stock` 汇总层的列与唯一键**一个不动**，新增 `stock_batch` 明细层
+  （批号 / 批次指纹 / 内部批次号 / 指定客户 / 货品属性 / 质量状态 / 效期 / 生产日期 +
+  `qty` / `allocated_qty`），表达式唯一索引用 `IFNULL(designated_customer_id,0)` 处理通用库存；
+  明细层同样**零行保留**。
+- **统一流水**：`stock_movement` 扩 9 列（全部带默认值，老流水不参与批次分组但仍参与主账 SUM）。
+  一次动作涉及 N 个批次写 N 条流水，主账只 `UPDATE` 一次；`allocated_delta` 只做审计不进核对。
+- **五动作同步钩子**：全部收在 `inventory_service.py`，**禁止路由层直写 `stock_batch`**。
+  验收入库显式传 `record_receipt()` 的真实批号；上架/移库由 `stock_move()` 按 FEFO 分摊并原样搬维度；
+  拣货分配下沉 `allocated_qty`；发货同步释放；盘盈走占位、盘亏按 FEFO 分摊。
+  不传 `batches` 时 service 自动推断维度（与 v3.3 提案的「无维度老流水」差异见 `DEVELOPMENT.md` M21 章）。
+- **三层不变式（硬校验，无灰度豁免）**：I1 主账＝流水累加（`/api/stock/reconcile`，语义不变）、
+  I2 批次明细＝批次流水累加、I3 主账＝批次明细累加（后两者在新增的
+  `/api/stock/batch-reconcile`，容差 `1e-9`，任何不一致直接 `consistent=false`）。
+- **老库回填**：`init_db()` 在明细层为空时一次性把历史流水归到 `LEGACY-UNKNOWN` 占位维度、
+  按流水聚合生成明细（含零行），保证 I2/I3 立即通过；回填幂等。
+- **页面**：「仓储作业 → 库存与追溯 → 批次库存」查询页，支持批号 / 货品属性 / 仅非零库存过滤，
+  一键「账目核对」分三段显示 I1 / I2 / I3。新增 `batch_location` 记录上架实物分布。
+- 验证：unittest **331 绿**（新增 22 例）、真实 Chrome E2E **10/10**；M6 的 I1 与 309 例旧测试零改动全绿。
+
 ### 规划中（见 DEVELOPMENT.md）
 
-- M21 批次级库存明细层（stock_batch + 流水维度列 + 三层不变式）
 - M22 库存调整单 + 盘点增强（全盘 / 部分 / 盲盘 / 动碰，动碰支持手工时间窗 + 交易类型）
 - M23 指定客户专属库存 + 销退口径
 - M24 库存转移单（只改批次信息、数量净零；分配库存会真实占用可用库存）
@@ -247,7 +267,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET | `/api/warehouses` | 仓库列表，支持 `keyword`/`status`/分页（返回 `db_path`） |
 | GET/PUT/DELETE | `/api/warehouses/<id>` | 详情/更新/删除（跨所有业务库检查 ASN/DN 引用后再拒绝；`db_path` 必须是项目目录内 `.db` 相对路径） |
 | GET | `/api/stock` | 库存余额列表，支持 `owner_id`/`product_id`/`location_id`/`has_stock`/分页 |
-| GET | `/api/stock/reconcile` | 余额核对（余额 = 流水累加，返回不一致明细） |
+| GET | `/api/stock/reconcile` | I1 余额核对（主账余额 = 流水累加，返回不一致明细；M6 语义不变） |
+| GET | `/api/stock/batch` | M21 批次级库存余额，支持 `batch_no` / `goods_property` / `stock_status` / `designated_customer_id` / `has_stock` / 分页；接入货主隔离 |
+| GET | `/api/stock/batch-reconcile` | M21 校验 I2（批次明细＝批次流水累加）+ I3（主账＝批次明细累加），**硬校验无灰度豁免**，分段返回 `i2` / `i3` 的 `checked` 与 `mismatches` |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`、`default_zone_id` 推荐储区） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页（返回 `default_zone_name`） |
@@ -274,7 +296,7 @@ main.py               Flask 入口；中央库/业务库双层连接与按仓选
 scope.py              仓库/货主双维隔离上下文切面：授权解析、owner_where() 注入器、写路径与按 ID 归属校验、ALL 显式化、owner_warehouse 格子交集
 auth.py               认证与权限基础（密码哈希、token 签发/校验、require_permission 装饰器；用户/角色只读中央库）
 constants.py          状态机、流水类型、批次号前缀、温区/混放字段、推荐理由码、单据标识位与 parse_doc_flags()（显式集中）
-inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）
+inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）；M21 起同时维护 stock_batch 明细层，按 FEFO 自动分摊批次维度，禁止路由直写明细
 putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，只读）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则）
@@ -293,8 +315,8 @@ routes_scope.py       数据权限与切仓上下文（/api/scope/*、/api/users
 routes_owner_warehouse.py 货主 × 仓库业务关系矩阵配置（/api/owner-warehouses）Blueprint
 routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
 routes_warehouse.py   仓库主数据 Blueprint（控制面；db_path 安全校验、跨库引用检查）
-web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock/roles/users/owner_warehouses/login + app.html 工作台 + css/js）
-web_app/js/layout.js  递归多层导航树（3 级 / 19 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
+web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/batches/stock_batch/stock/roles/users/owner_warehouses/login + app.html 工作台 + css/js）
+web_app/js/layout.js  递归多层导航树（3 级 / 20 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
 web_app/js/api.js     原生 fetch 封装 + 当前仓库上下文（X-WMS-Warehouse header / mountWarehousePicker()）+ 登录态与工作台标签工具
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
@@ -314,6 +336,10 @@ DEVELOPMENT.md        里程碑开发记录
 - 上架推荐只读：`/api/putaway/recommend` 只算建议与理由，不写库存；采纳＝把 `location_id` 填进原有上架接口，过账路径唯一
 - 混放生效值三级作用域：库位自身非空优先 → 继承储区 → 默认全部禁止（保守口径）
 - 时间戳由 SQLite `datetime('now','localtime')` 生成
+- **库存两层账（M21）**：`stock` 汇总层主键永不改，`stock_batch` 明细层由同一批流水驱动；
+  一次动作 N 个批次写 N 条流水、主账只 UPDATE 一次，`Σ qty_delta` 必须等于主账变动量；
+  I1 / I2 / I3 三条不变式容差 `1e-9`，`allocated_delta` 只做审计不进核对；
+  `batches=None` 时由 `inventory_service` 自动推断维度，不允许「老链路不写明细」造成 I3 漂移
 - **数据隔离三层**：连接层按 `warehouse.db_path` 选库（仓库），SQL 层注入 `owner_id`（货主），数据层行内带标识列；
   货主 / 仓库主数据以**中央库为唯一权威写入点**，业务库持有只读副本
 - **ALL 必须显式**：账号「看全部仓 / 全部货主」由 `user.*_scope='all'` 明确给出；授权行缺失、上下文缺失一律 403 拒绝，

@@ -55,7 +55,7 @@
 - M18 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）✅
 - M19 批次与验收入库追溯（批次字段配置 + 批次档案 + 每次入库唯一批次流水）✅
 - M20 储区与上架作业基础（**阶段 A 已交付 2026-11-05**：储区主数据 / 仓库维度 / 混放字段 / 推荐储区 / 固定货位 / 简版上架推荐 / 验收·上架作业页；**阶段 B 已交付 2026-11-05**：asn·dn 各 4 个单据标识 + external_doc_type 的字段 / 表单 / 17 例单测）✅ **M20 收尾完成**；混放·冷链·危险拦截改为配置化规则并入 M25/M26，过渡期不拦截
-- M21 批次级库存明细层（stock_batch + stock_movement 扩维度列 + I2/I3 硬校验 + 一次性回填）
+- M21 批次级库存明细层（stock_batch + stock_movement 扩维度列 + I2/I3 硬校验 + 一次性回填）✅ **2026-11-06 已交付**：五动作同步钩子 + batch_location + I2/I3 端点 + 老库回填 + 批次库存页，详见文末同名章节；331 测全绿
 - M22 库存调整单 + 盘点增强（stock_adjustment 唯一手工数量入口 / stocktake_plan 全盘·部分·盲盘·动碰；动碰支持手工时间窗 + 交易类型 / 差异由人工按钮生成调整单）
 - M23 指定客户专属库存 + 销退口径（designated_customer_id 只在明细行 / 出库校验规则 / 销退外部批次号）
 - M24 库存转移单（只改批次信息、数量净零 / 制单→分配库存（真实占用可用库存）→审核生效终态 / 未分配可关闭删除 / 取消分配 / 冲销留痕）
@@ -926,6 +926,160 @@ DDL 放在 `main._migrate_scope_columns()` 的 `executescript` 里，与 `user_*
   **未来演进路线、非当前实现**，明确触发条件为「第二家物流公司入驻」或「上真实生产」。
 - `owner_warehouse` 本身就是方案 B 里 `Owner ↔ Warehouse` 多对多关系的落地，
   届时只需补 `tenant_id`；`scope.py` 切面、两张授权表、切仓协议均可复用，方案 A 不算白做。
+
+---
+
+## M21 批次级库存明细层（2026-11-06）✅
+
+> **依据**：`docs/PUTAWAY_RECOMMENDATION.md` §5（两层模型 / 流水维度 / 三个不变式 / 回填）、
+> §11 数据模型汇总、§14 阶段 B 实施计划（编号定稿，无未决疑问）。
+> **用户口径**：2026-11-06「继续」＝按推荐先按 Roadmap 开 M21，PRD 逐页记录随里程碑追加。
+> 设计文档是**提案**，本章只记录代码里真实落地的内容，差异处单独说明（见下）。
+
+### 业务背景与要解决的问题
+
+- M19 已能追溯「这批货从哪张 ASN、哪次验收入库来」，但库存账 `stock` 只有
+  `(owner, product, location)` 一行，**同一个库位里混了哪几个批号、各剩多少、效期先后、
+  是否专属某个客户**都答不出来。
+- 后续 M22（按批号盘点 + 差异调整）、M24（库存转移只改批次信息）、M35（FEFO 波次）
+  全部硬依赖「批次级库存明细」这一层。
+- 用户已明确「老库存你看着办，目前还在编码阶段」→ 取消 v2 的灰度降级方案，
+  **I2 / I3 一律硬校验**，演示库可 `--reset` 重建。
+
+### 设计决策（含与提案的差异，取证纪律）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| 1 | `stock` 汇总层的**列与唯一键一个不动**，新增 `stock_batch` 作明细层 | 改主键会让 `/api/stock/reconcile` 的 I1 分组、`pick()` 单行可用量拦截、240+ 老测试全部崩塌（设计 §5.1） |
+| 2 | `stock_movement` 扩 9 列，全部带默认值 | 老流水自动填 `''` / `0` / `NULL`，不参与批次分组但仍参与主账 SUM，I1 语义不变 |
+| 3 | 一次物理动作涉及 N 个批次写 **N 条流水**，主账只 `UPDATE` 一次 | `Σ(N 条 qty_delta) == 该库位主账变动量`，I1 与 I2 同时成立 |
+| 4 | **差异点**：提案 §5.3 写 `batches=None` 时「保留无维度老流水」；实现改为由 service 层**自动推断维度** | 「I2/I3 一律硬校验无豁免」与「老链路不写明细」在同一库里互相矛盾：只要有一次过账不同步明细，I3 立即 false。改后老链路也写带维度流水（入库用占位、出库按 FEFO 分摊、分配按已占用明细），主账 UPDATE 次数与流水总 `qty_delta` 不变，**309 例旧测试零改动全绿** |
+| 5 | 兜底维度统一 `LEGACY-UNKNOWN`，与 `init_db()` 回填历史流水时用的维度一致 | 占位明细也能满足 I2，不需要 `LEGACY_NO_BATCH_DETAIL` 豁免标志，代码只有一套逻辑 |
+| 6 | `align_stock_batch()` 在每次过账前把明细层对齐到汇总层的**变动前**余额 | 防御性自愈：兼容老测试夹具 / 手工造数，不让明细层漂移；正常链路为空操作 |
+| 7 | **禁止路由层直写 `stock_batch`** | 只有 `routes_asn.receive` 显式传 `batches`（需要真实批号），其余四个动作由 `inventory_service` 内部自动推断，路由零改动 |
+
+### 数据模型
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_batch (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id                INTEGER NOT NULL REFERENCES owner(id),
+    product_id              INTEGER NOT NULL REFERENCES product(id),
+    location_id             INTEGER NOT NULL REFERENCES location(id),
+    batch_no                TEXT    NOT NULL DEFAULT '',
+    batch_key               TEXT    NOT NULL DEFAULT '',
+    internal_batch_no       TEXT    NOT NULL DEFAULT '',
+    designated_customer_id  INTEGER,
+    goods_property          TEXT    NOT NULL DEFAULT '',
+    stock_status            TEXT    NOT NULL DEFAULT '',
+    expiry_date             TEXT    NOT NULL DEFAULT '',
+    production_date         TEXT    NOT NULL DEFAULT '',
+    qty                     REAL    NOT NULL DEFAULT 0,
+    allocated_qty           REAL    NOT NULL DEFAULT 0,
+    updated_at              TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_batch ON stock_batch (
+    owner_id, product_id, location_id, batch_no, batch_key,
+    IFNULL(designated_customer_id, 0), goods_property, stock_status
+);
+CREATE TABLE IF NOT EXISTS batch_location (... 批次实物分布 ...);
+-- stock_movement 幂等 ALTER 9 列：
+-- batch_no / batch_key / internal_batch_no / designated_customer_id / goods_property /
+-- stock_status / expiry_date / allocated_delta / operator
+```
+
+- 表达式唯一索引用 `IFNULL(designated_customer_id, 0)`，让 `NULL`（通用库存）与 `0` 视为
+  同一维度，避免 SQLite 对 NULL 不加唯一约束导致重复行。
+- 明细层同样**零行保留**：扣到 0 不删行，与汇总层口径一致。
+- `production_date` 只在明细层，不进流水（流水 9 列口径）。
+
+### 代码挂点
+
+| 文件 | 改动 |
+|---|---|
+| `inventory_service.py` | 重写 `adjust_stock(..., batches=None, operator="")`；新增 `upsert_stock_batch()` / `align_stock_batch()` / `spread_batches()`（FEFO）/ `_release_allocation_items()` / `_insert_movement()`；`stock_up()` / `stock_move()` 支持批次并让 `stock_move()` 返回实际分摊列表 |
+| `main.py` | 新增 `_migrate_m21_columns(conn)`：两张新表 + 表达式唯一索引 + 9 列幂等 ALTER + 一次性回填；在 `init_db()` 的 `_migrate_scope_columns()` 之后调用；`conn.row_factory = sqlite3.Row`（裸连接默认是 tuple，回填需按列名取值） |
+| `routes_asn.py` | `receive()` 把 `record_receipt()` 提前，用返回的 `batch_no / batch_key / internal_batch_no / goods_property / expiry_date / production_date` 组装 `batches` 传给 `stock_up()`；`putaway()` 接收 `stock_move()` 返回的分摊列表写 `batch_location` |
+| `routes_stock.py` | 新增 `GET /api/stock/batch`（批次余额，接入 `S.scoped_where()` 货主隔离）与 `GET /api/stock/batch-reconcile`（I2 + I3 硬校验） |
+| `routes_dn.py` / `routes_transfer.py` / `routes_stocktake.py` | **零改动**：pick / ship / move / adjust 由 service 自动推断批次维度 |
+| `tests/test_m21_stock_batch.py`（新） | 22 例，见验证清单 |
+| 8 个既有测试文件 | `setUp()` 夹具补 `DELETE FROM batch_location` / `DELETE FROM stock_batch`，避免共享物理库下跨用例残留明细 |
+| `web_app/stock_batch.html`（新） | 批次库存查询页（见下） |
+| `web_app/js/layout.js` | 「仓储作业 → 库存与追溯」新增叶子「批次库存」；三级页 19 → 20 |
+
+### 五个库存动作如何接钩子
+
+| 动作 | 入口 | 维度来源 | 路由是否改动 |
+|---|---|---|---|
+| 验收入库 | `routes_asn.receive()` | `record_receipt()` 返回的真实批号与批次信息 | **是**：显式传 `batches` |
+| 上架 | `routes_asn.putaway()` | `stock_move()` 从收货位按 FEFO 分摊，原样搬到目标位 | 只加 `batch_location` 写入 |
+| 拣货分配 | `routes_dn.pick()` | `qty_delta=0` + `allocated_delta>0` → 按明细占用分摊 | 否 |
+| 发货 | `routes_dn.ship()` | `qty_delta<0` → 按 FEFO 分摊，`qty` 与 `allocated` 同步释放 | 否 |
+| 移库 / 盘点差异 | `routes_transfer.move()` / `routes_stocktake.adjust()` | 移库复用 `stock_move()`；盘盈走占位、盘亏按 FEFO 分摊 | 否 |
+
+### 三层不变式与硬校验
+
+| # | 不变式 | 端点 |
+|---|---|---|
+| I1 | `stock.qty == SUM(stock_movement.qty_delta)`，按 (owner, product, location) | `/api/stock/reconcile`（M6 已有，**语义原样保持**） |
+| I2 | `stock_batch.qty == SUM(stock_movement.qty_delta)`，按 (owner, product, location, batch_no, designated_customer_id, goods_property) | `/api/stock/batch-reconcile`（新增） |
+| I3 | `stock.qty == SUM(stock_batch.qty)`，按 (owner, product, location) | 同上 |
+
+- 容差统一 `1e-9`；`allocated_delta` 只做审计，**不进 reconcile**。
+- 端点返回 `consistent` + `i2` / `i3` 分段 `checked` / `mismatches`，
+  任何不一致直接 `consistent=false`，**不返回任何豁免标志**。
+- 明细层与流水若被人为篡改，分别由 I3 / I2 报出（有单测锁死）。
+
+### 老库回填口径
+
+- `init_db()` 里仅当 `stock_batch` 为空时执行一次：
+  ① 把 `batch_no=''` 的历史流水统一改为 `LEGACY-UNKNOWN`；
+  ② 按流水维度聚合生成明细行（`SUM(qty_delta)` / `SUM(allocated_delta)`）；
+  ③ 对有 `stock` 行但无明细的三元组补齐占位明细（**含 qty=0 的零行**），
+     并把 `allocated_qty` 双层对齐。
+- 回填幂等；演示数据仍可用 `tools/seed_demo.py --reset` 重建。
+- 好处：没有「灰度期豁免 → 收紧」两套逻辑，测试从第一天就能断言三个不变式。
+
+### 页面（PRD 素材 · 批次库存 `stock_batch.html`）
+
+- **用途 / 背景**：仓库管理员与质检演示需要看到「同库位里各批号剩多少、效期先后、
+  专属客户与质量状态」，并一键确认主账与明细账是否自洽；M22 按批号盘点以此为基础。
+- **查询条件**：批号（精确）、货品属性、仅非零库存、分页（20 条/页）。
+- **列表字段**：ID / 批号 / 物料 / 库位 / 货主 / 在手 / 已分配 / 可用 / 失效日期 /
+  货品属性 / 质量状态 / 指定客户（空显示「通用」）。
+- **操作**：「查询」刷新列表；「账目核对」并行调 `/api/stock/reconcile` 与
+  `/api/stock/batch-reconcile`，分三段显示 I1 / I2 / I3 是否通过及异常条数，
+  不一致时用第一条 issue 提示。
+- **页面说明文案**：汇总层与明细层的分工、三条不变式、「任何不一致都不豁免」。
+- **权限**：列表接口接入 `S.scoped_where(..., table="sb")`，受限账号看不到别人的批次明细。
+
+### 验证结果
+
+- `./.venv/Scripts/python.exe -m unittest discover -s tests` → **331 例全绿**
+  （原 309 + `tests/test_m21_stock_batch.py` 22 例）。
+- 22 例覆盖：① DDL 表与表达式唯一索引、② 流水 9 列、③ `stock` 主键未变；
+  ④ 老库回填生成占位明细、⑤ 回填幂等、⑥ 零行保留也有明细；
+  ⑦ 收货写真实批次维度、⑧ 两次收货两行明细、⑨ 上架搬运 + `batch_location`、
+  ⑩ 拣货分配下沉明细、⑪ 发货 qty/allocated 同步释放、⑫ 移库保持批次维度、
+  ⑬ 盘盈走占位、⑭ 盘亏按 FEFO 分摊；
+  ⑮ 完整链路 I1/I2/I3 全通过、⑯ 篡改明细被 I3 发现、⑰ 篡改流水被 I2 发现、
+  ⑱ 零行明细不删；
+  ⑲ 列表 API 过滤、⑳ 货主隔离、㉑ 批次数量之和校验抛 `StockError`、㉒ FEFO 顺序。
+- `node --check web_app/js/layout.js` / 新页内联脚本通过。
+- 真实 Chrome E2E（独立库 + 端口 5110）**10/10**：页面标题、明细行数、真实批号、
+  切仓器、导航入口、I1/I2/I3 全通过、批号过滤、仅非零库存过滤、空态、无 JS 错误。
+- 诊断脚本独立库跑「收货 → 上架 → 拣货 → 发货」后三个 reconcile 全部 `consistent=true`，
+  `stock_batch` 两端批号一致、`batch_location` 落一条。
+
+### 已知边界 / 后续里程碑
+
+- `designated_customer_id` 本轮**只建列与维度**，不提供录入入口、不参与
+  M19 `batch_config` 的 `is_key` 指纹；录入与出库校验规则在 **M23**。
+- `stock_status` / `goods_property` 四值扩展、质量状态变更、库存转移单的净零成对流水在 **M24**。
+- 「分配后可用库存减少」已由明细层 `allocated_qty` 同步；「取消分配」按钮与状态机在 **M22**。
+- 盘点差异本轮仍直接过账（M18 行为），**M22 改成人工点按钮生成库存调整单**，
+  并移除 `adjust()` 旁路；本轮先保证明细层与流水跟着动。
+- `batch_location` 目前只在上架时记录，跨库位拆批 / 回溯查询在后续章节按需扩展。
 
 ---
 

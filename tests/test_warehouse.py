@@ -23,6 +23,8 @@ class WarehouseApiTest(unittest.TestCase):
         import sqlite3
         conn = sqlite3.connect(os.environ["MINIWMS_DB"])
         try:
+            conn.execute("DELETE FROM batch_location")
+            conn.execute("DELETE FROM stock_batch")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM dn_pick")

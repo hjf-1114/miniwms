@@ -28,6 +28,8 @@ class LocationApiTest(unittest.TestCase):
         conn = sqlite3.connect(os.environ["MINIWMS_DB"])
         try:
             # 先子后主
+            conn.execute("DELETE FROM batch_location")
+            conn.execute("DELETE FROM stock_batch")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM product")
             conn.execute("DELETE FROM owner")

@@ -27,6 +27,8 @@ class TransferApiTest(unittest.TestCase):
             # 先子后主
             conn.execute("DELETE FROM transfer_line")
             conn.execute("DELETE FROM transfer")
+            conn.execute("DELETE FROM batch_location")
+            conn.execute("DELETE FROM stock_batch")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")

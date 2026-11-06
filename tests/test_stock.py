@@ -32,6 +32,8 @@ class StockApiTest(unittest.TestCase):
             conn.execute("DELETE FROM dn_line")
             conn.execute("DELETE FROM dn")
             conn.execute("DELETE FROM customer")
+            conn.execute("DELETE FROM batch_location")
+            conn.execute("DELETE FROM stock_batch")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")

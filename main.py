@@ -470,6 +470,120 @@ def _migrate_scope_columns(conn):
         )
 
 
+def _migrate_m21_columns(conn):
+    """M21 批次级库存明细层：新表 + 流水 9 列 + 一次性回填（幂等）。
+
+    - ``stock_batch`` 明细层；``stock`` 汇总层列与唯一键**永不修改**（I1 原样保持）
+    - ``batch_location``：上架拆多库位时的批次实物分布
+    - ``stock_movement`` 扩 9 列，全部有默认值，老流水自动填 ``''`` / ``0`` / ``NULL``
+    - 回填只在明细层为空时执行一次：历史流水统一归到 ``LEGACY-UNKNOWN`` 占位维度，
+      按流水聚合生成明细行，再把汇总层与明细层的差额补齐，保证 I2 / I3 立即通过。
+      **不做灰度豁免**，任何不一致都会被 ``/api/stock/batch-reconcile`` 判为 false。
+    """
+    # init_db() 用裸 sqlite3.connect（tuple），回填与明细 upsert 需要按列名取值
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS stock_batch (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id                INTEGER NOT NULL REFERENCES owner(id),
+            product_id              INTEGER NOT NULL REFERENCES product(id),
+            location_id             INTEGER NOT NULL REFERENCES location(id),
+            batch_no                TEXT    NOT NULL DEFAULT '',
+            batch_key               TEXT    NOT NULL DEFAULT '',
+            internal_batch_no       TEXT    NOT NULL DEFAULT '',
+            designated_customer_id  INTEGER,
+            goods_property          TEXT    NOT NULL DEFAULT '',
+            stock_status            TEXT    NOT NULL DEFAULT '',
+            expiry_date             TEXT    NOT NULL DEFAULT '',
+            production_date         TEXT    NOT NULL DEFAULT '',
+            qty                     REAL    NOT NULL DEFAULT 0,
+            allocated_qty           REAL    NOT NULL DEFAULT 0,
+            updated_at              TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_batch ON stock_batch (
+            owner_id, product_id, location_id, batch_no, batch_key,
+            IFNULL(designated_customer_id, 0), goods_property, stock_status
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_batch_loc ON stock_batch (
+            owner_id, product_id, location_id
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_batch_no ON stock_batch (batch_no);
+        CREATE TABLE IF NOT EXISTS batch_location (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_no         TEXT    NOT NULL,
+            owner_id         INTEGER NOT NULL,
+            product_id       INTEGER NOT NULL,
+            from_location_id INTEGER,
+            to_location_id   INTEGER NOT NULL,
+            qty              REAL    NOT NULL,
+            asn_id           INTEGER,
+            asn_line_id      INTEGER,
+            ref_type         TEXT    NOT NULL DEFAULT '',
+            ref_id           INTEGER,
+            created_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_batch_location_no ON batch_location (batch_no);
+        """
+    )
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_movement)")}
+    additions = (
+        ("batch_no", "TEXT NOT NULL DEFAULT ''"),
+        ("batch_key", "TEXT NOT NULL DEFAULT ''"),
+        ("internal_batch_no", "TEXT NOT NULL DEFAULT ''"),
+        ("designated_customer_id", "INTEGER"),
+        ("goods_property", "TEXT NOT NULL DEFAULT ''"),
+        ("stock_status", "TEXT NOT NULL DEFAULT ''"),
+        ("expiry_date", "TEXT NOT NULL DEFAULT ''"),
+        ("allocated_delta", "REAL NOT NULL DEFAULT 0"),
+        ("operator", "TEXT NOT NULL DEFAULT ''"),
+    )
+    for name, decl in additions:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE stock_movement ADD COLUMN {name} {decl}")
+
+    # ── 一次性回填 ──
+    from inventory_service import (LEGACY_BATCH_NO, align_stock_batch,
+                                   legacy_dims, upsert_stock_batch)
+
+    if conn.execute("SELECT COUNT(*) FROM stock_batch").fetchone()[0] == 0:
+        conn.execute(
+            "UPDATE stock_movement SET batch_no = ? WHERE batch_no = ''",
+            (LEGACY_BATCH_NO,),
+        )
+        for r in conn.execute(
+            """SELECT owner_id, product_id, location_id, batch_no, batch_key,
+                      internal_batch_no, designated_customer_id, goods_property,
+                      stock_status, expiry_date,
+                      SUM(qty_delta) AS q, SUM(allocated_delta) AS a
+               FROM stock_movement
+               GROUP BY owner_id, product_id, location_id, batch_no, batch_key,
+                        internal_batch_no, designated_customer_id, goods_property,
+                        stock_status, expiry_date"""
+        ).fetchall():
+            upsert_stock_batch(
+                conn, r["owner_id"], r["product_id"], r["location_id"],
+                {k: r[k] for k in (
+                    "batch_no", "batch_key", "internal_batch_no",
+                    "designated_customer_id", "goods_property",
+                    "stock_status", "expiry_date")},
+                r["q"], r["a"],
+            )
+        # 无流水但有余额（含零行保留）也要有明细，并让 allocated 双层对齐
+        for s in conn.execute(
+            "SELECT owner_id, product_id, location_id, qty, allocated_qty FROM stock"
+        ).fetchall():
+            key = (s["owner_id"], s["product_id"], s["location_id"])
+            align_stock_batch(conn, *key, s["qty"], s["allocated_qty"])
+            # 明细层同样零行保留：qty=0 的汇总行也要有一条占位明细
+            has = conn.execute(
+                "SELECT 1 FROM stock_batch WHERE owner_id = ? AND product_id = ? "
+                "AND location_id = ? LIMIT 1", key,
+            ).fetchone()
+            if has is None:
+                upsert_stock_batch(conn, key[0], key[1], key[2], legacy_dims(), 0, 0)
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1183,6 +1297,7 @@ def init_db(path=None):
         )
         _migrate_m20_columns(conn)
         _migrate_scope_columns(conn)
+        _migrate_m21_columns(conn)
         _seed_zones(conn)
         _seed_auth(conn)
         conn.commit()

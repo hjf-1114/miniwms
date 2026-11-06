@@ -86,6 +86,11 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 | 19 | 系统页 | 登录 | `login.html` | M9 | 待补 | — |
 | 20 | 系统页 | 工作台 | `app.html` | 非里程碑（M18 后 UI 增强；M20-A 改侧栏伸缩） | 待补 | — |
 | 21 | 系统页 | 首页 | `index.html` | 全程 | 待补 | — |
+| 22 | M21 追加页 | 批次库存 | `stock_batch.html` | M21 | **已记录** | [2.3](#23-批次库存stock_batchhtml) |
+
+> **追加页计数说明（v0.5）**：#1–#21 是用户规格 2A 定义的「回溯 M1–M20」固定范围，
+> 分母恒为 21；M21 起新增页面按规格「随里程碑逐次追加」续编，**不计入回溯分母**。
+> 因此逐页记录进度写作 **2/21（回溯）+ 1/1（M21 追加页）**，不能把 #22 混进 21 页的分母。
 
 ---
 
@@ -427,6 +432,157 @@ M20 阶段 B（`46e5038`）未改动本页。其余里程碑明细见 `DEVELOPME
 
 ---
 
+### 2.3 批次库存（`stock_batch.html`）
+
+> **M21 追加页**（进度表 #22，2026-11-06 引入），按用户规格 2A「随 M21 起逐里程碑追加」续编，
+> **不计入回溯 M1–M20 的 21 页分母**。本节只记录代码里真实存在的实现。
+
+**[业务] 用途与背景**
+
+M19 已能追溯「这批货来自哪张 ASN、哪次验收」，但库存账 `stock` 只有
+「货主 × 物料 × 库位」一行，无法回答「这个库位里混了哪几个批号、各剩多少、效期先后、
+是否专属某个客户、被预占了多少」。M21 新增明细层 `stock_batch`，让库存从
+「一个数字」变成「按批次维度可分的一张账」，同时给质检演示提供「主账与明细账是否自洽」
+的一键验收入口。
+
+业务痛点：按批号盘点（M22）、库存转移只改批次信息（M24）、FEFO 波次分配（M35）
+都硬依赖这一层；没有它就无法判断库位里有哪几个批号，也不能做效期先出。
+设计依据是「汇总层 + 明细层」的两层账模型，`stock` 的列与唯一键一个不动，
+避免 M6 对账不变式与 M5 超卖拦截崩塌。
+
+**[业务] 适用角色与场景**
+
+| 场景 | 说明 |
+|---|---|
+| 库内批次查询 | 仓库管理员按批号 / 货品属性查看某批货分布在哪些库位、各剩多少 |
+| 效期与状态核对 | 查看失效日期、货品属性、质量状态、专属客户，为 FEFO 与 GSP 追溯提供依据 |
+| 账目自检 | 收货 / 上架 / 拣货 / 发货 / 移库 / 盘点后点「账目核对」，确认 I1 / I2 / I3 全部通过 |
+| 演示验收 | 质检演示时展示「明细层与汇总层同步变化」，并观察零行保留与占位批次 |
+
+> 角色由系统自定义（M9 用户 / 角色），本页不编造预置岗位；页面本身不写库存，是只读查询页。
+
+**[功能] 页面布局**
+
+- 查询条件：批号（文本框，精确匹配）、货品属性（文本框，精确匹配）、
+  「仅非零库存」下拉（全部明细 / 仅非零库存）、分页（默认 20 条/页，上一页 / 下一页）。
+- 列表字段（12 列）：ID / 批号 / 物料（SKU · 名称）/ 库位（编码 · 名称）/ 货主编码 /
+  在手 / 已分配 / 可用 / 失效日期 / 货品属性 / 质量状态 / 指定客户。
+  「指定客户」为空显示「通用」，有值显示「客户 #id」；日期 / 属性 / 状态为空显示「—」。
+- 行操作：**无**（只读页，不允许在页面上直接改明细数量或批次维度）。
+- 页操作：「查询」「账目核对」「上一页」「下一页」。
+- 账目核对结果区：三段标签「I1 主账=流水 通过／不一致（N 条异常）」、
+  「I2 明细=批次流水 …」、「I3 主账=明细 …」；不一致时用第一条 issue 在消息条提示，
+  一致时提示「三条不变式全部通过」。
+- 页面说明文案（原文要点）：汇总层 `stock` 仍按「货主 × 物料 × 库位」一行，
+  这里展示明细层 `stock_batch`，按批号 / 指定客户 / 货品属性 / 质量状态再细分；
+  三条不变式任何不一致都不豁免。
+
+**[功能] 表单字段表**
+
+本页**无录入表单**（只读查询页）。查询条件字段如下：
+
+| 字段 | 控件 | 必填 | 校验 | 默认值 | 来源 / 联动 |
+|---|---|---|---|---|---|
+| 批号 | 文本框 | 否 | 后端按 `batch_no` 精确匹配，不做模糊 | 空 | 由验收入库 `batch_receipt.batch_no` 生成 |
+| 仅非零库存 | 下拉 | 否 | 值 `1` 时后端追加 `sb.qty != 0` | 空（全部明细） | 明细层零行保留，用来过滤已清零行 |
+| 货品属性 | 文本框 | 否 | 后端按 `goods_property` 精确匹配 | 空 | 验收时批次信息字段带出 |
+| 页 / 每页条数 | 隐藏于分页控件 | 否 | `page >= 1`；`page_size` 1–100，非法返回 400 | `1` / `20` | 与全站分页口径一致 |
+
+另有后端支持但本页未暴露的过滤：`owner_id` / `product_id` / `location_id` /
+`designated_customer_id` / `stock_status`。
+
+**[功能] 子表 / 弹窗**
+
+无。核对结果以内联标签区展示，不弹窗。
+
+**[功能] 业务规则与状态机**
+
+1. **两层账**：`stock` 是汇总层，唯一键 `(owner_id, product_id, location_id)` 不变；
+   `stock_batch` 是明细层，唯一键含 `batch_no / batch_key / IFNULL(designated_customer_id,0) /
+   goods_property / stock_status`，由同一批 `stock_movement` 流水驱动。
+2. **零行保留**：明细行扣到 0 不删行，因此同一批号在「收货位」与「存储位」会同时出现，
+   只是前者数量为 0；「仅非零库存」用于过滤。
+3. **流水拆分**：一次动作涉及 N 个批次写 N 条带维度流水，主账只 `UPDATE` 一次，
+   `Σ qty_delta == 主账变动量`（容差 `1e-9`）；`allocated_delta` 只做审计，不进核对。
+4. **FEFO 分摊**：出库 / 上架来源位 / 盘亏按 `expiry_date` 升序（空效期排最后）从明细行分摊；
+   上架时同一组维度原样搬到目标库位。
+5. **占位批次**：无法追溯到具体批次的过账统一归到 `LEGACY-UNKNOWN`，
+   与老库回填历史流水用的维度一致，因此占位明细同样满足 I2。
+6. **三条不变式（硬校验，无灰度豁免）**：I1 主账＝流水累加；
+   I2 批次明细＝批次流水累加（分组含 `batch_no / designated_customer_id / goods_property`）；
+   I3 主账＝批次明细累加。任何不一致 `consistent=false`，不返回豁免标志。
+7. **本页无状态机**：无单据状态、无审核流，库存变化全部由其他作业页触发。
+
+**[功能] 异常与提示**
+
+| 触发 | 前端提示 | 后端响应 |
+|---|---|---|
+| 查无数据 | 表格显示「暂无批次库存明细」 | `200 {ok:true, total:0, stock_batches:[]}` |
+| 分页参数非法 | `加载失败：…` | `400 {"ok":false,"errors":["page/page_size 必须为整数"]}` |
+| 账目核对发现不一致 | 红色段标签 + 「账目不一致：<第一条 issue>」 | `200 {consistent:false, i2/i3.mismatches:[...]}` |
+| 核对接口异常 | 「核对失败：…」 | 由 `api()` 抛出 |
+| 数据权限未配置 | `加载失败：…` | `403`（全局数据权限守门，见 §6 / §6.5） |
+
+常见 issue 文案（后端原文）：「有批次流水但无明细行」「有批次余额但无流水」
+「批次余额与流水累加不等」「有批次明细但无主账行」「有主账余额但无批次明细」
+「主账余额与批次明细累加不等」。
+
+**[实现] 关联单据与数据流向**
+
+- 明细行由 `inventory_service.adjust_stock(..., batches=...)` 在
+  `BEGIN IMMEDIATE` 事务内写入；**路由层禁止直写 `stock_batch`**。
+- 数据来源：验收 `record_receipt()` → `stock_up(batches=[真实批号])`；
+  上架 / 移库 `stock_move()` 按 FEFO 分摊并搬运维度，上架额外写 `batch_location`；
+  拣货分配下沉 `allocated_qty`；发货同步释放 `qty` 与 `allocated_qty`；
+  盘点盘盈走占位、盘亏按 FEFO 分摊。
+- `stock_movement` 扩 9 列（`batch_no / batch_key / internal_batch_no /
+  designated_customer_id / goods_property / stock_status / expiry_date /
+  allocated_delta / operator`），全部带默认值，老流水不参与批次分组但仍参与主账 SUM。
+- 老库 `init_db()` 一次性回填：历史流水统一归到 `LEGACY-UNKNOWN`，按流水维度聚合生成明细，
+  有 `stock` 行但无明细的三元组补齐占位明细（含 qty=0 零行）并对齐 `allocated_qty`；
+  回填幂等。演示数据可用 `tools/seed_demo.py --reset` 重建。
+- 本页只读，删除 / 停用 / 保护规则不适用。
+
+**[实现] 权限**
+
+- `GET /api/stock/batch` 与 `GET /api/stock/batch-reconcile` 均走全局 `before_request`
+  数据权限上下文；列表接口调用 `S.scoped_where(where, params, table="sb")` 注入
+  `owner_id IN (...)`，受限账号看不到别人的批次明细（单测已锁死）。
+- 两条端点**未**单独挂 `@require_permission(...)`，与 `stock.html` / `stock/reconcile`
+  口径一致；登录态由全局 `MINIWMS_ALLOW_ANONYMOUS` 控制，详见 §6.1。
+- 「货主 × 仓库格子」若在当前仓启用，可见货主范围还会与业务关系取交集（§6.5）。
+
+**[功能] 与其他页面的关系**
+
+- 与「库存账」`stock.html` 是同一份库存的汇总视图 / 明细视图；本页的 I1 段直接调用
+  `/api/stock/reconcile`，与库存账页共用。
+- 与「批次」`batches.html`（M19 批次档案 / 入库批次流水）互补：那边看「批次档案与验收记录」，
+  这边看「这批货现在在哪些库位还剩多少」。
+- 与「收货 / 验收作业 / 上架作业 / 出库 / 移库 / 盘点」是数据生产关系，本页只读不产出。
+- 侧栏由 `layout.js` 递归树挂载到「仓储作业 → 库存与追溯 → 批次库存」；
+  独立页侧栏与工作台顶栏共用 `api.js::mountWarehousePicker()`，切仓会刷新本页数据。
+
+**[实现] 验收要点**
+
+- `tests/test_m21_stock_batch.py` 22 例：DDL 与表达式唯一索引、流水 9 列、`stock` 主键未变、
+  老库回填 / 回填幂等 / 零行保留、收货写真实批次维度、两次收货两行明细、
+  上架搬运与 `batch_location`、拣货分配下沉、发货同步释放、移库保持维度、
+  盘盈占位 / 盘亏 FEFO、完整链路 I1/I2/I3 全通过、篡改明细被 I3 发现、
+  篡改流水被 I2 发现、零行明细不删、列表 API 过滤、货主隔离、
+  批次数量之和校验抛 `StockError`、FEFO 顺序。
+- 全量 `unittest discover -s tests` **331 例全绿**（309 基线 + 22 新增），
+  8 个既有测试夹具同步清理 `stock_batch` / `batch_location`，无回归。
+- 真实 Chrome E2E（独立库 + 端口 5110）**10/10**：页面标题、明细行数、真实批号、
+  切仓器、导航入口、I1/I2/I3 全通过、按批号过滤、仅非零库存过滤、空态、无 JS 运行时错误。
+- `node --check` 校验 `layout.js` 与本页内联脚本通过。
+
+**[实现] 对应里程碑与提交**
+
+M21 批次级库存明细层（2026-11-06）。提交哈希以 `git log` / `DEVELOPMENT.md` M21 章为准，
+本节不编造未确认的哈希。设计口径见 `docs/PUTAWAY_RECOMMENDATION.md` §5 / §11 / §14 阶段 B。
+
+---
+
 ## 3. API 与数据模型（单列一章）
 
 > 用户口径 4「单列一章」：**端点清单与数据表字典独立成章**，页面记录里只引用端点名，不复制字段定义。
@@ -547,6 +703,52 @@ M20 阶段 B（`46e5038`）未改动本页。其余里程碑明细见 `DEVELOPME
 
 ---
 
+### 3.4 [实现] M21 增量：端点与数据表（2026-11-06 追加）
+
+> 按规格「API 与数据模型单列一章」，此处集中登记 M21 新增端点与表，
+> §2.3 页面记录只引用本节与 §6，不在此处重复展开业务含义。
+
+**新增端点**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/stock/batch` | 批次级库存余额；过滤 `owner_id` / `product_id` / `location_id` / `batch_no` / `goods_property` / `stock_status` / `designated_customer_id` / `has_stock=1`；分页；`S.scoped_where(..., table="sb")` 货主隔离 |
+| GET | `/api/stock/batch-reconcile` | I2 + I3 硬校验；返回 `consistent` / `tolerance=1e-9` / `i2{checked,mismatches}` / `i3{checked,mismatches}` / `mismatches`；**无灰度豁免** |
+| GET | `/api/stock/reconcile` | I1（M6 已有，**语义不变**） |
+
+**新增 / 扩列数据表**
+
+**`stock_batch`（M21 新增，明细层）**
+`id INTEGER PK` · `owner_id / product_id / location_id INTEGER NOT NULL`（分别外键 `owner` / `product` / `location`） ·
+`batch_no / batch_key / internal_batch_no / goods_property / stock_status / expiry_date / production_date TEXT ['']` ·
+`designated_customer_id INTEGER [NULL]` · `qty REAL [0]` · `allocated_qty REAL [0]` · `updated_at TEXT`。
+表达式唯一索引 `uq_stock_batch(owner_id, product_id, location_id, batch_no, batch_key,
+IFNULL(designated_customer_id,0), goods_property, stock_status)`；
+索引 `idx_stock_batch_loc` / `idx_stock_batch_no`。零行保留，扣到 0 不删行。
+
+**`batch_location`（M21 新增，批次实物分布）**
+`id INTEGER PK` · `batch_no TEXT NOT NULL` · `owner_id / product_id / to_location_id INTEGER NOT NULL` ·
+`from_location_id INTEGER [NULL]` · `qty REAL NOT NULL` · `asn_id / asn_line_id / ref_id INTEGER [NULL]` ·
+`ref_type TEXT ['']` · `created_at TEXT`。索引 `idx_batch_location_no`。当前仅上架动作写入。
+
+**`stock_movement`（M21 扩 9 列，全部带默认值）**
+`batch_no TEXT ['']` · `batch_key TEXT ['']` · `internal_batch_no TEXT ['']` ·
+`designated_customer_id INTEGER [NULL]` · `goods_property TEXT ['']` · `stock_status TEXT ['']` ·
+`expiry_date TEXT ['']` · `allocated_delta REAL [0]` · `operator TEXT ['']`。
+老流水自动填默认值，不参与批次分组但仍参与 I1 的主账 SUM。
+
+**不变式（验收硬标准）**
+
+| # | 定义 | 端点 |
+|---|---|---|
+| I1 | `stock.qty == SUM(stock_movement.qty_delta)`，按 `(owner,product,location)` | `/api/stock/reconcile` |
+| I2 | `stock_batch.qty == SUM(stock_movement.qty_delta)`，按 `(owner,product,location,batch_no,designated_customer_id,goods_property)` | `/api/stock/batch-reconcile` |
+| I3 | `stock.qty == SUM(stock_batch.qty)`，按 `(owner,product,location)` | 同上 |
+
+> `allocated_delta` 只做审计不进核对；`stock` 汇总层的列与唯一键**始终不改**。
+
+---
+
 ## 4. 里程碑与页面归属索引
 
 | 里程碑 | 主题（以 `DEVELOPMENT.md` Roadmap 为准） | 主要页面 | 状态 |
@@ -571,6 +773,7 @@ M20 阶段 B（`46e5038`）未改动本页。其余里程碑明细见 `DEVELOPME
 | M18 | 盘点单（冻结 → 盲盘 → 差异调整 → 解冻） | `stocktakes.html` | 已完成 |
 | M19 | 批次与验收入库追溯（批次配置 / 批次档案 / 每次入库唯一批次流水） | `batches.html` / `asns.html` | 已完成 |
 | M20 | 储区与上架作业基础（阶段 A 基础资料与推荐作业页 / 阶段 B 单据标识位） | `zones.html` / `asn_receive.html` / `asn_putaway.html` / `locations.html` / `products.html` / `asns.html` / `dns.html` / `app.html` | 已完成 |
+| M21 | 批次级库存明细层（两层账 / 流水 9 维 / 五动作同步钩子 / I2·I3 硬校验 / 老库回填） | `stock_batch.html` + `asns.html` / `dns.html` / `transfers.html` / `stocktakes.html` 的过账链路 | **已完成 2026-11-06** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -589,6 +792,7 @@ M20 阶段 B（`46e5038`）未改动本页。其余里程碑明细见 `DEVELOPME
 | v0.2 | 2026-11-05 | 自审 + 独立交叉审阅修正：① 里程碑编号校准（M15 不含移库 / M17 移库 / M18 盘点 / M19 批次与验收入库追溯；移库页归属 M15→M17；工作台改列「非里程碑」）；② 删除 2 处「把未实现写成已实现」（同分类聚拢、`product.volume` 参与容量过滤），补记当前推荐引擎 6 项打分；③ 修正 DDL 演进机制表述、`product.owner_id` 归属 M2 与 `volume` 重复标注；④ 补齐 `pkg_level` 错误串全文、前端文案原文、明细行 20 字段口径（13+7、自动带出 12）、预置 3 个系统级角色与鉴权范围 | 取证自 `DEVELOPMENT.md` Roadmap、`git log --diff-filter=A`、`main.py`、`putaway_service.py`、`web_app/asns.html`、`web_app/products.html`、`routes_product.py`；交叉审阅为独立只读核对，未改代码 |
 | v0.3 | 2026-11-05 | 追加 §6「全局数据权限与隔离约束」（架构增强，非里程碑）：三层隔离、账号可见仓/货主授权、ALL 显式化、页面控件增量、端点与 DDL 增量、验收要点。**按增量追加规则不改写 §1–§5 已有内容**；21 页逐页记录进度不变（仍 2/21） | 取证自 `main.py`、`scope.py`、`routes_scope.py`、`routes_owner.py`、`routes_warehouse.py`、`routes_carrier.py`、`auth.py`、`web_app/js/api.js`、`web_app/js/layout.js`、`web_app/app.html`、`web_app/users.html`、`web_app/warehouses.html`、`web_app/carriers.html`、`tests/test_scope.py`、`DEVELOPMENT.md` 文末同名章节 |
 | v0.4 | 2026-11-05 | 追加 §6.5「货主 × 仓库业务关系格子」（架构增强第二次优化，非里程碑）：多对多关系表、可见范围取交集、矩阵配置页、兼容边界、验收基线更新为 309 例 + E2E 13/13；追加数据库选型口径（继续方案 A，PG/RLS 为未来路线）。**按增量追加规则不改写 §1–§6.4 已有内容**；21 页逐页记录进度仍为 2/21 | 取证自 `scope.py`、`main.py`、`routes_owner_warehouse.py`、`web_app/owner_warehouses.html`、`web_app/js/layout.js`、`tests/test_owner_warehouse.py`、`docs/DOMAIN_BLUEPRINT.md` §9、`DEVELOPMENT.md` 文末同名章节 |
+| v0.5 | 2026-11-06 | **M21 批次级库存明细层**：进度表续编 #22（M21 追加页，不计入回溯 21 页分母）+ 追加 §2.3「批次库存」11 项完整记录；记录 `stock_batch` 两层账、流水 9 维、I1/I2/I3 三条不变式、老库回填、五动作钩子、验收基线 331 例 + E2E 10/10。**按增量追加规则不改写 §1 已有 21 行、§2.1/§2.2、§3–§6.5 内容** | 取证自 `main.py::_migrate_m21_columns`、`inventory_service.py`、`routes_asn.py`、`routes_stock.py`、`web_app/stock_batch.html`、`web_app/js/layout.js`、`tests/test_m21_stock_batch.py`、`DEVELOPMENT.md` M21 章 |
 
 ---
 

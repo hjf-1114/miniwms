@@ -24,6 +24,8 @@ class AsnApiTest(unittest.TestCase):
         conn = sqlite3.connect(os.environ["MINIWMS_DB"])
         try:
             # 先子后主
+            conn.execute("DELETE FROM batch_location")
+            conn.execute("DELETE FROM stock_batch")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
             conn.execute("DELETE FROM asn_line")

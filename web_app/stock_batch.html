@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批次库存 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.chk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; margin: 0 0 12px; }
+.chk span { padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); }
+.chk .ok { color: var(--success, #1d7a4d); }
+.chk .bad { color: var(--danger, #c0392b); }
+.hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>批次库存</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <div class="card">
+        <div class="card-head">
+          <h2>批次级库存余额</h2>
+          <div>
+            <button class="btn secondary" onclick="reconcile()">账目核对</button>
+            <button class="btn secondary" onclick="load()">查询</button>
+          </div>
+        </div>
+        <p class="hint">
+          汇总层 <b>stock</b> 仍按「货主 × 物料 × 库位」一行；这里展示明细层 <b>stock_batch</b>，
+          按批号 / 指定客户 / 货品属性 / 质量状态再细分。三条不变式：I1 主账＝流水累加、
+          I2 批次明细＝批次流水累加、I3 主账＝批次明细累加；<b>任何不一致都不豁免</b>。
+        </p>
+        <div id="reconcileBox" class="chk"></div>
+        <div class="toolbar">
+          <input id="batchNo" placeholder="批号（如 BAT-20261106-001）">
+          <select id="hasStock">
+            <option value="">全部明细</option>
+            <option value="1">仅非零库存</option>
+          </select>
+          <input id="goodsProperty" placeholder="货品属性" style="width:120px">
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>批号</th><th>物料</th><th>库位</th><th>货主</th>
+              <th>在手</th><th>已分配</th><th>可用</th><th>失效日期</th>
+              <th>货品属性</th><th>质量状态</th><th>指定客户</th>
+            </tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+          <span id="pageInfo"></span>
+          <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+
+async function load() {
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  const bno = document.getElementById("batchNo").value.trim();
+  const has = document.getElementById("hasStock").value;
+  const prop = document.getElementById("goodsProperty").value.trim();
+  if (bno) qs.set("batch_no", bno);
+  if (has) qs.set("has_stock", has);
+  if (prop) qs.set("goods_property", prop);
+  try {
+    const d = await api("GET", "/api/stock/batch?" + qs);
+    document.getElementById("tbody").innerHTML = d.stock_batches.map((r) =>
+      `<tr>
+        <td>${r.id}</td><td>${esc(r.batch_no)}</td>
+        <td>${esc(r.sku)} · ${esc(r.product_name)}</td>
+        <td>${esc(r.location_code)} · ${esc(r.location_name)}</td>
+        <td>${esc(r.owner_code)}</td>
+        <td>${r.qty}</td><td>${r.allocated_qty}</td><td>${r.available_qty}</td>
+        <td>${esc(r.expiry_date || "—")}</td>
+        <td>${esc(r.goods_property || "—")}</td>
+        <td>${esc(r.stock_status || "—")}</td>
+        <td>${r.designated_customer_id == null ? "通用" : "客户 #" + r.designated_customer_id}</td>
+      </tr>`).join("") || `<tr><td colspan="12" class="muted">暂无批次库存明细</td></tr>`;
+    document.getElementById("pageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= d.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+async function reconcile() {
+  const box = document.getElementById("reconcileBox");
+  box.innerHTML = "<span>核对中…</span>";
+  try {
+    const i1 = await api("GET", "/api/stock/reconcile");
+    const both = await api("GET", "/api/stock/batch-reconcile");
+    const seg = (label, ok, n) =>
+      `<span class="${ok ? "ok" : "bad"}">${label} ${ok ? "通过" : "不一致"}（${n} 条异常）</span>`;
+    box.innerHTML =
+      seg("I1 主账=流水", i1.consistent, (i1.mismatches || []).length) +
+      seg("I2 明细=批次流水", both.i2 && !both.i2.mismatches.length,
+          both.i2 ? both.i2.mismatches.length : 0) +
+      seg("I3 主账=明细", both.i3 && !both.i3.mismatches.length,
+          both.i3 ? both.i3.mismatches.length : 0);
+    if (!both.consistent) {
+      showMsg(document.getElementById("msg"),
+        "账目不一致：" + (both.mismatches[0] ? both.mismatches[0].issue : "未知"), "error");
+    } else {
+      showMsg(document.getElementById("msg"), "三条不变式全部通过", "success");
+    }
+  } catch (e) {
+    box.innerHTML = "";
+    showMsg(document.getElementById("msg"), "核对失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+load();
+</script>
+</body>
+</html>
