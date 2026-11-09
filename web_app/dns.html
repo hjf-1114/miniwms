@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>出库管理 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
+<style>
+.m23-notice { padding:9px 12px; border-radius:6px; font-size:13px; line-height:1.65;
+  margin:0 0 12px; background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }
+.m23-notice.ok { background:#f0fdf4; border-color:#bbf7d0; color:#166534; }
+.m23-pill { display:inline-block; border-radius:10px; padding:1px 8px; font-size:11px; white-space:nowrap; }
+.m23-risk { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }
+.m23-ok { background:#f1f5f9; color:#64748b; border:1px solid #e2e8f0; }
+</style>
 </head>
 <body>
 <div class="app">
@@ -42,6 +50,7 @@
 
   <div class="card" id="detailCard" style="display:none">
     <h2 id="detailTitle">出库单明细</h2>
+    <div id="riskNotice" class="m23-notice" style="display:none"></div>
     <div class="table-wrap">
       <table>
       <tbody id="dnMeta"></tbody>
@@ -64,6 +73,13 @@
       <thead><tr><th>明细</th><th>行</th><th>库位</th><th>数量</th></tr></thead>
       <tbody id="pickBody"></tbody>
     </table>
+    </div>
+    <h3 style="margin-top:14px">风险放行记录 <span class="muted text-sm">（专属库存发给其他客户时留痕；不拦截，但每次放行都可追溯）</span></h3>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>时间</th><th>批号</th><th>物料</th><th>库位</th><th>专属客户</th><th>本单客户</th><th>数量</th><th>动作</th><th>操作人</th></tr></thead>
+      <tbody id="riskBody"></tbody>
+      </table>
     </div>
   </div>
 </div>
@@ -165,6 +181,57 @@ async function showDetail(id) {
   ).join("");
   await loadLocs();
   renderLines();
+  await loadRiskLogs(id);
+  await showRiskNotice(id, d.status);
+}
+
+/** M23：发货前的事前提示条（只读预检，不拦截、不改库存）。 */
+async function showRiskNotice(dnId, status) {
+  const box = document.getElementById("riskNotice");
+  if (status === "shipped") {
+    box.className = "m23-notice ok";
+    box.innerHTML = "该出库单已发货；下方为本次发货产生的风险放行记录（如有）。";
+    box.style.display = "";
+    return;
+  }
+  try {
+    const chk = await api("GET", `/api/dns/${dnId}/reservation-check`);
+    if (!chk.risk_count) {
+      box.className = "m23-notice ok";
+      box.innerHTML = "✓ 风险预检通过：本次拣货未消耗其他客户的专属库存。";
+    } else {
+      const ids = [...new Set(chk.risks.map(r => r.designated_customer_id))];
+      box.className = "m23-notice";
+      box.innerHTML = `<b>⚠ 专属库存风险提示：</b>本次发货预计消耗 <b>${chk.risk_count}</b> 条专属库存`
+        + `（专属客户 ${ids.map(n => "#" + n).join("、")}），与本单客户不匹配。`
+        + `<br>系统<b>不会拦截</b>：点「发货」后由你决定是否继续；继续将写入风险放行日志，取消则不产生任何库存动作。`;
+    }
+    box.style.display = "";
+  } catch (e) {
+    box.style.display = "none";
+  }
+}
+
+/** 风险放行日志（只读）：按当前出库单过滤。 */
+async function loadRiskLogs(dnId) {
+  const body = document.getElementById("riskBody");
+  try {
+    const d = await api("GET", `/api/reservation-logs?dn_id=${dnId}&page_size=50`);
+    body.innerHTML = d.logs.length ? d.logs.map(r =>
+      `<tr>
+        <td>${esc(r.created_at)}</td><td>${esc(r.batch_no)}</td>
+        <td>${esc(r.sku || "")} ${esc(r.product_name || "")}</td>
+        <td>${esc(r.location_code || "")}</td>
+        <td>${esc(r.designated_customer_name || ("客户 #" + r.designated_customer_id))}</td>
+        <td>${esc(r.dn_customer_name || ("客户 #" + (r.dn_customer_id || "-")))}</td>
+        <td>${r.qty}</td>
+        <td><span class="m23-pill m23-risk">${r.acknowledged ? "确认后继续" : "API 直调继续"}</span></td>
+        <td>${esc(r.operator || "-")}</td>
+      </tr>`).join("")
+      : `<tr><td colspan="9" class="muted">暂无风险放行记录</td></tr>`;
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="9" class="muted">记录加载失败：${esc(e.message)}</td></tr>`;
+  }
 }
 
 function renderLines() {
@@ -200,14 +267,41 @@ async function doPick(lineId) {
 
 async function doShip() {
   if (!currentDn) return;
-  if (!confirm("确认发货？将按拣货明细逐库位扣减库存。")) return;
+  const msg = document.getElementById("msg");
+  const id = currentDn.dn.id;
+  let acknowledged = false;
   try {
-    const r = await api("POST", `/api/dns/${currentDn.dn.id}/ship`);
-    showMsg(document.getElementById("msg"), `发货成功，单据状态：${r.status}`, "success");
-    await showDetail(currentDn.dn.id);
+    // M23：事前预检。有风险时列出明细并交由用户决定「继续 / 不继续」；系统不强制拒绝。
+    const chk = await api("GET", `/api/dns/${id}/reservation-check`);
+    if (chk.risk_count > 0) {
+      const lines = chk.risks.slice(0, 8).map(r =>
+        `· ${r.sku || r.product_id} @ ${r.location_code || r.location_id}`
+        + ` 批号 ${r.batch_no} ${r.qty} 件｜专属客户 #${r.designated_customer_id}`
+        + `，本单客户 #${r.dn_customer_id || "未指定"}`).join("\n");
+      const more = chk.risk_count > 8 ? `\n… 另有 ${chk.risk_count - 8} 条` : "";
+      const go = confirm(
+        `⚠ 检测到 ${chk.risk_count} 条专属库存与客户不匹配：\n${lines}${more}\n\n`
+        + `系统不会拦截，是否继续发货？\n`
+        + `· 继续：正常扣减库存，并写入 ${chk.risk_count} 条「风险放行」审计日志\n`
+        + `· 取消：不发货、不扣减、不产生任何记录`);
+      if (!go) {
+        showMsg(msg, "已取消发货：未扣减库存，也未产生风险放行记录", "error");
+        return;
+      }
+      acknowledged = true;
+    } else if (!confirm("确认发货？将按拣货明细逐库位扣减库存。")) {
+      return;
+    }
+    const r = await api("POST", `/api/dns/${id}/ship`,
+      { risk_acknowledged: acknowledged });
+    const tail = r.risk_logged
+      ? `；⚠ 已记录 ${r.risk_logged} 条风险放行（专属库存与客户不匹配，未拦截）`
+      : "";
+    showMsg(msg, `发货成功，单据状态：${r.status}${tail}`, "success");
+    await showDetail(id);
     load();
   } catch (e) {
-    showMsg(document.getElementById("msg"), "发货失败：" + e.message, "error");
+    showMsg(msg, "发货失败：" + e.message, "error");
   }
 }
 

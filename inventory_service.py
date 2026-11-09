@@ -152,27 +152,39 @@ def _has_batch_table(db):
 
 
 def spread_batches(db, owner_id, product_id, location_id, qty, *,
-                   for_allocation=False):
+                   for_allocation=False, rows=None):
     """按 FEFO（效期升序，空效期排最后）把数量分摊到现有明细行，返回维度列表。
 
     出库 / 上架来源位 / 盘点盘亏 / 拣货分配共用此函数；
     ``for_allocation=True`` 时只产生 ``allocated`` 增量、``qty`` 恒为 0（I1/I2 不受影响）。
+
+    ``rows`` 仅供**只读风险预检**传入本地余额快照（元素为可写 dict，字段同
+    ``stock_batch`` 且已按 FEFO 排序）。分摊逻辑仍是同一个函数，保证「预检测到的
+    批次」与「发货逐条实扣的批次」严格一致；默认路径（``rows=None``）行为不变。
     """
     if qty <= 0:
         return []
-    if not _has_batch_table(db):
-        return []
-    rows = db.execute(
-        """SELECT * FROM stock_batch
-           WHERE owner_id = ? AND product_id = ? AND location_id = ? AND qty > ?
-           ORDER BY (expiry_date = ''), expiry_date, id""",
-        (owner_id, product_id, location_id, EPS),
-    ).fetchall()
+    if rows is None:
+        if not _has_batch_table(db):
+            return []
+        rows = db.execute(
+            """SELECT * FROM stock_batch
+               WHERE owner_id = ? AND product_id = ? AND location_id = ? AND qty > ?
+               ORDER BY (expiry_date = ''), expiry_date, id""",
+            (owner_id, product_id, location_id, EPS),
+        ).fetchall()
     remaining, out = qty, []
     for r in rows:
         if remaining <= EPS:
             break
-        take = min(r["qty"], remaining)
+        # 分配动作按「未分配余量 qty - allocated_qty」分摊，扣减动作按「在手 qty」
+        # 分摊。否则同一明细行会被重复分配（分配不改 qty），而发货按在手顺序扣减时
+        # 会去释放一条 allocated=0 的明细，直接 400。两者对称才能支持分次拣货。
+        capacity = ((r["qty"] - (r["allocated_qty"] or 0))
+                    if for_allocation else r["qty"])
+        if capacity <= EPS:
+            continue
+        take = min(capacity, remaining)
         dim = {k: r[k] for k in BATCH_DIMS}
         dim["production_date"] = r["production_date"]
         item = dict(dim)

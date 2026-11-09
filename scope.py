@@ -25,6 +25,7 @@ OWNER_SCOPED_TABLES = (
     "asn", "dn", "stock", "stock_movement",
     "transfer", "stocktake", "stocktake_line",
     "batch", "batch_receipt",
+    "customer_reservation_log",  # M23 风险放行日志，查询已接入 owner_where(table="rl")
 )
 # 公共表：不按货主隔离（仓库靠选库隔离，布局/权限表属于控制面）
 PUBLIC_TABLES = (

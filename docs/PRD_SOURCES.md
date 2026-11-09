@@ -899,6 +899,55 @@ M22 库存调整单 + 盘点增强（2026-11-06）。提交哈希以 `git log` /
 
 ---
 
+### 2.7 [实现] M23 口径修订增量：风险提示与放行日志（2026-11-09 二次确认）
+
+> **本节性质**：用户在同一天对 M23 第 2 条确认口径做修订，仍属 M23，**不新增里程碑、
+> 不新增页面、不新增进度表行**。按「增量追加不重写」原则，§2.6 原文（含
+> 「`dns.html` 本轮零改动」）与 §3.6 原文（含「无新增端点、无新增表」）**一律保留用于追溯**，
+> 其 v1 时点描述由本节与 §3.7 覆盖；进度表 #9 / #10 / #12 / #22 原行均不改。
+> 回溯进度仍 **2/21**，追加页仍 **3/3**，分母不混算。
+>
+> 用户口径原文：「专属库存发给其他客户是需要提示，让用户操作是否要继续，可以选择继续
+> 也可以不继续。但要补事前提示 + 风险放行日志。」另确认「填 `/` = 确实没有（放行 +
+> 回溯兜底 + 告警）」理解无误，销退口径不变。
+
+**[业务] 口径修订**
+
+| 项 | v1 口径（§2.6） | 修订后口径（本节） |
+|---|---|---|
+| 专属库存发其他客户 | 只落纯规则，不做页面提示、不接路由 | **提示 + 由用户决定是否继续 + 留痕**；仍不拦截、不改 FEFO、不实现批次级分配 |
+| 出库路由 | 不接 `routes_dn.py` | 接入**只读预检与审计留痕**，但**不接入拒绝逻辑**；`reservation_rules.py` 仍为纯规则层 |
+| 页面 | `dns.html` 零改动 | `dns.html` 增事前提示条、二次确认、风险放行记录区（进度表 #12 的增量） |
+| 数据表 / 端点 | 无新增 | 新增 `customer_reservation_log` 1 表 + 2 个端点（见 §3.7） |
+| 未变 | — | 指定客户只在 ASN 明细行、验收取值、专属与通用不合并、质量状态两字段独立、`/` 销退口径、M24 转移单、M35 分配接入边界 |
+
+**[功能] `dns.html`（#12）页面增量**
+
+| 区块 | 查询／展示 | 操作与交互 |
+|---|---|---|
+| 事前提示条 `#riskNotice` | 明细卡顶部常驻；无风险＝绿色「风险预检通过」；有风险＝黄色，显示条数与专属客户、写明「不会拦截」「继续将写入风险放行日志，取消则不产生任何库存动作」；已发货单据＝已发货说明 | 打开明细时自动调 `GET /api/dns/<id>/reservation-check`，只读、不写库 |
+| 发货二次确认 `doShip()` | 有风险时列出最多 8 条明细（SKU／库位／批号／数量／专属客户／本单客户），超出显示「另有 N 条」 | 「取消」＝不发 `ship` 请求、库存与状态不动、日志为空；「继续」＝POST `ship` 带 `risk_acknowledged: true`；无风险时走原有「确认发货？」普通确认 |
+| 风险放行记录 `#riskBody` | 按当前 DN 过滤，最多 50 条；显示时间／批号／物料／库位／专属客户名／本单客户名／数量／动作／操作人；无记录显示「暂无风险放行记录」 | 发货成功后随 `showDetail()` 自动刷新；只读，页面不提供改写或删除 |
+
+**[实现] 取证与验收**
+
+- 后端取证：`constants.py`（两个 action 常量）、`reservation_audit.py`（`inspect_dn()` /
+  `record_risk()` / `_local_balances()` / `_consume_local()`）、`routes_reservation_log.py`
+  （`log_bp`）、`routes_dn.py`（`reservation_check()` / `ship()`）、
+  `main.py::_migrate_m23()`（`customer_reservation_log` 与两个索引）、
+  `inventory_service.spread_batches(rows=...)`。
+- 前端取证：`web_app/dns.html`（`#riskNotice` / `#riskBody` / `showRiskNotice()` /
+  `loadRiskLogs()` / `doShip()`）。
+- 单测：`tests/test_m23_reservation_audit.py` 15 例，含分次拣货两向一致性回归。
+- 全量 `unittest discover -s tests` **390 例全绿**；真实 Chrome E2E（独立库 + 端口 5115）
+  **26/26**；隔离 15/15、格子 13/13、M21 10/10、M22 28/28、M23 v1 28/28 五组基线
+  复跑无回归；`node --check` 五个页面内联脚本通过。
+- **边界如实记录**：仍不拦截发货；`dn_pick` 仍未记录实际消耗的批次归属（预检是按
+  同一 FEFO 函数推断，不是回读拣货明细）；日志只记录风险条目，不记录无风险放行；
+  M35 批次级分配、「先专属后通用」与 FEFO 优先级冲突仍未决定。以上不得写成已实现。
+
+---
+
 ## 3. API 与数据模型（单列一章）
 
 > 用户口径 4「单列一章」：**端点清单与数据表字典独立成章**，页面记录里只引用端点名，不复制字段定义。
@@ -1192,6 +1241,54 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 
 ---
 
+### 3.7 [实现] M23 口径修订增量：端点、数据表与分摊修复（2026-11-09 追加）
+
+> §3.6 的「无新增端点、无新增表」是 **v1 时点事实**，保留原文用于追溯；
+> 同日用户修订口径后的增量见本节。按「增量追加不重写」原则，不修改 §3.1–§3.6 已有内容。
+
+**[实现] 新增端点**
+
+| 方法 | 端点 | 说明 |
+|---|---|---|
+| GET | `/api/dns/<id>/reservation-check` | 发货前只读预检：返回 `dn_id` / `dn_code` / `customer_id` / `risk_count` / `risks[]`；DN 不存在 404；不拦截、不写库 |
+| GET | `/api/reservation-logs` | 风险放行日志只读查询：`dn_id` / `keyword` / `page` / `page_size`（≤200），JOIN 物料、库位与两个客户名称，`S.owner_where(table="rl")` 注入货主隔离；**无写端点**，参数非法 400 |
+
+**[实现] 既有端点增量**
+
+| 方法 | 端点 | 增量 |
+|---|---|---|
+| POST | `/api/dns/<id>/ship` | 请求体可选 `risk_acknowledged`（布尔）；扣减前做只读预检并在同一事务内写风险日志；响应增 `risk_count` / `risk_logged` / `warnings`；**不因风险拒绝**，原状态机（未拣满 400、重复发货 409）不变 |
+
+**[实现] 新增数据表（幂等建表）**
+
+| 表 | 字段 | 说明 |
+|---|---|---|
+| `customer_reservation_log` | `id` / `dn_id` / `dn_code` / `dn_customer_id` / `owner_id` / `product_id` / `location_id` / `batch_no` / `designated_customer_id` / `qty` / `code` / `reason` / `action` / `acknowledged` / `operator` / `created_at` | 每次风险放行逐条落库；`idx_resv_log_dn(dn_id)`、`idx_resv_log_owner(owner_id)` 两个索引；与 `ship()` 同事务，失败随事务回滚 |
+
+**[实现] 常量与动作**
+
+| 常量／动作 | 值／含义 |
+|---|---|
+| `RESERVATION_RISK_ALLOWED` | `risk_allowed`：界面二次确认后继续，`acknowledged = 1` |
+| `RESERVATION_RISK_ALLOWED_UNACK` | `risk_allowed_unack`：API 直调继续（无确认标记），`acknowledged = 0` |
+| `CUSTOMER_RESERVED_FORBIDDEN` | 沿用 §3.6 规则码，作为日志 `code` 与 `reason` 来源；规则层不改动 |
+
+**[实现] 分摊函数增量与既有缺陷修复**
+
+| 位置 | 增量 |
+|---|---|
+| `inventory_service.spread_batches()` | 新增可选 `rows=` 参数（只读预检传入本地余额快照，共用同一 FEFO 分摊逻辑）；默认 `rows=None` 路径行为不变；`for_allocation=True` 时按 `qty - allocated_qty` 取容量，扣减动作仍按 `qty` |
+| `reservation_audit.inspect_dn()` | 按 `dn_pick` 顺序在内存快照上逐条模拟扣减，使「预计消耗批次」与 `ship()` 逐条实扣一致；分摊不足跳过该库位，不制造额外 4xx |
+| 修复的两个缺陷 | ① 一次性预检重复记第一批／漏报第二批；② 同一行分次拣货时分配重复压在首批、发货释放到 `allocated_qty = 0` 的明细导致 400 |
+
+**[实现] 事务与隔离**
+
+- `record_risk()` 与 `adjust_stock()`、`dn.status` 更新同处 `BEGIN IMMEDIATE` 事务；
+  发货失败／重复发货／用户取消均不产生脏日志。
+- 日志查询与业务列表共用 `owner_where()` 授权集合；预检端点只读。
+
+---
+
 ## 4. 里程碑与页面归属索引
 
 | 里程碑 | 主题（以 `DEVELOPMENT.md` Roadmap 为准） | 主要页面 | 状态 |
@@ -1219,6 +1316,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | M21 | 批次级库存明细层（两层账 / 流水 9 维 / 五动作同步钩子 / I2·I3 硬校验 / 老库回填） | `stock_batch.html` + `asns.html` / `dns.html` / `transfers.html` / `stocktakes.html` 的过账链路 | **已完成 2026-11-06** |
 | M22 | 库存调整单 + 盘点增强（唯一手工数量入口 / 盘点方案四类盘点 / 真盲盘分级接口 / 差异人工生成调整单 / 审核·取消·冲销） | `stock_adjustments.html` / `stocktake_plans.html` + `stocktakes.html` 增强 | **已完成 2026-11-06** |
 | M23 | 指定客户专属库存 + 销退口径（指定客户贯穿四层 / 销退外部批次号必填且 `/` 占位 / 出库校验只落规则 / 质量状态两字段独立） | `asns.html` / `asn_receive.html` / `stock_batch.html` 三页增强，**无新增页面** | **已完成 2026-11-09** |
+| M23 补充（非新里程碑） | 同日口径修订：专属库存风险事前提示 + 用户二次确认（可继续／可不继续）+ 风险放行日志，**仍不拦截** | `dns.html` 增强（#12 增量记 §2.7），**无新增页面** | **已完成 2026-11-09** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -1240,6 +1338,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | v0.5 | 2026-11-06 | **M21 批次级库存明细层**：进度表续编 #22（M21 追加页，不计入回溯 21 页分母）+ 追加 §2.3「批次库存」11 项完整记录；记录 `stock_batch` 两层账、流水 9 维、I1/I2/I3 三条不变式、老库回填、五动作钩子、验收基线 331 例 + E2E 10/10。**按增量追加规则不改写 §1 已有 21 行、§2.1/§2.2、§3–§6.5 内容** | 取证自 `main.py::_migrate_m21_columns`、`inventory_service.py`、`routes_asn.py`、`routes_stock.py`、`web_app/stock_batch.html`、`web_app/js/layout.js`、`tests/test_m21_stock_batch.py`、`DEVELOPMENT.md` M21 章 |
 | v0.6 | 2026-11-06 | **M22 库存调整单 + 盘点增强**：进度表续编 #23 / #24（M22 追加页，不计入回溯 21 页分母）+ 追加 §2.4「盘点方案」、§2.5「库存调整」两页 11 项完整记录 + §3.5 增量端点与数据表（含 `stocktake_line` 唯一键重建）；进度改为 **2/21（回溯）+ 3/3（追加页）**；里程碑索引加 M22。记录数量变化唯一入口、真盲盘分级接口、按批号盘点、审核/取消/冲销、验收基线 356 例 + E2E 28/28。**按增量追加规则不改写 §1 已有 21 行、§2.1/§2.2/§2.3、§3.1–§3.4、§4 已有行、§5–§6.5 内容**；`stocktakes.html`（#13）增量记在 §2.5 与 §3.5，不改 #13 原行 | 取证自 `main.py::_migrate_m22()`、`routes_stocktake.py`、`routes_stock_adjustment.py`、`routes_stocktake_plan.py`、`adjustment_service.py`、`stocktake_service.py`、`constants.py`、`web_app/stock_adjustments.html`、`web_app/stocktake_plans.html`、`web_app/stocktakes.html`、`web_app/js/layout.js`、`tests/test_m22_adjustment.py`、`DEVELOPMENT.md` M22 章 |
 | v0.7 | 2026-11-09 | **M23 指定客户专属库存 + 销退口径**：M23 不新增页面，进度表 #9 / #10 / #22 原行**不改**，增量按「追加不重写」记在新增 §2.6（业务口径 / 三页功能增量 / 取证与边界）与 §3.6（端点与数据表增量 / 常量与规则 / 口径覆盖说明）；§4 加 M23 行；**回溯仍 2/21、追加页仍 3/3，分母不混算**。记录用户四条确认口径（质量状态 B / 出库校验只落规则 A / 销退缺号 400 且 `/` 占位 / PRD 回溯另起提交）、设计 §5.2 与 §7.4 的字段冲突消解、§7.5 销退口径覆盖、验收基线 375 例 + E2E 28/28 + 四组基线复跑；如实记录「出库路由未接入专属校验」等 4 条边界，**不把规划写成现状** | 取证自 `main.py::_migrate_m23()`、`constants.py`、`reservation_rules.py`、`batch_service.py`、`routes_asn.py`、`web_app/asns.html`、`web_app/asn_receive.html`、`web_app/stock_batch.html`、`tests/test_m23_designated.py`、`tests/test_batch.py`、`DEVELOPMENT.md` M23 章；交叉审阅为独立只读核对，未改代码 |
+| v0.8 | 2026-11-09 | **M23 同日口径修订（不新增里程碑、不新增页面）**：用户二次确认「专属库存发给其他客户要提示，让用户决定是否继续，可以选择继续也可以不继续，但要补事前提示 + 风险放行日志」，并确认 `/` 口径理解无误。按「增量追加不重写」新增 §2.7（`dns.html` #12 页面增量 / 业务口径修订对照 / 取证与边界）与 §3.7（2 个新端点 / `ship` 增量 / `customer_reservation_log` 新表 / 常量 / `spread_batches(rows=)` / 事务与隔离）；§4 加「M23 补充」一行；**§2.6、§3.6、v0.7 原文一律保留用于追溯**，其 v1 时点表述（「`dns.html` 零改动」「无新增端点、无新增表」「出库校验只落规则不接路由」）由本次增量覆盖；进度表 #9 / #10 / #12 / #22 原行不动，**回溯仍 2/21、追加页仍 3/3**。如实记录两个回归测试暴露并修复的既有缺陷（预检批次与实扣不一致、分次拣货分配／释放不对称），以及「仍不拦截、`dn_pick` 未记录实际批次归属、M35 分配未接入」等边界，**不把规划写成现状**；验收基线 390 例 + E2E 26/26 + 五组基线复跑 | 取证自 `constants.py`、`reservation_audit.py`、`routes_reservation_log.py`、`routes_dn.py`、`inventory_service.py`、`main.py::_migrate_m23()`、`web_app/dns.html`、`tests/test_m23_reservation_audit.py`、`DEVELOPMENT.md` M23 章「同日口径修订补充」、`README.md` M23 补充段；交叉审阅为独立只读核对，未改代码 |
 
 ---
 

@@ -168,6 +168,10 @@ def parse_doc_flags(payload):
 CUSTOMER_RESERVED_OK = "OK"
 CUSTOMER_RESERVED_FORBIDDEN = "CUSTOMER_RESERVED_FORBIDDEN"
 RESERVATION_CONSUME_OWN_FIRST = "own_first"  # 建议先专属后通用，仅为规则定义
+# 用户 2026-11-09 二次确认：专属库存发给其他客户「要提示 + 要留痕，但允许继续」。
+# 规则层仍不拦截、不实现分配；下面两个值只用于风险放行日志的 action。
+RESERVATION_RISK_ALLOWED = "risk_allowed"          # 前端二次确认后继续
+RESERVATION_RISK_ALLOWED_UNACK = "risk_allowed_unack"  # API 直调，未经界面确认
 
 # 销退单外部批次号（＝外部传入的原内部批次号）：必填；确实没有时显式填 '/'
 EXTERNAL_BATCH_NO_ABSENT = "/"

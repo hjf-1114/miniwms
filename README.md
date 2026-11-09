@@ -219,14 +219,36 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **质量状态按 B 口径**：`goods_property`（合格/不合格）与 `stock_status`
   （非限制/质检/冻结）两个独立字段，枚举不改；验收时可录质量状态。
 - **出库校验只落规则**：新增 `reservation_rules.py` 纯函数（`CUSTOMER_RESERVED_FORBIDDEN`
-  规则表、先专属后通用建议、质量状态转换矩阵），**不接 `routes_dn.py`、不做页面提示**，
-  批次级出库分配留 M35 接入。
+  规则表、先专属后通用建议、质量状态转换矩阵），始终不接批次级分配（留 M35）；
+  **v1 时点**不接 `routes_dn.py`、不做页面提示，同日用户二次确认后已补「事前提示 +
+  风险放行日志」（仍不拦截），见下方「M23 口径修订补充」。
 - **前端**：收货单条件字段 + 内联校验 + 一键 `/`；验收页上下文提示条 / 草稿值带出 /
   指定客户与质量状态下拉；批次库存页专属徽章（显示客户名）与客户 / 质量状态筛选。
-- **无新增端点 / 无新增表**：只扩 `POST /api/asns`、`POST /api/asns/<id>/receive`、
-  `GET /api/asns/<id>` 的请求与响应字段，`main.py::_migrate_m23()` 幂等补 4 列。
+- **v1 时点无新增端点 / 无新增表**：只扩 `POST /api/asns`、`POST /api/asns/<id>/receive`、
+  `GET /api/asns/<id>` 的请求与响应字段，`main.py::_migrate_m23()` 幂等补 4 列；
+  后续补充新增 2 个端点与 1 张日志表，见下方「M23 口径修订补充」。
 - 验证：unittest **375 绿**（新增 19 例 + 按新口径适配 1 例销退既有用例）、
   真实 Chrome E2E **28/28**；隔离 / 格子 / M21 / M22 四组基线 E2E 复跑无回归。
+
+#### M23 口径修订补充（2026-11-09，同一里程碑，不新增编号）
+
+> 用户二次确认：「专属库存发给其他客户要提示，让用户决定是否继续，可以选择继续也可以
+> 不继续，但要补事前提示 + 风险放行日志」。**仍不拦截、不改 FEFO、不实现批次级分配**。
+
+- **事前提示**：`GET /api/dns/<id>/reservation-check` 只读预检；`dns.html` 明细页常驻提示条
+  （无风险绿色通过 / 有风险黄色列出条数），点「发货」后 `confirm()` 列出风险明细，
+  用户可「继续」或「取消」；取消不发任何写请求，库存与状态不动、日志为空。
+- **风险放行日志**：`customer_reservation_log` 表 + `GET /api/reservation-logs`
+  （只读、带货主隔离、支持 `dn_id` / `keyword` / 分页）；继续发货才逐条写日志，
+  与扣减同事务，发货失败或重复发货不产生脏记录。`action` 区分界面确认后继续
+  `risk_allowed` 与 API 直调继续 `risk_allowed_unack`。`ship()` 响应带
+  `risk_count` / `risk_logged` / `warnings`。
+- **预检与实扣严格一致**：预检在内存余额快照上按 `dn_pick` 顺序模拟逐条扣减，并与发货
+  共用 `inventory_service.spread_batches()`；顺带修复分次拣货时「分配按在手、扣减按在手」
+  造成的分配／释放不对称（原会在发货时报 400），分配动作现按 `qty - allocated_qty` 取容量。
+- **验证**：unittest **390 绿**（新增 15 例 `tests/test_m23_reservation_audit.py`）、
+  真实 Chrome E2E **26/26**（独立库 + 端口 5115）；隔离 15/15、格子 13/13、M21 10/10、
+  M22 28/28、M23 v1 28/28 五组基线复跑无回归。
 
 ### 规划中（见 DEVELOPMENT.md）
 
@@ -272,8 +294,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/asns/<id>/cancel` | 取消（仅未收货） |
 | POST | `/api/dns` | 创建出库单（行 = 物料×订购数量，校验货主一致性；单号留空自动生成 `DN-日期-流水`；支持 单据类型/外部单号/订单来源/来源仓库/承运商/自定义字段，自动算 总数量·品类数；可选 `is_virtual`/`is_direct`/`is_cold_chain`/`is_hazard`（0/1，默认 0）与 `external_doc_type`（≤32 字符，默认空），**仅记录不拦截**） |
 | GET | `/api/dns` | 出库单列表，支持 `keyword`/`status`/分页 |
-| POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库） |
-| POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存） |
+| POST | `/api/dns/<id>/pick` | 拣货分配（可用量拦截超卖，明细落库；同一行可分次拣，分配按 `qty - allocated_qty` 取容量） |
+| GET | `/api/dns/<id>/reservation-check` | M23 发货前**只读**预检专属库存风险（不拦截、不写库），返回 `risk_count` / `risks` |
+| POST | `/api/dns/<id>/ship` | 发货（要求拣满，逐库位扣减库存）；可选 `risk_acknowledged`，风险放行与扣减同事务留痕，响应带 `risk_count` / `risk_logged` / `warnings` |
 | POST | `/api/dns/<id>/cancel` | 取消（仅未拣货） |
 | POST | `/api/transfers` | 创建移库单（行 = 物料×来源位×目标位×数量，校验货主/库位一致性） |
 | GET | `/api/transfers` | 移库单列表，支持 `keyword`/`status`/分页 |
@@ -319,6 +342,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET | `/api/stock/reconcile` | I1 余额核对（主账余额 = 流水累加，返回不一致明细；M6 语义不变） |
 | GET | `/api/stock/batch` | M21 批次级库存余额，支持 `batch_no` / `goods_property` / `stock_status` / `designated_customer_id` / `has_stock` / 分页；接入货主隔离 |
 | GET | `/api/stock/batch-reconcile` | M21 校验 I2（批次明细＝批次流水累加）+ I3（主账＝批次明细累加），**硬校验无灰度豁免**，分段返回 `i2` / `i3` 的 `checked` 与 `mismatches` |
+| GET | `/api/reservation-logs` | M23 风险放行日志（**只读**，带货主隔离，支持 `dn_id` / `keyword` / 分页；JOIN 物料、库位与客户名称） |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`、`default_zone_id` 推荐储区） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页（返回 `default_zone_name`） |
@@ -352,6 +376,8 @@ putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，�
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则；M23 销退外部批次号校验）
 reservation_rules.py  M23 规则层（纯函数）：指定客户出库校验规则表、先专属后通用建议、质量状态转换矩阵；不接路由
+reservation_audit.py  M23 补充：专属库存风险只读预检 + 放行日志落库（内存余额快照按发货顺序模拟，不拦截）
+routes_reservation_log.py M23 补充：风险放行日志只读查询 Blueprint（/api/reservation-logs，带货主隔离）
 routes_owner.py       货主主数据 Blueprint
 routes_product.py     物料主数据 Blueprint（含推荐储区）
 routes_location.py    库位主数据 Blueprint（含仓库/储区/混放继承）
@@ -359,7 +385,7 @@ routes_zone.py        储区主数据 Blueprint
 routes_product_location.py 货品固定货位绑定 Blueprint
 routes_putaway.py     上架推荐只读 API Blueprint
 routes_asn.py         收货单与上架 Blueprint（验收入库同事务写批次信息）
-routes_dn.py          出库单（拣货/发货）Blueprint
+routes_dn.py          出库单（拣货/发货）Blueprint；M23 补充发货前只读风险预检与放行留痕（不拦截）
 routes_stock.py       库存账/流水/余额核对只读 Blueprint
 routes_customer.py   客户主数据 Blueprint（出库收货方维度）
 routes_user.py        用户与角色（登录/权限）Blueprint，全部走中央库
@@ -400,8 +426,13 @@ DEVELOPMENT.md        里程碑开发记录
   冲销是生成反向单而非回改原单；盲盘录入接口不返回账存与差异，复核接口才返回
 - **专属库存与销退（M23）**：`designated_customer_id` 只在 ASN 明细行、默认空，验收时取值才写进
   `batch_receipt` / `stock_batch` / `stock_movement`；专属与通用按唯一键分开且永不合并；
-  出库校验只落纯规则（M35 才接入分配）；销退外部批次号必填，缺号 400，显式 `/` 才走回溯并告警；
+  出库校验纯规则层不接批次级分配（M35 才接入），发货前只做只读预检 + 风险放行留痕、不拦截；
+  销退外部批次号必填，缺号 400，显式 `/` 才走回溯并告警；
   `goods_property` 与 `stock_status` 两字段独立，绑定解绑 / 状态变更一律走 M24 转移单
+- **风险放行不拦截（M23 补充）**：预检与日志都按 `dn_pick` 顺序在内存余额快照上模拟逐条扣减，
+  与发货共用 `spread_batches()`；用户取消＝零写请求，继续才在发货同事务内逐条写
+  `customer_reservation_log`（界面确认 / API 直调用 `action` 区分）；分配动作按
+  `qty - allocated_qty` 取容量，扣减动作按 `qty`，保证分次拣货的分配与释放对称
 - **数据隔离三层**：连接层按 `warehouse.db_path` 选库（仓库），SQL 层注入 `owner_id`（货主），数据层行内带标识列；
   货主 / 仓库主数据以**中央库为唯一权威写入点**，业务库持有只读副本
 - **ALL 必须显式**：账号「看全部仓 / 全部货主」由 `user.*_scope='all'` 明确给出；授权行缺失、上下文缺失一律 403 拒绝，

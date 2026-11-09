@@ -692,6 +692,7 @@ def _migrate_m23(conn):
 
     * ``asn.external_batch_no``：销退单头登记外部传入的原内部批次号，作为明细行默认值。
     * ``batch_receipt`` 三列：指定客户、外部批次号、缺号告警。
+    * ``customer_reservation_log``：M23 补充的风险放行审计表（幂等建表 + 两个索引）。
     新库 DDL 已带这些列，老库由 ``_ensure_columns`` 补齐，两条路径执行同一套语义。
     """
     _ensure_columns(conn, "asn", (
@@ -702,6 +703,32 @@ def _migrate_m23(conn):
         ("external_batch_no", "TEXT NOT NULL DEFAULT ''"),
         ("warning", "TEXT NOT NULL DEFAULT ''"),
     ))
+    # M23 补充（用户 2026-11-09 二次确认）：专属库存发给其他客户允许继续，
+    # 但每次风险放行都要留痕。只建审计表，不参与任何拦截判断。
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS customer_reservation_log (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            dn_id                   INTEGER NOT NULL,
+            dn_code                 TEXT    NOT NULL DEFAULT '',
+            dn_customer_id          INTEGER,
+            owner_id                INTEGER NOT NULL,
+            product_id              INTEGER NOT NULL,
+            location_id             INTEGER NOT NULL,
+            batch_no                TEXT    NOT NULL DEFAULT '',
+            designated_customer_id  INTEGER,
+            qty                     REAL    NOT NULL DEFAULT 0,
+            code                    TEXT    NOT NULL DEFAULT '',
+            reason                  TEXT    NOT NULL DEFAULT '',
+            action                  TEXT    NOT NULL DEFAULT 'risk_allowed',
+            acknowledged            INTEGER NOT NULL DEFAULT 0,
+            operator                TEXT    NOT NULL DEFAULT '',
+            created_at              TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_resv_log_dn    ON customer_reservation_log(dn_id);
+        CREATE INDEX IF NOT EXISTS idx_resv_log_owner ON customer_reservation_log(owner_id);
+        """
+    )
 
 
 def init_db(path=None):
@@ -1463,6 +1490,7 @@ else:
     from routes_owner_warehouse import ow_bp  # noqa: E402
     from routes_stock_adjustment import adj_bp  # noqa: E402
     from routes_stocktake_plan import plan_bp  # noqa: E402
+    from routes_reservation_log import log_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1485,3 +1513,4 @@ else:
     app.register_blueprint(ow_bp)
     app.register_blueprint(adj_bp)
     app.register_blueprint(plan_bp)
+    app.register_blueprint(log_bp)

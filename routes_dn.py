@@ -19,8 +19,15 @@ from flask import Blueprint, jsonify, request
 import constants as C
 from inventory_service import StockError, adjust_stock
 from main import get_db, gen_doc_no, request_payload
+import reservation_audit as RA
 
 dn_bp = Blueprint("dn", __name__, url_prefix="/api/dns")
+
+
+def _operator():
+    from flask import g
+    user = getattr(g, "current_user", None) or {}
+    return user.get("username", "") if isinstance(user, dict) else ""
 
 
 def _load_dn(db, dn_id):
@@ -323,10 +330,31 @@ def pick(dn_id):
                     "lines": [_dict_line(l) for l in _load_lines(db, dn_id)]})
 
 
+@dn_bp.route("/<int:dn_id>/reservation-check", methods=["GET"])
+def reservation_check(dn_id):
+    """M23：发货前**只读**预检专属库存风险，供前端做二次确认。
+
+    用户 2026-11-09 二次确认口径：风险操作允许继续，但必须事前提示 + 留痕。
+    本端点不拦截、不写库、不改分配；风险清单按与发货同一套 FEFO 分摊推断。
+    """
+    data = RA.inspect_dn(get_db(), dn_id)
+    if data is None:
+        return jsonify(ok=False, error="DN 不存在"), 404
+    return jsonify(ok=True, **data)
+
+
 @dn_bp.route("/<int:dn_id>/ship", methods=["POST"])
 def ship(dn_id):
-    """发货：所有行拣满后，按拣货明细逐库位扣减在手与分配，状态 → shipped。"""
+    """发货：所有行拣满后，按拣货明细逐库位扣减在手与分配，状态 → shipped。
+
+    M23 补充：专属库存发给其他客户**允许继续**；发货前把风险清单写入
+    ``customer_reservation_log``（与扣减同事务），响应带 warnings 供前端回显。
+    """
     db = get_db()
+    payload = request_payload() or {}
+    acknowledged = bool(payload.get("risk_acknowledged"))
+    operator = _operator()
+    risks, logged = [], 0
     dn = _load_dn(db, dn_id)
     if dn is None:
         return jsonify({"ok": False, "error": "DN 不存在"}), 404
@@ -344,6 +372,10 @@ def ship(dn_id):
 
         # 按拣货明细逐库位扣减（qty 与 allocated 同步清掉）
         picks = _load_picks(db, dn_id)
+        # M23 风险放行：先只读预检 + 落审计日志，随后照常发货（不拦截、不改分配）
+        inspection = RA.inspect_dn(db, dn_id)
+        risks = inspection["risks"] if inspection else []
+        logged = RA.record_risk(db, dn_id, risks, operator, acknowledged)
         for p in picks:
             adjust_stock(db, dn["owner_id"], p["product_id"],
                          p["location_id"], -p["qty"], C.MOVEMENT_DN_SHIP, dn_id,
@@ -359,6 +391,8 @@ def ship(dn_id):
         return jsonify({"ok": False, "error": str(e)}), 400
 
     return jsonify({"ok": True, "status": C.DN_SHIPPED,
+                    "risk_count": len(risks), "risk_logged": logged,
+                    "warnings": risks,
                     "lines": [_dict_line(l) for l in _load_lines(db, dn_id)]})
 
 

@@ -1273,5 +1273,76 @@ M19 `batch_key` 指纹（设计 §6.2 口径），同一批货分给两个客户
   本轮未实现；当前只校验「必填 / `/` 占位」，不校验该外部号在本系统存在。
 - PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交，不与代码提交混在一起。
 
+### 同日口径修订补充：专属库存风险提示 + 放行日志（2026-11-09，仍属 M23）
+
+> **触发**：M23 交付后用户修订第 2 条确认口径：「专属库存发给其他客户是需要提示，
+> 让用户操作是否要继续，可以选择继续也可以不继续。但要补事前提示 + 风险放行日志。」
+> 并确认「填 `/` = 确实没有（放行 + 回溯兜底 + 告警）」理解无误，销退口径不动。
+> **仍不拦截、不实现批次级分配、不改 FEFO 顺序**；M35 接入分配的边界不变。
+> 本节覆盖上文「出库校验规则未接入 `routes_dn.py`」中「不接路由」的 v1 时点表述：
+> 路由现接入**只读预检与留痕**，但**不接入拒绝逻辑**。
+
+**[业务] 口径**
+
+| 项 | 口径 |
+|---|---|
+| 风险判定 | 以「本单客户」对比「将消耗批次明细的 `designated_customer_id`」；通用库存或同客户＝无风险，异客户／未指定客户＝有风险 |
+| 事前提示 | 明细页常驻提示条 + 点「发货」后的二次确认；两者都列出风险条数与明细 |
+| 用户选择 | 「取消」＝不发任何写请求，库存不动、状态不变、日志不产生；「继续」＝正常扣减并逐条写审计日志 |
+| 放行日志 | 每次继续都逐条留痕，含批号／物料／库位／专属客户／本单客户／数量／规则码／原因／动作／操作人／时间；只读可查，带货主隔离 |
+| 确认标记 | 界面确认后继续 `risk_allowed`；API 直调继续 `risk_allowed_unack`，两者都放行，仅审计标记不同 |
+
+**[功能] 页面增量（`dns.html`，进度表 #12 增量记在 PRD §2.7，不改 #12 原行）**
+
+- 明细卡顶部 `#riskNotice`：无风险显示绿色「风险预检通过」；有风险显示黄色提示条，
+  写明条数、不拦截、继续会留痕、取消不产生库存动作；已发货单据显示已发货说明。
+- `doShip()`：发货前调只读预检；有风险时 `confirm()` 列出最多 8 条明细（超出显示
+  「另有 N 条」），由用户决定继续／取消；继续才 POST `ship` 并带 `risk_acknowledged: true`。
+- 「风险放行记录」表格：按当前 DN 过滤，JOIN 出物料／库位／客户名；动作显示
+  「确认后继续」／「API 直调继续」；成功发货后自动刷新。
+
+**[实现] 后端**
+
+| 文件 | 增量 |
+|---|---|
+| `constants.py` | `RESERVATION_RISK_ALLOWED = "risk_allowed"` / `RESERVATION_RISK_ALLOWED_UNACK = "risk_allowed_unack"` |
+| `reservation_audit.py`（新） | `inspect_dn(db, dn_id)` 只读预检；`record_risk(db, dn_id, risks, operator, acknowledged)` 与发货同事务落库；`_local_balances()` / `_consume_local()` 做内存余额快照的顺序模拟 |
+| `routes_reservation_log.py`（新） | `log_bp`：`GET /api/reservation-logs`，支持 `dn_id` / `keyword` / 分页，JOIN 客户与物料名称，`S.owner_where(table="rl")` 货主隔离；**只读、无写端点** |
+| `routes_dn.py` | 新增 `GET /api/dns/<id>/reservation-check`；`ship()` 读 `risk_acknowledged`，扣减前 `inspect_dn()` + `record_risk()`，响应带 `risk_count` / `risk_logged` / `warnings`；不抛风险拒绝 |
+| `main.py` | `_migrate_m23()` 幂等建 `customer_reservation_log`（含 `idx_resv_log_dn` / `idx_resv_log_owner`）；注册 `log_bp` |
+
+**[实现] 两个一致性修复（回归测试暴露的既有缺陷，非本次功能引入）**
+
+1. **预检批次与实扣批次对齐**：`ship()` 按 `dn_pick` **逐条** `adjust_stock()` 扣减，
+   而一次性预检若直接对每条 pick 调 `spread_batches()`，第二条仍看到未扣减的账，
+   会把风险重复记到第一批（或漏报第二批）。`reservation_audit.inspect_dn()` 改为在
+   **本地余额快照**上按发货顺序逐条模拟扣减；`inventory_service.spread_batches()` 新增
+   可选 `rows=` 参数，让预检与实际扣减共用同一个 FEFO 分摊函数，默认路径行为不变。
+2. **分次拣货的分配／释放对称**：`spread_batches(for_allocation=True)` 原来按在手
+   `qty` 分摊，不看已分配余量，同一明细行会被重复分配；发货按在手顺序扣减时会去释放
+   一条 `allocated_qty = 0` 的明细，直接 400。现改为按 `qty - allocated_qty` 计算
+   可分配容量，扣减动作仍按 `qty`。修复后「同一出库单行分两次拣同一货位」可正常发货，
+   明细层 `allocated_qty` 归零，I1 / I2 / I3 仍全绿。
+
+**[实现] 事务与隔离**
+
+- 日志写入与扣减、状态流转在 `BEGIN IMMEDIATE` 同一事务内；发货失败／重复发货（409）／
+  用户取消均不产生脏日志。
+- 预检端点只读，不写库；日志查询按货主归属隔离，与业务列表同一套授权集合。
+- `reservation_rules.py` **保持纯规则层**，不读库、不写库、不接分配；风险判定只是
+  调用它的 `check_customer_reservation()`。
+
+### 验证（补充修订）
+
+- `./.venv/Scripts/python.exe -m unittest discover -s tests` → **390 例全绿**
+  （375 基线 + 新增 15 例 `tests/test_m23_reservation_audit.py`）。
+- 专项 `tests.test_m23_reservation_audit` **15/15**：表结构、只读预检、放行留痕、
+  取消不动账、重复发货不重复记、查询过滤、事务回滚、分次拣货两向一致性。
+- 真实 Chrome E2E（独立库 + 端口 5115）：**26/26**，覆盖事前提示条、二次确认
+  「继续／不继续」两条路径、取消后库存与状态不变、继续后发货成功与日志回显、
+  客户名映射、无风险绿色提示、I1 / I2 / I3、分配归零、无 JS 错误与业务 404。
+- 基线 E2E 复跑无回归：数据隔离 **15/15**、格子矩阵 **13/13**、M21 **10/10**、
+  M22 **28/28**、M23 v1 **28/28**；`node --check` 五个页面内联脚本全通过。
+
 ---
 
