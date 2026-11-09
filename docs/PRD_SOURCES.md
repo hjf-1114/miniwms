@@ -89,12 +89,18 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 | 22 | M21 追加页 | 批次库存 | `stock_batch.html` | M21 | **已记录** | [2.3](#23-批次库存stock_batchhtml) |
 | 23 | M22 追加页 | 盘点方案 | `stocktake_plans.html` | M22 | **已记录** | [2.4](#24-盘点方案stocktake_planshtml) |
 | 24 | M22 追加页 | 库存调整 | `stock_adjustments.html` | M22 | **已记录** | [2.5](#25-库存调整stock_adjustmentshtml) |
+| 25 | M24 追加页 | 库存转移 | `inventory_transfers.html` | M24 | **已记录** | [2.8](#28-库存转移inventory_transfershtml) |
 
 > **追加页计数说明（v0.6）**：#1–#21 是用户规格 2A 定义的「回溯 M1–M20」固定范围，
 > 分母恒为 21；M21 起新增页面按规格「随里程碑逐次追加」续编，**不计入回溯分母**。
 > 因此逐页记录进度写作 **2/21（回溯）+ 3/3（M21 / M22 追加页）**，
 > 不能把 #22–#24 混进 21 页的分母。`stocktakes.html`（#13 回溯范围内的盘点页）在 M22 被增强，
 > 按「增量追加不重写」原则，其增量功能点记在 §2.5 的「与其他页面的关系」与 §3.5，不改 #13 原行。
+
+> **追加页计数说明（v0.9 增量，不覆盖上方 v0.6 原文）**：上方 3/3 是 **v0.6 时点事实**，保留用于追溯。
+> M24 新增独立页面 `inventory_transfers.html`，按规格续编 **#25**（M23 无新增页面，不占编号），
+> 因此当前逐页记录进度更新为 **2/21（回溯）+ 4/4（M21 / M22 / M24 追加页）**，
+> 回溯分母仍恒为 21。§1 原有 21 行与 #22–#24 原行一律不改。
 
 ---
 
@@ -946,6 +952,213 @@ M22 库存调整单 + 盘点增强（2026-11-06）。提交哈希以 `git log` /
   同一 FEFO 函数推断，不是回读拣货明细）；日志只记录风险条目，不记录无风险放行；
   M35 批次级分配、「先专属后通用」与 FEFO 优先级冲突仍未决定。以上不得写成已实现。
 
+### 2.8 库存转移（`inventory_transfers.html`）
+
+> **M24 追加页**（进度表 #25，2026-11-09 引入），按用户规格 2A「随 M21 起逐里程碑追加」续编，
+> **不计入回溯 M1–M20 的 21 页分母**。本节只记录代码里真实存在的实现，取证自当前代码；
+> 按「增量追加不重写」原则，§2.1–§2.7 原文一律保留。
+
+**[业务] 用途与背景**
+
+M21 引入 `stock_batch` 明细层后，库存的真实身份不再是「货主 × 物料 × 库位」单一粒度，
+而是由批号（`batch_no`）/ 批次指纹（`batch_key`）/ 内部批次号（`internal_batch_no`）/
+指定客户（`designated_customer_id`）/ 货品属性（`goods_property`）/ 库存状态（`stock_status`）/
+效期（`expiry_date`）等维度共同决定（M24 单据统计的维度组合为 8 个，另含 `production_date`；
+见 §3.8）。M22 已把「**数量的手工变化**」收敛到
+库存调整单，但「**属性与归属的变化**」此前仍没有单据可依：直接改 `stock_batch` 会让
+「账上数量对得上、批次属性却被悄悄改写」成为内控缺口，无法回答谁改的、为什么改、原值是多少。
+
+M24 在蓝图第 2 层「仓库相关」补上库存转移单（`inventory_transfer`），与 M22 形成对称：
+**库存事务管「量」，字段级变更文档管「属性」**。本页解决的场景是同库位内把数量
+从「源维度组合」搬到「目标维度组合」，全程 `Σ qty_delta = 0`，主账 `stock.qty` 一次都不 UPDATE。
+
+开工前用户四条口径全选推荐 A：① 只做**同库位内**的批次维度变更，跨库位一律走 M17 移库单；
+② 7 类转移类型一次做全，但底层统一成「源维度 → 目标维度」的净零搬迁，类型只作展示与校验标签；
+③ 只做 IT 单自身的「取消分配」，DN 拣货分配取消不做；④ 6 个权限码只落常量 / 注释不挂装饰器，
+特采只接布尔标记 + `reason_code=特采`，不做独立审批流。
+
+设计依据见 `docs/PUTAWAY_RECOMMENDATION.md` §7.2 / §7.3 / §7.4 与 §14 阶段 D。
+设计文档 line 47 修订表仍写「关闭单据才过账」，与 §7.2 / §16.1「审核即 `approved` 终态」矛盾；
+本轮按 **v3.2 定稿（审核即终态）** 实现，设计原文保留用于追溯。
+
+**[业务] 适用角色与场景**
+
+| 场景 | 说明 |
+|---|---|
+| 专属绑定 / 解绑 / 换客户 | M23 的 `designated_customer_id` 只能在验收时取值；后续要改绑定必须通过本页留痕，否则专属库存可被无声改写 |
+| 批次属性错录补正 | 批号、批次指纹、效期、生产日期录错，制单后由审核人确认再生效 |
+| 质检判定与特采 | `goods_property` 合格 ↔ 不合格、`stock_status` 非限制 / 质检 / 冻结之间转换；不合格回合格须 `reason_code=特采` |
+| 同库位维度拆分 | 把一批库存拆成不同维度组合（如按客户或质量状态拆账），数量不变 |
+| 冲销与内控追溯 | 已生效单不可改不可删，只能生成反向单；字段级变更文档记录每个字段的原值 / 新值 / 操作人 / 原因码 |
+| 演示验收 | 展示「制单与分配都不改在手数量、审核才搬维度」「分配真实占用可用库存」「净零与 I1/I2/I3 仍成立」 |
+
+> 角色由系统自定义（M9 用户 / 角色），本页不编造预置岗位。`IT_PERMISSIONS` 6 个权限码
+> 按用户 A4 **只落常量 / 注释，未挂 `@require_permission`**，页面与端点都未做按钮级鉴权。
+
+**[功能] 页面布局**
+
+- 页头：面包屑「MiniWMS / 仓储作业 / 库存与追溯」；全局消息条 `#msg`。
+- 列表卡说明文案（原文要点）：「只改**批次信息**（专属客户 / 质量状态 / 批号等），**数量净零**、主账在手不变；
+  跨库位移动请走『移库』。流程：制单 → 分配库存（真实占用可用库存）→ **审核即生效终态**；
+  未分配的空单可关闭 / 删除，已分配须先『取消分配』。」
+- 查询条件：单号搜索（`keyword`）、状态下拉（待分配 / 已分配 / 已生效 / 已关闭 / 已删除）、
+  类型下拉（7 类中文标签）、「查询」按钮；页操作「+ 制单」。
+- 列表字段：ID / 单号 / 类型 / 原因 / 状态（彩色标签）/ 行数 / 数量 / 创建时间 / 操作（明细）。
+  空态「暂无库存转移单」。前端固定 `page_size=50`；后端默认 20、上限 100，按 `id DESC` 排序。
+- 制单卡（默认隐藏，点「+ 制单」展开）：4 个字段 + 「保存为 draft」+「收起」。
+- 明细卡（默认隐藏，点列表「明细」展开）：标题带状态标签；12 项元数据网格；按状态显隐的动作按钮区；
+  「分配库存」子卡；转移明细表；字段级变更文档表；冲销单的「使用冲销建议」按钮。
+
+**[功能] 表单字段表**
+
+| 字段 | 控件 | 必填 | 校验（后端真实规则） | 默认值 | 来源 / 联动 |
+|---|---|---|---|---|---|
+| 转移类型 | 下拉 | 是 | 必须属于 7 类 `IT_TYPES`，否则 `transfer_type 非法: …` | `customer_bind`（专属绑定） | 前端中文标签 → 后端英文值 |
+| 原因码 | 下拉 | 否 | 非空时必须属于 7 个 `IT_REASON_CODES`（错录补正 / 质检判定 / 客户要求 / 盘点差异 / 特采 / 冲销 / 其他） | 空（未指定） | 选「特采」时解锁不合格 → 合格；冲销单由后端固定为「冲销」 |
+| 业务发生时间 | 文本框 | 否 | 无格式校验，原样落库 | 空串 | 写入字段级变更文档的 `business_at`；**页面占位写「留空=系统时间」，但后端不回填，留空即落空串**（见「异常与提示」） |
+| 备注 | 文本框 | 否 | 原样落库 | 空 | 列表 `keyword` 也可搜备注 |
+| 单号 | — | — | 后端 `gen_doc_no()` 生成，唯一 | `IT-YYYYMMDD-NNN` | 页面只读展示 |
+| 制单人 / 分配人 / 审核人 | — | — | 取当前登录用户名，未登录为空串 | 空 | 后端写入，页面只读 |
+| 创建 / 分配 / 审核时间 | — | — | 后端 `datetime('now','localtime')` | 空 | 后端写入，页面只读 |
+
+**明细分配行（同页动态表格，可增删）**
+
+| 字段 | 控件 | 必填 | 校验（后端真实规则） | 默认值 | 来源 / 联动 |
+|---|---|---|---|---|---|
+| 源批次明细 | 下拉 | 是 | `stock_batch_id` 必须存在，或显式给出 `owner_id/product_id/location_id + from_*` 维度能唯一定位；否则 `源批次明细不存在` / `按给定维度找不到源批次明细` | 首行自动添加、无默认值 | `GET /api/stock/batch?has_stock=1&page_size=100`，选项显示「批号 · SKU @ 库位 · 可用 N」 |
+| 数量 | 数字（step 0.01，min 0.01） | 是 | 必须为正数且 ≤ 该明细 `qty - allocated_qty`，否则 `qty 必须为正数` / `可用库存不足: 在手 …` | 空 | 前端跳过空行；`submitAllocate()` 至少要求一行有效 |
+| 目标专属客户 | 下拉 | 否 | 有值必须归属同一货主，否则 `指定客户必须归属同一货主` | 「（保持不变）」 | `GET /api/customers?page_size=100`；另有「通用（清空专属）」值 `0` |
+| 目标货品属性 | 下拉 | 否 | 合格 / 不合格；不合格 → 合格须特采，见状态机 | 「（保持不变）」 | 前端固定枚举 |
+| 目标库存状态 | 下拉 | 否 | `stock_status_allowed()`：非限制 / 质检 / 冻结，空串 `''` 也允许（M21 老数据未设置），否则 `目标库存状态非法: …` | 「（保持不变）」 | 前端固定枚举：非限制 / 质检 / 冻结 |
+| 目标批号 | 文本框 | 否 | 无格式校验；留空＝保持源值 | 空（占位「留空=不变」） | — |
+| 目标效期 | 文本框 | 否 | 无格式校验；占位 `YYYY-MM-DD` | 空 | — |
+
+> `to_*` 字段**只在前端填写了值时才发送**（`put()` 遇空串跳过），后端把未给出的目标维度默认取源维度；
+> 8 个维度全部相同会返回「目标维度与源维度完全相同，无需转移」。
+> 目标 `to_batch_key` / `to_internal_batch_no` / `to_production_date` 前端未提供输入框，由冲销建议或 API 给出。
+
+**[功能] 子表 / 弹窗**
+
+- 无独立弹窗：制单区、分配区、明细区都是同页卡片，通过 `display` 显隐切换；`?detail=<id>` 深链可自动打开明细。
+- 明细卡动作按钮按状态显隐：「待分配 draft」→「关闭空单」「删除空单」；「已分配 allocated」→
+  「审核生效（净零过账）」「取消分配」；「已生效 approved」→「生成冲销单」。
+- 所有 5 个动作先 `confirm('确认「…」？')` 再发请求；分配表单「+ 添加一行」动态增删，每行带「删」。
+- 转移明细子表 7 列：行 / 物料·库位 / 源维度 chip / 目标维度 chip / 数量 / 变更前余额 / 变更后源维度余额；空态「尚未分配库存」。
+- 字段级变更文档子表 8 列：行 / 对象 / 字段 / 原值 / 新值 / 操作人 / 原因码 / 时间；空态「暂无字段级变更文档（审核生效后生成）」。
+- 冲销单详情页在「待分配 + 无明细」时出现「使用冲销建议」按钮，一键把 `suggested_lines` 反向维度带入分配。
+
+**[功能] 业务规则与状态机**
+
+1. **状态机**：有分配 `draft → allocated → approved`（审核即生效终态，不可改不可删）；
+   空单 `draft → closed`（关闭）/ `draft 或 closed → cancelled`（删除，标记不物理删）；
+   `allocated → draft`（取消分配，明细行清空，可逆）。非对应状态动作一律 400
+   「状态为 X，仅 … 可 Y」。
+2. **数量净零**：`approve()` 先算 `Σ qty_delta` 硬校验；每行源维度 `-Q` / 目标维度 `+Q`
+   成对流水，主账 `stock.qty` 全程零 UPDATE；`delta_qty` / `qty_adjust` / `to_qty` /
+   `qty_delta` 四个字段在单据顶层与每行都拒绝，返回 400 + `code=TRANSFER_QTY_MUST_BE_ZERO`，
+   提示「库存转移只改批次信息、不能调整库存数量；字段 … 不被接受，数量变化请走库存调整单」。
+   数量变化唯一手工入口仍是 M22 库存调整单。
+3. **分配真实占用**：`allocate` 写 `qty_delta=0 / allocated_delta=+Q`，主账与 `stock_batch`
+   两层 `allocated_qty` 同步增加，M5 出库拣货超卖校验能感知可用量下降；`unallocate` /
+   `approve` 对称释放。分配后单据不可直接关闭 / 删除，必须先取消分配。
+4. **A2 统一模型**：7 类 `transfer_type`（批次属性补正 / 质量状态变更 / 维度拆分 /
+   专属绑定 / 专属解绑 / 换专属客户 / 库位标签）只影响展示、原因码与校验标签，
+   **不进入过账分支**；过账统一走「源 8 维 → 目标 8 维」搬迁。
+5. **A1 同库位**：行内出现 `to_location_id` / `from_location_id` / `location_id_to`
+   且与源库位不一致 → 400「M24 只支持同库位内的批次维度变更；跨库位请走 M17 移库单」。
+   `location_move` 类型只是展示标签，本里程碑库位恒等。
+6. **A4 特采**：`special_approval` 只由 `reason_code == '特采'` 推导，不建审批表、不挂装饰器；
+   行校验调用 `reservation_rules.can_change_goods_property()` 与 `stock_status_allowed()`，
+   「不合格 → 合格」无特采时返回 `…（不合格回合格须 reason_code=特采）`。
+7. **冲销**：仅 `approved` 可冲销，生成 `reversal_of_id` 反向 `draft` 空单（`reason_code=冲销`、
+   备注带原单号），返回 `suggested_lines`（源 / 目标维度对调）；**仍需人工分配 + 审核**，
+   已生成过冲销单的原单不可重复冲销。
+8. **字段级变更文档**：审核时逐行比较 8 个维度，仅对有变化的字段写 `inventory_change_log`
+   （原值 / 新值 / 操作人 / 审核人 / 业务时间 / 原因码），供 GSP 式追溯。
+
+**[功能] 异常与提示**
+
+| 触发 | 前端提示 | 后端响应 |
+|---|---|---|
+| 制单成功 | 「已生成 IT-…（draft），请在明细里分配库存」 | 201，`id` / `code` / `status=draft` |
+| 分配成功 | 「已分配库存：可用量已真实占用，等待审核生效」 | 200，`status=allocated` |
+| 分配行全空 | 「请至少填写一行有效的源明细与数量」 | 不发请求 |
+| 审核成功 | 「审核生效成功，状态：已生效」 | 200，`status=approved` + `change_log_count` |
+| 生成冲销单 | 「已生成反向单 IT-…（draft），点『使用冲销建议』分配后仍需审核」 | 201，`suggested_lines` |
+| 使用冲销建议 | 「已按冲销建议分配反向维度，请核对后点『审核生效』」／「冲销建议分配失败：…」 | 200 或 4xx |
+| 数量字段被拒 | 「制单失败：…」/「分配失败：…」 | 400 `code=TRANSFER_QTY_MUST_BE_ZERO` |
+| 可用量不足 / 维度相同 / 跨库位 / 跨货主客户 / 质量状态非法 | 「分配失败：…」 | 400，错误串见上节业务规则 |
+| 状态不匹配 / 重复冲销 / 单据不存在 | 「…失败：…」/「加载明细失败：…」 | 含「不存在」→ 404，其余 400 |
+| 基础数据加载失败 | 「基础数据加载失败：…」 | 页头消息条，列表仍可加载 |
+| 业务发生时间留空 | 制单卡占位「留空=系统时间」，但明细卡「业务时间」显示「—」 | 后端 `business_at` 原样落空串、不回填系统时间；`created_at` 由 DDL 默认 `datetime('now','localtime')`。按模板 §3「以代码为准」，此处如实记录两者差异 |
+
+**[实现] 关联单据与数据流向**
+
+- 三张幂等表（`main.py::_migrate_m24()`）：`inventory_transfer` 单据头（**无 `owner_id`**）、
+  `inventory_transfer_line`（源 8 维 + 目标 8 维 + 数量 / 余额快照）、`inventory_change_log`
+  （字段级变更文档）；索引 `idx_it_status` / `idx_it_type` / `idx_itl_transfer` /
+  `idx_itl_owner` / `idx_icl_transfer`。老库零迁移成本。
+- 唯一过账入口仍是 `inventory_service.adjust_stock()`；本模块**不直写** `stock_batch` /
+  `stock_movement`。分配 / 取消分配 / 审核分别写 `it_allocate` / `it_unallocate` /
+  `it_transfer` 三类流水；`ref_id = transfer_id`；I1 / I2 / I3 三条不变式继续硬校验。
+- `adjust_stock()` 新增分支：`abs(qty_delta) <= EPS` 时只
+  `UPDATE stock SET allocated_qty = ?`，不 SET `qty` 列；其它调用的数值行为不变。
+- 上游数据源：`GET /api/stock/batch?has_stock=1`（源批次明细与 `available_qty`）、
+  `GET /api/customers`（目标专属客户）；下游结果在 `stock_batch.html` / `stock.html` 可见。
+- 下游单据：M17 `transfers.html` 承接跨库位移动；M22 `stock_adjustments.html` 承接数量变化。
+- 事务边界：`routes_inventory_transfer._run()` 统一 `BEGIN IMMEDIATE`，
+  `TransferError` / `StockError` / `ValueError` / `ScopeError` 一律整单回滚。
+- 列表的 `line_count` / `total_qty` 由子查询统计；详情 `get_transfer()` 返回
+  单据头 + `lines` + `change_logs` + `line_count` + `total_qty`。
+
+**[实现] 权限**
+
+- 写路径 `owner_id` 由 `main.py::before_request` 守门；`_validate_line()` 从源 `stock_batch`
+  行取货主后再次调用 `scope.assert_owner_allowed()`，防止嵌套明细绕过顶层守门。
+- 列表按明细行货主 `EXISTS` 注入 `S.owner_where(table="itl")`，
+  与 M22 调整单同一口径，遵循「ALL 必须显式给出，上下文缺失一律拒绝」。
+  `scope.py::OWNER_SCOPED_TABLES` 已纳入 `inventory_transfer_line`。
+- **如实记录边界**：单据头无 `owner_id`，因此**受限账号看不到自己创建的空单**（空单还没有明细行）；
+  6 个 `IT_PERMISSIONS` 只在常量与注释中出现，端点未挂 `@require_permission`，
+  页面未做按钮级鉴权，与 M20「只落字段不做校验」口径一致。
+
+**[功能] 与其他页面的关系**
+
+- `stock_batch.html`（#22）：提供源批次明细与可用量；审核后目标维度组合在此页体现为新的明细行，
+  专属客户 / 质量状态徽章与筛选均可验证。
+- `stock.html`（#16）：主账在手数量不变，可核对 I1 / I2 / I3。
+- `stock_adjustments.html`（#24）：数量变化走该页，本页所有数量字段一律拒绝。
+- `transfers.html`（#13）：跨库位移动走该页，本页仅保留 `location_move` 标签但库位恒等。
+- `dns.html`（#12）：分配期间 `allocated_qty` 上升会压缩可拣货可用量；M23 风险放行日志不受影响。
+- `customers.html`（#4）：目标专属客户下拉的数据源，客户必须归属同一货主。
+- 导航：`web_app/js/layout.js` 三级「仓储作业 → 库存与追溯 → 库存转移」，
+  导航树由 22 页增至 **23 页**；`index.html` 里程碑清单同步。
+
+**[实现] 验收要点**
+
+- `tests/test_m24_inventory_transfer.py` **25 例**：三表与索引、常量与 6 个权限码、
+  空单制单 / 关闭 / 删除、分配双层占用与超卖可感知、跨库位 / 跨货主客户 /
+  维度相同 / 可用量不足 / 数量字段拦截、`unallocate` 对称释放、已分配单禁止关闭删除、
+  审核净零与主账 `qty` 不变、I1 / I2 / I3、字段级变更文档、`approved` 终态、
+  特采两向、冲销往返复原。
+- 全量 `./.venv/Scripts/python.exe -m unittest discover -s tests` → **415 例全绿**（390 基线 + 25 例）。
+- 真实 Chrome E2E（独立库 + 端口 5116）**35/35**：制单、分配、取消分配、再分配、审核、
+  变更文档、冲销建议一键分配、冲销复原、空单关闭、数量字段 400、无 JS 错误与业务 404。
+- 六组基线 E2E 复跑无回归：数据隔离 15/15、格子矩阵 13/13、M21 10/10、M22 28/28、
+  M23 v1 28/28、M23 风险放行 26/26；`node --check` 六个页面内联脚本与 `layout.js` 全通过。
+- **边界如实记录（不得写成已实现）**：① 不新建 `batch` 档案，只在 `stock_batch` 明细层搬维度，
+  `to_batch_key` 由单据显式给出，设计 §7.1 A 类的「重算指纹 → 生成 / 复用新批次档案」未做；
+  ② `location_move` 仅是标签；③ 单据头无 `owner_id`，受限账号看不到自建空单；
+  ④ 冲销单仍需走完「分配 → 审核」才生效，`reversal_of_id` 不可重复冲销；
+  ⑤ DN 拣货分配取消、M35 批次级出库分配与 FEFO、「先专属后通用」优先级仍未决定；
+  ⑥ PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交，不与代码提交混在一起。
+
+**[实现] 对应里程碑与提交**
+
+M24 库存转移单（2026-11-09）。提交哈希以 `git log` / `DEVELOPMENT.md` M24 章为准，
+本节不编造未确认的哈希。设计口径见 `docs/PUTAWAY_RECOMMENDATION.md` §7.2 / §7.3 / §7.4
+与 §14 阶段 D；端点与数据表的增量清单见 §3.8。
+
 ---
 
 ## 3. API 与数据模型（单列一章）
@@ -1287,6 +1500,73 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
   发货失败／重复发货／用户取消均不产生脏日志。
 - 日志查询与业务列表共用 `owner_where()` 授权集合；预检端点只读。
 
+### 3.8 [实现] M24 增量：端点与数据表（2026-11-09 追加）
+
+> 按「增量追加不重写」原则，§3.1–§3.7 已有内容一律保留。本节只记录 M24 代码里真实存在的
+> 端点、DDL 与既有模块增量，**不把设计提案中未落地的部分写成现状**。
+
+**[实现] 新增端点（`routes_inventory_transfer.py::it_bp`，前缀 `/api/inventory-transfers`）**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/inventory-transfers` | 列表：`status` / `transfer_type` / `keyword`（匹配单号或备注）/ `page`（默认 1）/ `page_size`（默认 20，上限 100）；按明细行 `EXISTS` 做货主隔离；`page/page_size` 非整数 400 |
+| POST | `/api/inventory-transfers` | 制单：`transfer_type` 必填且须在 7 类内、`reason_code` 可选、`business_at` / `note` 可选；生成 `draft` 空单，返回 201 + `code`；顶层含 4 个禁用数量字段则 400 |
+| GET | `/api/inventory-transfers/<id>` | 详情：单据头 + `lines` + `change_logs` + `line_count` + `total_qty`；不存在 404 |
+| POST | `/<id>/allocate` | 分配：`lines` 必须非空数组，逐行校验源维度 / 可用量 / 目标客户归属 / 质量状态转换；两层 `allocated_qty` 真实占用；顶层与每行均拦截禁用数量字段 |
+| POST | `/<id>/unallocate` | 取消分配：对称释放两层占用、删除明细行、回 `draft`；仅 `allocated` 可调 |
+| POST | `/<id>/approve` | 审核生效：净零成对流水 + 字段级变更文档 + `approved` 终态；响应带 `change_log_count` |
+| POST | `/<id>/close` | 关闭空单：仅 `draft` 且无明细，写 `closer` / `closed_at`，无库存动作 |
+| POST | `/<id>/delete` | 删除空单：`draft` 或 `closed` 且无明细，标记 `cancelled`（不物理删除） |
+| POST | `/<id>/reverse` | 冲销：仅 `approved`，生成反向 `draft` 空单并返回 `suggested_lines`；返回 201；原单不可重复冲销 |
+
+- 错误映射：`TransferError` 消息含「不存在」→ 404，其余 400；带 `code` 时响应体附 `code`；
+  `StockError` / `ValueError` → 400，`ScopeError` → 其 `status`（通常 403）。
+- **6 个 `IT_PERMISSIONS` 只在常量与注释中出现，以上端点均未挂 `@require_permission`**（用户 A4）。
+
+**[实现] 新增数据表（`main.py::_migrate_m24()` 幂等 `CREATE TABLE IF NOT EXISTS`）**
+
+| 表 | 字段 | 说明 |
+|---|---|---|
+| `inventory_transfer` | `id` / `code`（UNIQUE）/ `transfer_type` / `reason_code` / `status`（默认 `draft`）/ `reversal_of_id` / `creator` / `allocator` / `approver` / `closer` / `business_at` / `created_at`（默认本地时间）/ `allocated_at` / `approved_at` / `closed_at` / `note` | 单据头，**无 `owner_id`**；索引 `idx_it_status(status)`、`idx_it_type(transfer_type)` |
+| `inventory_transfer_line` | `id` / `transfer_id`（外键级联删除）/ `owner_id` / `product_id` / `location_id` / `stock_batch_id` / `from_*` 8 列 / `to_*` 8 列 / `qty` / `qty_before` / `qty_after` / `allocated` | 源维度 → 目标维度冻结快照；索引 `idx_itl_transfer`、`idx_itl_owner` |
+| `inventory_change_log` | `id` / `transfer_id`（外键级联删除）/ `line_id` / `object_type`（默认 `stock_batch`）/ `object_id` / `field_name` / `old_value` / `new_value` / `operator` / `approver` / `business_at` / `system_at`（默认本地时间）/ `reason_code` | 审核时按有变化的维度字段逐条写入；索引 `idx_icl_transfer` |
+
+> 8 个维度字段（`DIM_FIELDS`）：`batch_no` / `batch_key` / `internal_batch_no` /
+> `designated_customer_id` / `goods_property` / `stock_status` / `expiry_date` /
+> `production_date`，与 `inventory_service.BATCH_DIMS` 对齐（多 `production_date`）。
+
+**[实现] 常量与流水类型（`constants.py`）**
+
+| 组 | 值 |
+|---|---|
+| 状态 5 个 | `draft` / `allocated` / `approved` / `closed` / `cancelled` |
+| 类型 7 个 | `batch_correct` / `quality_change` / `batch_split` / `customer_bind` / `customer_unbind` / `customer_rebind` / `location_move` |
+| 原因码 7 个 | 错录补正 / 质检判定 / 客户要求 / 盘点差异 / 特采 / 冲销 / 其他 |
+| 权限码 6 个 | `inventory_transfer:{create,allocate,unallocate,approve,close,delete}`（**仅常量，未挂装饰器**） |
+| 流水类型 3 个 | `it_allocate` / `it_unallocate` / `it_transfer` |
+| 拒绝码 / 禁用字段 | `TRANSFER_QTY_MUST_BE_ZERO`；`delta_qty` / `qty_adjust` / `to_qty` / `qty_delta` |
+| 单号前缀 / 特采原因 | `INVENTORY_TRANSFER_PREFIX = "IT"`；`IT_SPECIAL_APPROVAL_REASON = "特采"` |
+
+**[实现] 既有模块增量**
+
+| 位置 | 增量 |
+|---|---|
+| `inventory_service.adjust_stock()` | `abs(qty_delta) <= EPS` 时只 `UPDATE stock SET allocated_qty = ?`，**不 SET `stock.qty`**；其它调用的数值行为不变（M21 的 I1/I2/I3 与 `spread_batches()` 未改） |
+| `scope.py` | `OWNER_SCOPED_TABLES` 纳入 `inventory_transfer_line`；列表按 `S.owner_where(table="itl")` 生成 `EXISTS` 条件；行校验走 `assert_owner_allowed()` |
+| `main.py` | `init_db()` 调用 `_migrate_m24(conn)`；注册 `it_bp` |
+| `web_app/js/layout.js` | 三级导航新增「库存转移」节点，导航树 22 页 → **23 页** |
+| `web_app/index.html` | 里程碑清单补 M24 |
+
+**[实现] 事务与隔离**
+
+- 7 个写动作端点（制单 / 分配 / 取消分配 / 审核 / 关闭 / 删除 / 冲销）都在
+  `_run()` 的 `BEGIN IMMEDIATE` 内执行；列表与详情为只读查询，不走事务包装。
+  任一 `TransferError` / `StockError` / `ValueError` / `ScopeError` 整单回滚，
+  不产生半截明细、半截流水或半截变更文档。
+- 审核的字段级变更文档与净零流水同事务；分配 / 取消分配的 `allocated_qty` 与流水同事务。
+- 单据头无 `owner_id`，**受限账号看不到自己创建的空单**（空单无明细行），与 M22 调整单同口径；
+  此为已知边界，不是缺陷修复项。
+
 ---
 
 ## 4. 里程碑与页面归属索引
@@ -1317,6 +1597,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | M22 | 库存调整单 + 盘点增强（唯一手工数量入口 / 盘点方案四类盘点 / 真盲盘分级接口 / 差异人工生成调整单 / 审核·取消·冲销） | `stock_adjustments.html` / `stocktake_plans.html` + `stocktakes.html` 增强 | **已完成 2026-11-06** |
 | M23 | 指定客户专属库存 + 销退口径（指定客户贯穿四层 / 销退外部批次号必填且 `/` 占位 / 出库校验只落规则 / 质量状态两字段独立） | `asns.html` / `asn_receive.html` / `stock_batch.html` 三页增强，**无新增页面** | **已完成 2026-11-09** |
 | M23 补充（非新里程碑） | 同日口径修订：专属库存风险事前提示 + 用户二次确认（可继续／可不继续）+ 风险放行日志，**仍不拦截** | `dns.html` 增强（#12 增量记 §2.7），**无新增页面** | **已完成 2026-11-09** |
+| M24 | 库存转移单（同库位批次维度净零变更 / 制单→分配真实占用→审核生效终态 / 取消分配 / 空单关闭删除 / 字段级变更文档 / 冲销） | `inventory_transfers.html`（#25 追加页） | **已完成 2026-11-09** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -1339,6 +1620,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | v0.6 | 2026-11-06 | **M22 库存调整单 + 盘点增强**：进度表续编 #23 / #24（M22 追加页，不计入回溯 21 页分母）+ 追加 §2.4「盘点方案」、§2.5「库存调整」两页 11 项完整记录 + §3.5 增量端点与数据表（含 `stocktake_line` 唯一键重建）；进度改为 **2/21（回溯）+ 3/3（追加页）**；里程碑索引加 M22。记录数量变化唯一入口、真盲盘分级接口、按批号盘点、审核/取消/冲销、验收基线 356 例 + E2E 28/28。**按增量追加规则不改写 §1 已有 21 行、§2.1/§2.2/§2.3、§3.1–§3.4、§4 已有行、§5–§6.5 内容**；`stocktakes.html`（#13）增量记在 §2.5 与 §3.5，不改 #13 原行 | 取证自 `main.py::_migrate_m22()`、`routes_stocktake.py`、`routes_stock_adjustment.py`、`routes_stocktake_plan.py`、`adjustment_service.py`、`stocktake_service.py`、`constants.py`、`web_app/stock_adjustments.html`、`web_app/stocktake_plans.html`、`web_app/stocktakes.html`、`web_app/js/layout.js`、`tests/test_m22_adjustment.py`、`DEVELOPMENT.md` M22 章 |
 | v0.7 | 2026-11-09 | **M23 指定客户专属库存 + 销退口径**：M23 不新增页面，进度表 #9 / #10 / #22 原行**不改**，增量按「追加不重写」记在新增 §2.6（业务口径 / 三页功能增量 / 取证与边界）与 §3.6（端点与数据表增量 / 常量与规则 / 口径覆盖说明）；§4 加 M23 行；**回溯仍 2/21、追加页仍 3/3，分母不混算**。记录用户四条确认口径（质量状态 B / 出库校验只落规则 A / 销退缺号 400 且 `/` 占位 / PRD 回溯另起提交）、设计 §5.2 与 §7.4 的字段冲突消解、§7.5 销退口径覆盖、验收基线 375 例 + E2E 28/28 + 四组基线复跑；如实记录「出库路由未接入专属校验」等 4 条边界，**不把规划写成现状** | 取证自 `main.py::_migrate_m23()`、`constants.py`、`reservation_rules.py`、`batch_service.py`、`routes_asn.py`、`web_app/asns.html`、`web_app/asn_receive.html`、`web_app/stock_batch.html`、`tests/test_m23_designated.py`、`tests/test_batch.py`、`DEVELOPMENT.md` M23 章；交叉审阅为独立只读核对，未改代码 |
 | v0.8 | 2026-11-09 | **M23 同日口径修订（不新增里程碑、不新增页面）**：用户二次确认「专属库存发给其他客户要提示，让用户决定是否继续，可以选择继续也可以不继续，但要补事前提示 + 风险放行日志」，并确认 `/` 口径理解无误。按「增量追加不重写」新增 §2.7（`dns.html` #12 页面增量 / 业务口径修订对照 / 取证与边界）与 §3.7（2 个新端点 / `ship` 增量 / `customer_reservation_log` 新表 / 常量 / `spread_batches(rows=)` / 事务与隔离）；§4 加「M23 补充」一行；**§2.6、§3.6、v0.7 原文一律保留用于追溯**，其 v1 时点表述（「`dns.html` 零改动」「无新增端点、无新增表」「出库校验只落规则不接路由」）由本次增量覆盖；进度表 #9 / #10 / #12 / #22 原行不动，**回溯仍 2/21、追加页仍 3/3**。如实记录两个回归测试暴露并修复的既有缺陷（预检批次与实扣不一致、分次拣货分配／释放不对称），以及「仍不拦截、`dn_pick` 未记录实际批次归属、M35 分配未接入」等边界，**不把规划写成现状**；验收基线 390 例 + E2E 26/26 + 五组基线复跑 | 取证自 `constants.py`、`reservation_audit.py`、`routes_reservation_log.py`、`routes_dn.py`、`inventory_service.py`、`main.py::_migrate_m23()`、`web_app/dns.html`、`tests/test_m23_reservation_audit.py`、`DEVELOPMENT.md` M23 章「同日口径修订补充」、`README.md` M23 补充段；交叉审阅为独立只读核对，未改代码 |
+| v0.9 | 2026-11-09 | **M24 库存转移单**：进度表续编 **#25**（`inventory_transfers.html` 追加页，不计入回溯 21 页分母）+ 追加 §2.8「库存转移」按模板逐项完整记录（12 个小节、三层标记）+ §3.8 端点／3 张表／常量／既有模块增量；§4 加 M24 行；§1 追加 v0.9 计数说明块，**v0.6 的 3/3 原文保留用于追溯**，当前进度更新为 **2/21（回溯）+ 4/4（M21／M22／M24 追加页）**。记录用户四条 A 口径（同库位 / 7 类统一搬迁 / 只做 IT 单 unallocate / 权限码与特采不落地）、数量净零与 `adjust_stock()` 零 qty 分支、双层分配占用、字段级变更文档、冲销往返、验收基线 415 例 + E2E 35/35 + 六组基线复跑。**按增量追加不重写原则，§1 原有 21 行与 #22–#24、§2.1–§2.7、§3.1–§3.7、§4 已有行、§5 v0.1–v0.8、§6 一律保留**。如实记录 6 条边界（不新建批次档案 / `location_move` 仅标签 / 单据头无 `owner_id` 导致受限账号看不到自建空单 / 冲销仍需分配审核 / M35 与 DN 分配取消未做 / PRD 回溯 19 页另起提交），**不把规划写成现状**。交叉审阅另按模板 §3 如实记录一处前端文案与后端不一致（业务发生时间占位「留空=系统时间」，后端实际落空串，不擅自改代码）；并发现、修正两处文档与代码不一致：`DEVELOPMENT.md` M24 动作表的「删除」前置状态补为 `draft` 或 `closed`（代码 `delete()` 同时允许两者）；`docs/DOMAIN_BLUEPRINT.md` 实施顺序的「下一棒 M24」改为**下一棒 M25**并补 M24 交付事实 | 取证自 `main.py::_migrate_m24()`、`constants.py`、`inventory_transfer_service.py`、`routes_inventory_transfer.py`、`inventory_service.py`、`scope.py`、`web_app/inventory_transfers.html`、`web_app/js/layout.js`、`tests/test_m24_inventory_transfer.py`、`DEVELOPMENT.md` M24 章、`README.md` M24 章；交叉审阅为独立只读核对，除上述两处文档一致性修正外未改代码 |
 
 ---
 

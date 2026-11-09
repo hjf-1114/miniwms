@@ -731,6 +731,87 @@ def _migrate_m23(conn):
     )
 
 
+def _migrate_m24(conn):
+    """M24 库存转移单：三张幂等表（老库零迁移成本）。
+
+    * ``inventory_transfer`` 单据头（无 owner_id，按明细行货主做隔离，与 M22 调整单一致）
+    * ``inventory_transfer_line`` 源维度 → 目标维度 + 数量快照；A1 口径下库位单一
+    * ``inventory_change_log`` 字段级变更文档（库存事务管「量」，变更文档管「属性」）
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS inventory_transfer (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code            TEXT    NOT NULL UNIQUE,
+            transfer_type   TEXT    NOT NULL,
+            reason_code     TEXT    NOT NULL DEFAULT '',
+            status          TEXT    NOT NULL DEFAULT 'draft',
+            reversal_of_id  INTEGER,
+            creator         TEXT    NOT NULL DEFAULT '',
+            allocator       TEXT    NOT NULL DEFAULT '',
+            approver        TEXT    NOT NULL DEFAULT '',
+            closer          TEXT    NOT NULL DEFAULT '',
+            business_at     TEXT    NOT NULL DEFAULT '',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            allocated_at    TEXT    NOT NULL DEFAULT '',
+            approved_at     TEXT    NOT NULL DEFAULT '',
+            closed_at       TEXT    NOT NULL DEFAULT '',
+            note            TEXT    NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_it_status ON inventory_transfer(status);
+        CREATE INDEX IF NOT EXISTS idx_it_type   ON inventory_transfer(transfer_type);
+
+        CREATE TABLE IF NOT EXISTS inventory_transfer_line (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            transfer_id                 INTEGER NOT NULL REFERENCES inventory_transfer(id) ON DELETE CASCADE,
+            owner_id                    INTEGER NOT NULL,
+            product_id                  INTEGER NOT NULL,
+            location_id                 INTEGER NOT NULL,
+            stock_batch_id              INTEGER,
+            from_batch_no               TEXT NOT NULL DEFAULT '',
+            from_batch_key              TEXT NOT NULL DEFAULT '',
+            from_internal_batch_no      TEXT NOT NULL DEFAULT '',
+            from_designated_customer_id INTEGER,
+            from_goods_property         TEXT NOT NULL DEFAULT '',
+            from_stock_status           TEXT NOT NULL DEFAULT '',
+            from_expiry_date            TEXT NOT NULL DEFAULT '',
+            from_production_date        TEXT NOT NULL DEFAULT '',
+            to_batch_no                 TEXT NOT NULL DEFAULT '',
+            to_batch_key                TEXT NOT NULL DEFAULT '',
+            to_internal_batch_no        TEXT NOT NULL DEFAULT '',
+            to_designated_customer_id   INTEGER,
+            to_goods_property           TEXT NOT NULL DEFAULT '',
+            to_stock_status             TEXT NOT NULL DEFAULT '',
+            to_expiry_date              TEXT NOT NULL DEFAULT '',
+            to_production_date          TEXT NOT NULL DEFAULT '',
+            qty                         REAL NOT NULL DEFAULT 0,
+            qty_before                  REAL NOT NULL DEFAULT 0,
+            qty_after                   REAL NOT NULL DEFAULT 0,
+            allocated                   INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_itl_transfer ON inventory_transfer_line(transfer_id);
+        CREATE INDEX IF NOT EXISTS idx_itl_owner    ON inventory_transfer_line(owner_id);
+
+        CREATE TABLE IF NOT EXISTS inventory_change_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            transfer_id  INTEGER NOT NULL REFERENCES inventory_transfer(id) ON DELETE CASCADE,
+            line_id      INTEGER,
+            object_type  TEXT NOT NULL DEFAULT 'stock_batch',
+            object_id    INTEGER,
+            field_name   TEXT NOT NULL,
+            old_value    TEXT NOT NULL DEFAULT '',
+            new_value    TEXT NOT NULL DEFAULT '',
+            operator     TEXT NOT NULL DEFAULT '',
+            approver     TEXT NOT NULL DEFAULT '',
+            business_at  TEXT NOT NULL DEFAULT '',
+            system_at    TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            reason_code  TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_icl_transfer ON inventory_change_log(transfer_id);
+        """
+    )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1451,6 +1532,7 @@ def init_db(path=None):
         _migrate_m21_columns(conn)
         _migrate_m22(conn)
         _migrate_m23(conn)
+        _migrate_m24(conn)
         _seed_zones(conn)
         _seed_auth(conn)
         conn.commit()
@@ -1491,6 +1573,7 @@ else:
     from routes_stock_adjustment import adj_bp  # noqa: E402
     from routes_stocktake_plan import plan_bp  # noqa: E402
     from routes_reservation_log import log_bp  # noqa: E402
+    from routes_inventory_transfer import it_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1514,3 +1597,4 @@ else:
     app.register_blueprint(adj_bp)
     app.register_blueprint(plan_bp)
     app.register_blueprint(log_bp)
+    app.register_blueprint(it_bp)

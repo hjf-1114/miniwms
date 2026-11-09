@@ -327,11 +327,20 @@ def adjust_stock(db, owner_id, product_id, location_id, qty_delta, ref_type, ref
             raise StockError(
                 f"分配数不可超过在手: location={location_id} 在手={new_qty}, 分配后={new_alloc}"
             )
-        db.execute(
-            "UPDATE stock SET qty = ?, allocated_qty = ?, "
-            "updated_at = datetime('now', 'localtime') WHERE id = ?",
-            (new_qty, new_alloc, row["id"]),
-        )
+        # M24：qty_delta == 0 的纯分配 / 净零转移只更新 allocated_qty，
+        # stock.qty 列一次都不 UPDATE（数值也不变），满足「主账零 UPDATE」硬口径。
+        if abs(qty_delta) <= EPS:
+            db.execute(
+                "UPDATE stock SET allocated_qty = ?, "
+                "updated_at = datetime('now', 'localtime') WHERE id = ?",
+                (new_alloc, row["id"]),
+            )
+        else:
+            db.execute(
+                "UPDATE stock SET qty = ?, allocated_qty = ?, "
+                "updated_at = datetime('now', 'localtime') WHERE id = ?",
+                (new_qty, new_alloc, row["id"]),
+            )
 
     items = _normalize_batches(db, owner_id, product_id, location_id,
                                batches, qty_delta, allocated_delta, operator)

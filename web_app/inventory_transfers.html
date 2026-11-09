@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>库存转移单 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
+.tag.approved { background: #e6f6ec; color: #1d7a4d; }
+.tag.draft { background: #fff3d9; color: #986a00; }
+.tag.allocated { background: #e5efff; color: #1d4ed8; }
+.tag.closed, .tag.cancelled { background: #f0f0f0; color: #777; }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px;
+        background: #eef2f7; color: #334155; margin-right: 4px; }
+.chip.to { background: #e6f6ec; color: #1d7a4d; }
+.dim { font-size: 12px; line-height: 1.6; color: #475569; }
+.alloc-form input, .alloc-form select { width: 100%; box-sizing: border-box; }
+.meta-grid { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr));
+             gap: 6px 18px; font-size: 13px; margin-bottom: 12px; }
+.meta-grid .k { color: var(--text-muted, #666); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>库存转移单</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>转移单列表</h2>
+          <button class="btn" onclick="toggleForm(true)">+ 制单</button>
+        </div>
+        <p class="hint">
+          只改<b>批次信息</b>（专属客户 / 质量状态 / 批号等），<b>数量净零</b>、主账在手不变；
+          跨库位移动请走「移库」。流程：制单 → 分配库存（真实占用可用库存）→
+          <b>审核即生效终态</b>；未分配的空单可关闭 / 删除，已分配须先「取消分配」。
+        </p>
+        <div class="toolbar">
+          <input id="kw" placeholder="单号搜索">
+          <select id="statusFilter">
+            <option value="">全部状态</option>
+            <option value="draft">待分配</option>
+            <option value="allocated">已分配</option>
+            <option value="approved">已生效</option>
+            <option value="closed">已关闭</option>
+            <option value="cancelled">已删除</option>
+          </select>
+          <select id="typeFilter">
+            <option value="">全部类型</option>
+            <option value="batch_correct">批次属性补正</option>
+            <option value="quality_change">质量状态变更</option>
+            <option value="batch_split">维度拆分</option>
+            <option value="customer_bind">专属绑定</option>
+            <option value="customer_unbind">专属解绑</option>
+            <option value="customer_rebind">换专属客户</option>
+            <option value="location_move">库位标签（同库位）</option>
+          </select>
+          <button class="btn secondary" onclick="load()">查询</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>单号</th><th>类型</th><th>原因</th><th>状态</th>
+              <th>行数</th><th>数量</th><th>创建时间</th><th>操作</th>
+            </tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="formCard" style="display:none">
+        <div class="card-head">
+          <h2>制单（draft 空单，不过账）</h2>
+          <button class="btn secondary sm" onclick="toggleForm(false)">收起</button>
+        </div>
+        <div class="toolbar">
+          <label>转移类型
+            <select id="fType">
+              <option value="customer_bind">专属绑定（通用 → 专属）</option>
+              <option value="customer_unbind">专属解绑（专属 → 通用）</option>
+              <option value="customer_rebind">换专属客户</option>
+              <option value="quality_change">质量状态变更</option>
+              <option value="batch_correct">批次属性补正</option>
+              <option value="batch_split">维度拆分</option>
+              <option value="location_move">库位标签（同库位）</option>
+            </select>
+          </label>
+          <label>原因码
+            <select id="fReason">
+              <option value="">未指定</option>
+              <option value="错录补正">错录补正</option>
+              <option value="质检判定">质检判定</option>
+              <option value="客户要求">客户要求</option>
+              <option value="盘点差异">盘点差异</option>
+              <option value="特采">特采（不合格回合格）</option>
+              <option value="其他">其他</option>
+            </select>
+          </label>
+          <label>业务发生时间 <input id="fBusiness" placeholder="留空=系统时间"></label>
+          <label>备注 <input id="fNote" placeholder="选填"></label>
+        </div>
+        <div class="toolbar" style="margin-top:10px">
+          <button class="btn" onclick="submitCreate()">保存为 draft</button>
+          <span class="muted">制单不产生任何库存动作；下一步在明细里分配库存。</span>
+        </div>
+      </div>
+
+      <div class="card" id="detailCard" style="display:none">
+        <div class="card-head">
+          <h2 id="detailTitle">转移单明细</h2>
+          <button class="btn secondary sm" onclick="document.getElementById('detailCard').style.display='none'">关闭</button>
+        </div>
+        <div id="detailMeta" class="meta-grid"></div>
+        <div class="toolbar" id="detailActions"></div>
+
+        <div id="allocCard" style="display:none; margin-top:10px">
+          <h3>分配库存：选定源批次明细 → 填写要变更的目标维度</h3>
+          <p class="hint">留空的目标字段＝保持不变。至少改一个字段；数量不得超过该明细的可用量。
+            分配会真实占用可用库存，审核后才真正搬迁维度。</p>
+          <div class="toolbar">
+            <button class="btn secondary sm" onclick="addAllocLine()">+ 添加一行</button>
+            <button class="btn secondary sm" id="useSuggestBtn" style="display:none"
+                    onclick="useSuggestion()">使用冲销建议</button>
+          </div>
+          <div class="table-wrap alloc-form">
+            <table>
+              <thead><tr>
+                <th style="min-width:260px">源批次明细</th><th>数量</th>
+                <th>目标专属客户</th><th>目标货品属性</th><th>目标库存状态</th>
+                <th>目标批号</th><th>目标效期</th><th></th>
+              </tr></thead>
+              <tbody id="allocBody"></tbody>
+            </table>
+          </div>
+          <div class="toolbar" style="margin-top:10px">
+            <button class="btn" onclick="submitAllocate()">分配库存（占用可用量）</button>
+          </div>
+        </div>
+
+        <h3 style="margin-top:16px">转移明细</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>行</th><th>物料 / 库位</th><th>源维度</th><th>目标维度</th>
+              <th>数量</th><th>变更前余额</th><th>变更后源维度余额</th>
+            </tr></thead>
+            <tbody id="detailBody"></tbody>
+          </table>
+        </div>
+
+        <h3 style="margin-top:16px">字段级变更文档</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>行</th><th>对象</th><th>字段</th><th>原值</th><th>新值</th>
+              <th>操作人</th><th>原因码</th><th>时间</th>
+            </tr></thead>
+            <tbody id="logBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+const TYPE = {
+  batch_correct: "批次属性补正", quality_change: "质量状态变更", batch_split: "维度拆分",
+  customer_bind: "专属绑定", customer_unbind: "专属解绑",
+  customer_rebind: "换专属客户", location_move: "库位标签（同库位）",
+};
+const TAG = { draft: "待分配", allocated: "已分配", approved: "已生效",
+              closed: "已关闭", cancelled: "已删除" };
+const DIM_LABEL = {
+  designated_customer_id: "专属客户", goods_property: "货品属性",
+  stock_status: "库存状态", batch_no: "批号", batch_key: "批次指纹",
+  internal_batch_no: "内部批次号", expiry_date: "效期", production_date: "生产日期",
+};
+let current = null;
+let batches = [];
+let customers = [];
+let suggestion = null;
+
+function toggleForm(on) {
+  document.getElementById("formCard").style.display = on ? "" : "none";
+}
+
+async function loadOptions() {
+  try {
+    const [b, c] = await Promise.all([
+      api("GET", "/api/stock/batch?has_stock=1&page_size=100"),
+      api("GET", "/api/customers?page_size=100"),
+    ]);
+    batches = b.stock_batches || [];
+    customers = c.customers || [];
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "基础数据加载失败：" + e.message, "error");
+  }
+}
+
+async function load() {
+  const qs = new URLSearchParams({ page_size: 50 });
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const tp = document.getElementById("typeFilter").value;
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  if (tp) qs.set("transfer_type", tp);
+  try {
+    const data = await api("GET", "/api/inventory-transfers?" + qs);
+    document.getElementById("tbody").innerHTML = data.transfers.map((d) => `
+      <tr>
+        <td>${d.id}</td><td>${esc(d.code)}</td>
+        <td>${TYPE[d.transfer_type] || esc(d.transfer_type)}</td>
+        <td>${esc(d.reason_code) || "—"}</td>
+        <td><span class="tag ${d.status}">${TAG[d.status] || esc(d.status)}</span></td>
+        <td>${d.line_count}</td><td>${d.total_qty}</td>
+        <td class="muted">${esc(d.created_at)}</td>
+        <td><button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button></td>
+      </tr>`).join("") || `<tr><td colspan="9" class="muted">暂无库存转移单</td></tr>`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+async function submitCreate() {
+  const payload = {
+    transfer_type: document.getElementById("fType").value,
+    reason_code: document.getElementById("fReason").value,
+    business_at: document.getElementById("fBusiness").value.trim(),
+    note: document.getElementById("fNote").value.trim(),
+  };
+  try {
+    const r = await api("POST", "/api/inventory-transfers", payload);
+    showMsg(document.getElementById("msg"), `已生成 ${r.code}（draft），请在明细里分配库存`, "success");
+    toggleForm(false);
+    await load();
+    await showDetail(r.id);
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "制单失败：" + e.message, "error");
+  }
+}
+
+function customerName(id) {
+  if (id === null || id === undefined || id === "" || id === 0) return "通用";
+  const c = customers.find((x) => String(x.id) === String(id));
+  return c ? `${c.code} · ${c.name}` : `客户 #${id}`;
+}
+
+function dimText(l, prefix) {
+  const bits = [];
+  const dcid = l[prefix + "designated_customer_id"];
+  bits.push(`<span class="chip ${prefix === "to_" ? "to" : ""}">${esc(customerName(dcid))}</span>`);
+  for (const k of ["goods_property", "stock_status", "batch_no", "expiry_date"]) {
+    const v = l[prefix + k];
+    if (v) bits.push(`<span class="chip ${prefix === "to_" ? "to" : ""}">${esc(k === "batch_no" ? v : (DIM_LABEL[k] + "：" + v))}</span>`);
+  }
+  return `<div class="dim">${bits.join("")}</div>`;
+}
+
+async function showDetail(id) {
+  try {
+    const data = await api("GET", "/api/inventory-transfers/" + id);
+    current = data.transfer;
+    const t = current;
+    document.getElementById("detailCard").style.display = "";
+    document.getElementById("detailTitle").textContent =
+      `转移单明细：${t.code}（${TAG[t.status] || t.status}）`;
+    const meta = [
+      ["类型", TYPE[t.transfer_type] || t.transfer_type], ["原因码", t.reason_code || "—"],
+      ["状态", TAG[t.status] || t.status], ["冲销自", t.reversal_of_id || "—"],
+      ["制单人", t.creator || "—"], ["分配人", t.allocator || "—"],
+      ["审核人", t.approver || "—"], ["业务时间", t.business_at || "—"],
+      ["创建", t.created_at], ["分配", t.allocated_at || "—"],
+      ["审核", t.approved_at || "—"], ["备注", t.note || "—"],
+    ];
+    document.getElementById("detailMeta").innerHTML = meta.map(([k, v]) =>
+      `<div><span class="k">${esc(k)}：</span>${esc(v)}</div>`).join("");
+
+    const acts = [];
+    if (t.status === "draft") {
+      acts.push(`<button class="btn secondary" onclick="act('close')">关闭空单</button>`);
+      acts.push(`<button class="btn secondary" onclick="act('delete')">删除空单</button>`);
+    }
+    if (t.status === "allocated") {
+      acts.push(`<button class="btn" onclick="act('approve')">审核生效（净零过账）</button>`);
+      acts.push(`<button class="btn secondary" onclick="act('unallocate')">取消分配</button>`);
+    }
+    if (t.status === "approved") {
+      acts.push(`<button class="btn secondary" onclick="act('reverse')">生成冲销单</button>`);
+    }
+    document.getElementById("detailActions").innerHTML = acts.join("");
+
+    document.getElementById("detailBody").innerHTML = t.lines.length ? t.lines.map((l) => `
+      <tr>
+        <td>${l.id}</td>
+        <td>${esc(l.product_id)} / ${esc(l.location_id)}</td>
+        <td>${dimText(l, "from_")}</td><td>${dimText(l, "to_")}</td>
+        <td>${l.qty}</td><td>${l.qty_before}</td><td>${l.qty_after}</td>
+      </tr>`).join("") : `<tr><td colspan="7" class="muted">尚未分配库存</td></tr>`;
+    document.getElementById("logBody").innerHTML = t.change_logs.length ? t.change_logs.map((g) => `
+      <tr>
+        <td>${g.line_id}</td><td>${esc(g.object_type)} #${esc(g.object_id)}</td>
+        <td>${DIM_LABEL[g.field_name] || esc(g.field_name)}</td>
+        <td>${esc(g.old_value) || "—"}</td><td>${esc(g.new_value) || "—"}</td>
+        <td>${esc(g.operator) || "—"}</td><td>${esc(g.reason_code) || "—"}</td>
+        <td class="muted">${esc(g.system_at)}</td>
+      </tr>`).join("") : `<tr><td colspan="8" class="muted">暂无字段级变更文档（审核生效后生成）</td></tr>`;
+
+    const canAlloc = t.status === "draft" && t.lines.length === 0;
+    document.getElementById("allocCard").style.display = canAlloc ? "" : "none";
+    if (canAlloc) {
+      document.getElementById("allocBody").innerHTML = "";
+      addAllocLine();
+    }
+    document.getElementById("useSuggestBtn").style.display =
+      (canAlloc && suggestion && suggestion.id === t.id) ? "" : "none";
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载明细失败：" + e.message, "error");
+  }
+}
+
+function addAllocLine(prefill) {
+  const tr = document.createElement("tr");
+  const opts = batches.map((b) =>
+    `<option value="${b.id}" ${prefill && String(prefill.stock_batch_id) === String(b.id) ? "selected" : ""}>
+       ${esc(b.batch_no)} · ${esc(b.sku)} @ ${esc(b.location_code)} · 可用 ${b.available_qty}
+     </option>`).join("");
+  const custOpts = `<option value="">（保持不变）</option>` +
+    customers.map((c) => `<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join("") +
+    `<option value="0">通用（清空专属）</option>`;
+  tr.innerHTML = `
+    <td><select class="a-src">${opts || '<option value="">暂无可用批次明细</option>'}</select></td>
+    <td><input type="number" step="0.01" min="0.01" class="a-qty" value="${prefill ? prefill.qty : ""}"></td>
+    <td><select class="a-customer">${custOpts}</select></td>
+    <td><select class="a-property">
+      <option value="">（保持不变）</option><option value="合格">合格</option>
+      <option value="不合格">不合格</option></select></td>
+    <td><select class="a-status">
+      <option value="">（保持不变）</option><option value="非限制">非限制</option>
+      <option value="质检">质检</option><option value="冻结">冻结</option></select></td>
+    <td><input class="a-batch" placeholder="留空=不变"></td>
+    <td><input class="a-expiry" placeholder="YYYY-MM-DD"></td>
+    <td><button class="btn secondary sm" onclick="this.closest('tr').remove()">删</button></td>`;
+  document.getElementById("allocBody").appendChild(tr);
+}
+
+async function useSuggestion() {
+  if (!suggestion || !suggestion.lines || !current) return;
+  try {
+    await api("POST", `/api/inventory-transfers/${current.id}/allocate`,
+      { lines: suggestion.lines });
+    showMsg(document.getElementById("msg"),
+      "已按冲销建议分配反向维度，请核对后点「审核生效」", "success");
+    await showDetail(current.id);
+    await load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "冲销建议分配失败：" + e.message, "error");
+  }
+}
+
+async function submitAllocate() {
+  const rows = Array.from(document.querySelectorAll("#allocBody tr"));
+  const lines = [];
+  for (const tr of rows) {
+    const src = tr.querySelector(".a-src").value;
+    const qty = Number(tr.querySelector(".a-qty").value);
+    if (!src || !(qty > 0)) continue;
+    const line = { stock_batch_id: Number(src), qty };
+    const put = (cls, key) => {
+      const v = tr.querySelector(cls).value;
+      if (v !== "") line[key] = v;
+    };
+    put(".a-customer", "to_designated_customer_id");
+    put(".a-property", "to_goods_property");
+    put(".a-status", "to_stock_status");
+    put(".a-batch", "to_batch_no");
+    put(".a-expiry", "to_expiry_date");
+    lines.push(line);
+  }
+  if (!lines.length) {
+    showMsg(document.getElementById("msg"), "请至少填写一行有效的源明细与数量", "error");
+    return;
+  }
+  try {
+    await api("POST", `/api/inventory-transfers/${current.id}/allocate`, { lines });
+    showMsg(document.getElementById("msg"), "已分配库存：可用量已真实占用，等待审核生效", "success");
+    await showDetail(current.id);
+    await load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "分配失败：" + e.message, "error");
+  }
+}
+
+async function act(name) {
+  const labels = {
+    approve: "审核生效", unallocate: "取消分配", close: "关闭空单",
+    delete: "删除空单", reverse: "生成冲销单",
+  };
+  if (!confirm(`确认「${labels[name]}」？`)) return;
+  try {
+    const r = await api("POST", `/api/inventory-transfers/${current.id}/${name}`, {});
+    if (name === "reverse") {
+      // 建议行已把源/目标维度反置，并带显式 from_* 维度，后端按维度定位源明细
+      suggestion = { id: r.id, lines: r.suggested_lines || [] };
+      showMsg(document.getElementById("msg"),
+        `已生成反向单 ${r.code}（draft），点「使用冲销建议」分配后仍需审核`, "success");
+      await load();
+      await showDetail(r.id);
+      return;
+    }
+    showMsg(document.getElementById("msg"), `${labels[name]}成功，状态：${TAG[r.status] || r.status}`, "success");
+    await showDetail(current.id);
+    await load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), `${labels[name]}失败：` + e.message, "error");
+  }
+}
+
+loadOptions().then(() => load()).then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
+</script>
+</body>
+</html>

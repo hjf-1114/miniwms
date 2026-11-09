@@ -184,3 +184,48 @@ WARN_MISSING_EXTERNAL_BATCH_NO = "MISSING_EXTERNAL_BATCH_NO"
 STOCK_STATUSES = ("非限制", "质检", "冻结")
 STOCK_STATUS_UNSET = ""
 QUALITY_SPECIAL_APPROVAL = "special_approval"  # 不合格 → 合格 的特采审批标记
+
+# ── M24 库存转移单（用户 2026-11-09 四条 A 口径）──
+# A1 只做同库位内的批次维度变更，跨库位一律走 M17 移库单；主账 stock.qty 零 UPDATE。
+# A2 七类转移类型一次做全，但底层统一为「源维度组合 → 目标维度组合」的净零搬迁，
+#    类型只作展示与校验标签，不写独立分支。
+# A3 只做 IT 单自身的 unallocate，不做 DN 拣货分配取消。
+# A4 权限码只落常量/注释（不挂装饰器）；特采只接布尔标记 + reason_code=特采。
+INVENTORY_TRANSFER_PREFIX = "IT"        # IT-YYYYMMDD-NNN
+IT_DRAFT = "draft"                       # 已制单，未分配
+IT_ALLOCATED = "allocated"               # 已分配库存（真实占用可用库存）
+IT_APPROVED = "approved"                 # 审核生效（终态，不可改不可删）
+IT_CLOSED = "closed"                     # 空单关闭（无任何库存动作）
+IT_CANCELLED = "cancelled"               # 空单删除标记
+IT_STATUSES = (IT_DRAFT, IT_ALLOCATED, IT_APPROVED, IT_CLOSED, IT_CANCELLED)
+
+IT_TYPE_BATCH_CORRECT = "batch_correct"      # 批号 / 效期 / 产地等错录补正
+IT_TYPE_QUALITY_CHANGE = "quality_change"    # goods_property / stock_status 变更
+IT_TYPE_BATCH_SPLIT = "batch_split"          # 同库位内拆成不同维度组合
+IT_TYPE_CUSTOMER_BIND = "customer_bind"      # 通用 → 专属
+IT_TYPE_CUSTOMER_UNBIND = "customer_unbind"  # 专属 → 通用
+IT_TYPE_CUSTOMER_REBIND = "customer_rebind"  # 专属 → 另一专属（M23 章追加）
+IT_TYPE_LOCATION_MOVE = "location_move"      # 保留标签；M24 内库位恒等，跨库位走 M17
+IT_TYPES = (IT_TYPE_BATCH_CORRECT, IT_TYPE_QUALITY_CHANGE, IT_TYPE_BATCH_SPLIT,
+            IT_TYPE_CUSTOMER_BIND, IT_TYPE_CUSTOMER_UNBIND,
+            IT_TYPE_CUSTOMER_REBIND, IT_TYPE_LOCATION_MOVE)
+
+IT_REASON_CODES = ("错录补正", "质检判定", "客户要求", "盘点差异", "特采", "冲销", "其他")
+IT_SPECIAL_APPROVAL_REASON = "特采"          # 不合格 → 合格 的唯一放行原因码
+IT_ERROR_QTY_NOT_ZERO = "TRANSFER_QTY_MUST_BE_ZERO"
+IT_QTY_FORBIDDEN_FIELDS = ("delta_qty", "qty_adjust", "to_qty", "qty_delta")
+
+# 6 个动作权限码：按用户选 A4，只落常量与注释，不挂 require_permission 装饰器。
+IT_PERM_CREATE = "inventory_transfer:create"
+IT_PERM_ALLOCATE = "inventory_transfer:allocate"
+IT_PERM_UNALLOCATE = "inventory_transfer:unallocate"
+IT_PERM_APPROVE = "inventory_transfer:approve"
+IT_PERM_CLOSE = "inventory_transfer:close"
+IT_PERM_DELETE = "inventory_transfer:delete"
+IT_PERMISSIONS = (IT_PERM_CREATE, IT_PERM_ALLOCATE, IT_PERM_UNALLOCATE,
+                  IT_PERM_APPROVE, IT_PERM_CLOSE, IT_PERM_DELETE)
+
+# M24 流水类型（qty_delta 恒为 0 的成对 / 分配流水）
+MOVEMENT_IT_ALLOCATE = "it_allocate"        # 分配占用（allocated_delta > 0）
+MOVEMENT_IT_UNALLOCATE = "it_unallocate"    # 取消分配（allocated_delta < 0）
+MOVEMENT_IT_TRANSFER = "it_transfer"        # 审核生效：源 -Q / 目标 +Q

@@ -39,6 +39,7 @@
         { href: "/stock_batch.html", label: "批次库存", ico: "🧾" },
         { href: "/stocktake_plans.html", label: "盘点方案", ico: "🗂️" },
         { href: "/stock_adjustments.html", label: "库存调整", ico: "⚖️" },
+        { href: "/inventory_transfers.html", label: "库存转移", ico: "🔀" },
       ]},
     ]},
     { label: "系统管理", ico: "⚙️", children: [

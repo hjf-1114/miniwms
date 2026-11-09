@@ -250,9 +250,30 @@ python -m unittest discover -s tests -p "test_*.py" -v
   真实 Chrome E2E **26/26**（独立库 + 端口 5115）；隔离 15/15、格子 13/13、M21 10/10、
   M22 28/28、M23 v1 28/28 五组基线复跑无回归。
 
+### M24 库存转移单（2026-11-09 里程碑 ✅）
+
+- **口径**（用户四条全选 A）：只做**同库位内**的批次维度变更（跨库位走 M17 移库单）；
+  7 类转移类型一次做全但统一为「源维度组合 → 目标维度组合」的净零搬迁；
+  只做 IT 单自身的 `unallocate`；6 个权限码只落常量不挂装饰器，特采只接布尔标记。
+- **数量净零**：`Σ qty_delta = 0` 硬校验，**主账 `stock.qty` 全程零 UPDATE**；
+  `delta_qty` / `qty_adjust` / `to_qty` / `qty_delta` 一律 400
+  `TRANSFER_QTY_MUST_BE_ZERO`。数量变化唯一入口仍是 M22 库存调整单。
+- **状态机**：有分配 `draft → allocated → approved`（审核即生效终态）；
+  空单 `draft → closed / cancelled`（无库存动作）；已分配单须先 `unallocate` 才能关闭 / 删除；
+  `approved` 不可改不可删，只能生成 `reversal_of_id` 冲销单（仍需分配 + 审核）。
+- **分配真实占用**：`allocate` 同步增加主账与明细两层 `allocated_qty`，可用库存减少
+  （M5 超卖拦截能感知），`unallocate` / `approve` 对称释放。审核时源维度写 `-Q`、
+  目标维度写 `+Q` 两条流水，并逐字段写 `inventory_change_log`。
+- **三表**：`inventory_transfer` / `inventory_transfer_line` / `inventory_change_log`；
+  `inventory_transfer_service.py` 是业务层，所有库存写入仍经 `inventory_service.adjust_stock()`。
+- **前端**：`inventory_transfers.html` 列表 / 制单 / 明细 / 分配表单 / 转移明细 /
+  字段级变更文档，冲销单支持「使用冲销建议」一键带入反向维度。
+- **验证**：unittest **415 绿**（新增 25 例）、真实 Chrome E2E **35/35**（端口 5116）；
+  隔离 15/15、格子 13/13、M21 10/10、M22 28/28、M23 v1 28/28、M23 风险放行 26/26
+  六组基线复跑无回归。
+
 ### 规划中（见 DEVELOPMENT.md）
 
-- M24 库存转移单（只改批次信息、数量净零；分配库存会真实占用可用库存）
 - M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback + **配置化硬约束** + 可解释推荐）· M26 规则配置与推荐交互（13 维起步、编辑器预留扩展位）— **继续安排**；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**
 - 报表统计（M28，归入蓝图第 4 层经营报表）
 - **降级暂缓**（编号保留、不排期）：补货预警（M27）、外部对接 API（M29）、CSV 导入导出（M30）
@@ -343,6 +364,13 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET | `/api/stock/batch` | M21 批次级库存余额，支持 `batch_no` / `goods_property` / `stock_status` / `designated_customer_id` / `has_stock` / 分页；接入货主隔离 |
 | GET | `/api/stock/batch-reconcile` | M21 校验 I2（批次明细＝批次流水累加）+ I3（主账＝批次明细累加），**硬校验无灰度豁免**，分段返回 `i2` / `i3` 的 `checked` 与 `mismatches` |
 | GET | `/api/reservation-logs` | M23 风险放行日志（**只读**，带货主隔离，支持 `dn_id` / `keyword` / 分页；JOIN 物料、库位与客户名称） |
+| GET | `/api/inventory-transfers` | M24 库存转移单列表，支持 `status` / `transfer_type` / `keyword` / 分页；按明细行货主隔离 |
+| POST | `/api/inventory-transfers` | M24 制单（draft 空单，不过账）；`delta_qty` 等数量字段 400 |
+| GET | `/api/inventory-transfers/<id>` | M24 详情：单据头 + 转移明细 + 字段级变更文档 |
+| POST | `/api/inventory-transfers/<id>/allocate` | M24 分配库存（主账与明细两层 `allocated_qty` 真实占用） |
+| POST | `/api/inventory-transfers/<id>/unallocate` | M24 取消分配（对称释放，回 draft） |
+| POST | `/api/inventory-transfers/<id>/approve` | M24 审核生效（净零成对流水 + 变更文档，`approved` 终态） |
+| POST | `/api/inventory-transfers/<id>/close`、`/delete`、`/reverse` | M24 关闭空单 / 删除空单 / 生成冲销单（反向 draft 仍需分配 + 审核） |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`、`default_zone_id` 推荐储区） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页（返回 `default_zone_name`） |
@@ -371,6 +399,7 @@ auth.py               认证与权限基础（密码哈希、token 签发/校验
 constants.py          状态机、流水类型、批次号前缀、温区/混放字段、推荐理由码、单据标识位与 parse_doc_flags()（显式集中）
 inventory_service.py  库存变更服务层（事务/流水/零行保留，路由不直接写库存）；M21 起同时维护 stock_batch 明细层，按 FEFO 自动分摊批次维度，禁止路由直写明细
 adjustment_service.py  M22 库存调整单服务层：制单/审核过账/取消/冲销；指定批号时从 stock_batch 补齐完整批次维度
+inventory_transfer_service.py M24 库存转移单服务层：7 类统一为「源维度→目标维度」净零搬迁、双层分配占用/释放、变更文档、冲销
 stocktake_service.py  M22 盘点方案服务层：生效配置解析、范围条件组编译、动碰时间窗与交易类型、盘点行试算
 putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，只读）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
@@ -378,6 +407,7 @@ batch_service.py      批次服务层（验收入库时写批次档案 + 唯一�
 reservation_rules.py  M23 规则层（纯函数）：指定客户出库校验规则表、先专属后通用建议、质量状态转换矩阵；不接路由
 reservation_audit.py  M23 补充：专属库存风险只读预检 + 放行日志落库（内存余额快照按发货顺序模拟，不拦截）
 routes_reservation_log.py M23 补充：风险放行日志只读查询 Blueprint（/api/reservation-logs，带货主隔离）
+routes_inventory_transfer.py M24 库存转移单 Blueprint（/api/inventory-transfers，7 动作 + 统一事务回滚）
 routes_owner.py       货主主数据 Blueprint
 routes_product.py     物料主数据 Blueprint（含推荐储区）
 routes_location.py    库位主数据 Blueprint（含仓库/储区/混放继承）
@@ -396,8 +426,8 @@ routes_stock_adjustment.py M22 库存调整单（/api/stock-adjustments）Bluepr
 routes_stocktake_plan.py   M22 盘点方案（/api/stocktake-plans，含试算）Blueprint
 routes_batch.py       批次配置/批次档案/入库批次流水 Blueprint
 routes_warehouse.py   仓库主数据 Blueprint（控制面；db_path 安全校验、跨库引用检查）
-web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/stocktake_plans/stock_adjustments/batches/stock_batch/stock/roles/users/owner_warehouses/login + app.html 工作台 + css/js）
-web_app/js/layout.js  递归多层导航树（3 级 / 22 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
+web_app/              Web demo（index/owners/products/locations/zones/customers/suppliers/warehouses/carriers/asns/asn_receive/asn_putaway/dns/transfers/stocktakes/stocktake_plans/stock_adjustments/inventory_transfers/batches/stock_batch/stock/roles/users/owner_warehouses/login + app.html 工作台 + css/js）
+web_app/js/layout.js  递归多层导航树（3 级 / 23 页）；独立页与工作台共用 mount() 实现折叠、祖先链自动展开、当前页高亮与 localStorage 记忆；独立页侧栏挂载当前仓库选择器
 web_app/js/api.js     原生 fetch 封装 + 当前仓库上下文（X-WMS-Warehouse header / mountWarehousePicker()）+ 登录态与工作台标签工具
 tools/seed_demo.py    一键演示数据播种（3 货主/8 物料/8 库位/4 客户 + 储区/推荐储区/固定货位绑定 + 收货上架→拣货发货，支持 --reset/--check）
 docs/REFERENCES.md    开源 WMS 设计参考笔记（GreaterWMS/Sentry/Aardvarkland + M19 批次设计）
@@ -433,6 +463,10 @@ DEVELOPMENT.md        里程碑开发记录
   与发货共用 `spread_batches()`；用户取消＝零写请求，继续才在发货同事务内逐条写
   `customer_reservation_log`（界面确认 / API 直调用 `action` 区分）；分配动作按
   `qty - allocated_qty` 取容量，扣减动作按 `qty`，保证分次拣货的分配与释放对称
+- **库存转移只改维度（M24）**：审核动作 `qty_delta` 恒为 0，源维度 `-Q` / 目标维度 `+Q`
+  成对流水；`adjust_stock()` 在 `qty_delta == 0` 时只 SET `allocated_qty`、不 SET `stock.qty`；
+  分配与释放同步作用于主账与明细两层；跨库位走 M17 移库单，数量变化只走 M22 库存调整单；
+  `approved` 是终态，只能生成冲销单（仍需分配 + 审核）
 - **数据隔离三层**：连接层按 `warehouse.db_path` 选库（仓库），SQL 层注入 `owner_id`（货主），数据层行内带标识列；
   货主 / 仓库主数据以**中央库为唯一权威写入点**，业务库持有只读副本
 - **ALL 必须显式**：账号「看全部仓 / 全部货主」由 `user.*_scope='all'` 明确给出；授权行缺失、上下文缺失一律 403 拒绝，
