@@ -17,8 +17,9 @@ import scope as S
 from flask import Blueprint, jsonify, request
 
 import constants as C
-from batch_service import record_receipt
+from batch_service import record_receipt, validate_external_batch_no
 from inventory_service import StockError, stock_move, stock_up
+from reservation_rules import stock_status_allowed
 from main import get_db, gen_doc_no, request_payload
 
 asn_bp = Blueprint("asn", __name__, url_prefix="/api/asns")
@@ -31,7 +32,33 @@ LINE_SNAPSHOT_FIELDS = (
     "mfg_license", "shelf_life_days",
     "batch_no", "sterilization_batch_no", "production_date", "expiry_date",
     "internal_batch_no", "goods_property", "patient_name",
+    # M23：指定客户只在明细行（默认空、验收时可改）；销退外部批次号行级可覆盖单头默认值
+    "designated_customer_id", "external_batch_no",
 )
+
+
+def _parse_customer_id(value):
+    """把可选「指定客户」规整为正整数 / None；返回 (值, 错误)。"""
+    if value in (None, "", 0, "0", False):
+        return None, ""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None, "指定客户 ID 必须为整数"
+    if n <= 0:
+        return None, "指定客户 ID 必须为正整数"
+    return n, ""
+
+
+def _check_customer_owner(db, owner_id, customer_id):
+    """指定客户必须存在且归属该货主，防止跨货主锁定库存。"""
+    if customer_id is None:
+        return ""
+    row = db.execute(
+        "SELECT id FROM customer WHERE id = ? AND owner_id = ?",
+        (customer_id, owner_id),
+    ).fetchone()
+    return "" if row else f"指定客户不存在或不属于该货主: id={customer_id}"
 
 
 def _line_snapshot(line):
@@ -120,6 +147,9 @@ def create_asn():
     extra1 = str(payload.get("extra1") or "").strip()
     extra2 = str(payload.get("extra2") or "").strip()
     extra3 = str(payload.get("extra3") or "").strip()
+    # M23 销退：单据头登记外部传入的原内部批次号，作为各明细行的默认值；
+    # 行级值可覆盖。确实没有时显式填 '/'（见 batch_service.validate_external_batch_no）。
+    head_ext = str(payload.get("external_batch_no") or "").strip()
     # 往来单位联系方式：下单时可覆盖主数据带出的默认值
     ov = {
         k: str(payload.get(k) or "").strip()
@@ -128,6 +158,8 @@ def create_asn():
     }
 
     errors = list(flag_errors)
+    if len(head_ext) > C.EXTERNAL_BATCH_NO_MAXLEN:
+        errors.append(f"external_batch_no 最长 {C.EXTERNAL_BATCH_NO_MAXLEN} 字符")
     if doc_type not in C.ASN_DOC_TYPES:
         errors.append(f"doc_type 只能是 {'/'.join(C.ASN_DOC_TYPES)}")
     try:
@@ -154,6 +186,17 @@ def create_asn():
             return jsonify({"ok": False, "errors": [
                 f"lines[{i}] goods_property 只能是 {'/'.join(C.GOODS_PROPERTIES)}"
             ]}), 400
+        # M23：销退行必须有外部批次号（缺则 400）；'/' 是「确实没有」的合法占位。
+        raw_ext = str(ln.get("external_batch_no") or "").strip() or head_ext
+        ext_norm, _, ext_err = validate_external_batch_no(doc_type, raw_ext)
+        if ext_err:
+            return jsonify({"ok": False, "errors": [f"lines[{i}] {ext_err}"]}), 400
+        snap["external_batch_no"] = ext_norm
+        # M23：指定客户只放明细行、默认空，创建时可不填、验收时可改。
+        dcid, dcid_err = _parse_customer_id(ln.get("designated_customer_id"))
+        if dcid_err:
+            return jsonify({"ok": False, "errors": [f"lines[{i}] {dcid_err}"]}), 400
+        snap["designated_customer_id"] = str(dcid or "")
         parsed_lines.append((pid, qty, snap))
     # 同一物料在明细中不可重复（asn_line 唯一约束 (asn_id, product_id)）
     dup = {pid for pid, _, _ in parsed_lines}
@@ -163,6 +206,12 @@ def create_asn():
     db = get_db()
     if db.execute("SELECT id FROM owner WHERE id = ?", (owner_id,)).fetchone() is None:
         return jsonify({"ok": False, "errors": [f"货主不存在: id={owner_id}"]}), 400
+    # M23：指定客户必须归属该货主，避免跨货主把库存锁给别家客户。
+    for _, _, snap in parsed_lines:
+        cid, _ = _parse_customer_id(snap.get("designated_customer_id"))
+        owner_err = _check_customer_owner(db, owner_id, cid)
+        if owner_err:
+            return jsonify({"ok": False, "errors": [owner_err]}), 400
 
     # 来源仓库：表单层必填；API 层仍允许省略（兼容内部作业链路与后续外部对接），
     # 但一旦提供就必须存在且启用
@@ -272,6 +321,8 @@ def create_asn():
         [(asn_id, pid, qty, json.dumps(snap, ensure_ascii=False))
          for pid, qty, snap in parsed_lines],
     )
+    # 单据头外部批次号单独写，避免改动 M16 起沿用至今的 INSERT 列序。
+    db.execute("UPDATE asn SET external_batch_no = ? WHERE id = ?", (head_ext, asn_id))
     db.commit()
     asn = _load_asn(db, asn_id)
     lines_out = [_dict_line(l) for l in _load_lines(db, asn_id)]
@@ -319,6 +370,10 @@ def _dict_line(l):
         if k not in d:
             d[k] = v
     d.pop("product_owner_id", None)
+    # M23：快照里以字符串保存，按业务类型回吐给前端（默认空 = 通用库存 / 无外部批次号）。
+    d["designated_customer_id"] = _parse_customer_id(
+        snap.get("designated_customer_id"))[0]
+    d["external_batch_no"] = str(snap.get("external_batch_no") or "").strip()
     return d
 
 
@@ -386,7 +441,8 @@ def get_asn(asn_id):
         for ln in lines_out:
             ln["batch_receipts"] = [dict(r) for r in db.execute(
                 "SELECT id, batch_no, internal_batch_no, internal_source, qty, "
-                "goods_property, batch_id, created_at FROM batch_receipt "
+                "goods_property, batch_id, designated_customer_id, "
+                "external_batch_no, warning, created_at FROM batch_receipt "
                 "WHERE asn_line_id = ? ORDER BY id", (ln["id"],)
             ).fetchall()]
     return jsonify({"ok": True, "asn": body, "lines": lines_out})
@@ -397,10 +453,16 @@ def receive(asn_id):
     """收货：line_id + receiving 库位 + 数量 → 库存 +、批次信息落库、单据状态推进。
 
     批次写入与库存增加处于同一 BEGIN IMMEDIATE 事务：要么都成功，要么一起回滚。
-    `internal_batch_no` 可由外部数据/退货场景传入；留空时按首次入库或销退规则确定。
+    M23：``designated_customer_id`` / ``external_batch_no`` / ``stock_status`` 均在
+    **验收时**取值（payload 优先，其次明细行快照，最后单据头默认值）；
+    销退缺外部批次号一律 400，确实没有须显式填 '/'。
     """
     payload = request_payload()
     internal_batch_no = str(payload.get("internal_batch_no") or "").strip()
+    stock_status = str(payload.get("stock_status") or "").strip()
+    if not stock_status_allowed(stock_status):
+        return jsonify({"ok": False, "error":
+                        f"stock_status 只能是 {'/'.join(C.STOCK_STATUSES)} 或留空"}), 400
     try:
         line_id = int(payload.get("line_id"))
         location_id = int(payload.get("location_id"))
@@ -410,6 +472,7 @@ def receive(asn_id):
 
     db = get_db()
     batch = None
+    warning = ""
     try:
         db.execute("BEGIN IMMEDIATE")
         asn = _load_asn(db, asn_id)
@@ -426,12 +489,32 @@ def receive(asn_id):
             raise ValueError(f"收货数量必须为正且不超过剩余 {remaining}")
         _check_location(db, location_id, ("receiving",), "收货目标")
 
+        # ── M23：验收时确定三个批次维度（payload > 行快照 > 单据头默认值）──
+        snap = _line_snapshot(line)
+        dcid_raw = (payload["designated_customer_id"]
+                    if "designated_customer_id" in payload
+                    else snap.get("designated_customer_id"))
+        dcid, dcid_err = _parse_customer_id(dcid_raw)
+        if dcid_err:
+            raise ValueError(dcid_err)
+        owner_err = _check_customer_owner(db, asn["owner_id"], dcid)
+        if owner_err:
+            raise ValueError(owner_err)
+        ext_raw = (payload["external_batch_no"]
+                   if "external_batch_no" in payload
+                   else (snap.get("external_batch_no") or asn["external_batch_no"]))
+        ext_norm, warning, ext_err = validate_external_batch_no(
+            asn["doc_type"] or "", ext_raw)
+        if ext_err:
+            raise ValueError(ext_err)
+
         # 先登记批次流水拿到唯一批次号，再把**同一维度**写进库存明细层（M21）
         batch = record_receipt(
             db, owner_id=asn["owner_id"], product_id=line["product_id"],
             location_id=location_id, asn_id=asn_id, asn_line_id=line_id,
             qty=qty, doc_type=asn["doc_type"] or "",
-            line_info=_line_snapshot(line), internal_batch_no=internal_batch_no,
+            line_info=snap, internal_batch_no=internal_batch_no,
+            designated_customer_id=dcid, external_batch_no=ext_norm,
         )
         info = batch["info"]
         stock_up(db, asn["owner_id"], line["product_id"], location_id, qty,
@@ -440,7 +523,9 @@ def receive(asn_id):
                      "batch_no": batch["batch_no"],
                      "batch_key": batch["batch_key"],
                      "internal_batch_no": batch["internal_batch_no"],
+                     "designated_customer_id": dcid,
                      "goods_property": info.get("goods_property", ""),
+                     "stock_status": stock_status,
                      "expiry_date": info.get("expiry_date", ""),
                      "production_date": info.get("production_date", ""),
                      "qty": qty,
@@ -460,6 +545,7 @@ def receive(asn_id):
         raise
 
     return jsonify({"ok": True, "status": status, "batch": batch,
+                    "warning": warning,
                     "lines": [_dict_line(l) for l in _load_lines(db, asn_id)]})
 
 

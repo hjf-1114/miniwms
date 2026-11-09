@@ -687,6 +687,23 @@ def _migrate_m22(conn):
         )
 
 
+def _migrate_m23(conn):
+    """M23 指定客户专属库存 / 销退口径 DDL（幂等补列，老库零迁移成本）。
+
+    * ``asn.external_batch_no``：销退单头登记外部传入的原内部批次号，作为明细行默认值。
+    * ``batch_receipt`` 三列：指定客户、外部批次号、缺号告警。
+    新库 DDL 已带这些列，老库由 ``_ensure_columns`` 补齐，两条路径执行同一套语义。
+    """
+    _ensure_columns(conn, "asn", (
+        ("external_batch_no", "TEXT NOT NULL DEFAULT ''"),
+    ))
+    _ensure_columns(conn, "batch_receipt", (
+        ("designated_customer_id", "INTEGER"),
+        ("external_batch_no", "TEXT NOT NULL DEFAULT ''"),
+        ("warning", "TEXT NOT NULL DEFAULT ''"),
+    ))
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -865,6 +882,7 @@ def init_db(path=None):
                 extra2          TEXT    NOT NULL DEFAULT '',
                 extra3          TEXT    NOT NULL DEFAULT '',
                 note            TEXT    NOT NULL DEFAULT '',
+                external_batch_no TEXT  NOT NULL DEFAULT '',
                 created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
                 updated_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
@@ -1326,6 +1344,9 @@ def init_db(path=None):
                 doc_type          TEXT    NOT NULL DEFAULT '',
                 goods_property    TEXT    NOT NULL DEFAULT '',
                 info              TEXT    NOT NULL DEFAULT '{}',
+                designated_customer_id INTEGER,
+                external_batch_no TEXT    NOT NULL DEFAULT '',
+                warning           TEXT    NOT NULL DEFAULT '',
                 created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
             CREATE INDEX IF NOT EXISTS idx_batch_receipt_batch    ON batch_receipt(batch_id);
@@ -1402,6 +1423,7 @@ def init_db(path=None):
         _migrate_scope_columns(conn)
         _migrate_m21_columns(conn)
         _migrate_m22(conn)
+        _migrate_m23(conn)
         _seed_zones(conn)
         _seed_auth(conn)
         conn.commit()

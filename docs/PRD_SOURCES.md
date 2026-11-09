@@ -853,6 +853,52 @@ M22 库存调整单 + 盘点增强（2026-11-06）。提交哈希以 `git log` /
 
 ---
 
+### 2.6 [实现] M23 增量：三张既有页的功能追加（2026-11-09）
+
+> **本节性质**：M23 **不新增页面**，只增强进度表已有的 `asns.html`（#9）、
+> `asn_receive.html`（#10）、`stock_batch.html`（#22）。按用户「增量追加不重写」原则，
+> **不改** #9 / #10 / #22 原行，也不改 §2.1–§2.5 正文；本节只记增量功能点，
+> 供最终 PRD 分章节取用。回溯进度仍 **2/21**，追加页仍 **3/3**，分母不混算。
+>
+> 用户 2026-11-09 确认口径：质量状态按 B（两字段独立）／出库校验只落规则（A）／
+> 销退缺外部批次号 400 且允许显式填 `/`（A 变体）／PRD 回溯另起独立提交（推荐 A）。
+
+**[业务] 口径**
+
+| 项 | 口径 |
+|---|---|
+| 指定客户 | `designated_customer_id` 是**出库对象锁定**，与 `owner_id`（物权）正交；只在 ASN 明细行、默认空、验收时人工填写／修改；有值则该批库存只能发给该客户 |
+| 专属与通用 | 按 `uq_stock_batch` 唯一键分开，**永不合并**；绑定／解绑／换客户一律走 M24 库存转移单（`customer_bind` / `customer_unbind` / `customer_rebind`），页面不得直接改明细行字段 |
+| 销退外部批次号 | 销退单创建／验收**必填**，缺号一律 400；确实没有须显式填 `/`，系统回溯历史内部批次号并写 `MISSING_EXTERNAL_BATCH_NO` 告警，不静默当作漏填 |
+| 质量状态 | `goods_property`（合格／不合格，批次维度）与 `stock_status`（非限制／质检／冻结，库位维度）**两个独立字段**，枚举不改；状态变更属 M24 |
+| 出库校验 | **只落规则**：`reservation_rules.py` 为纯函数，不接 `routes_dn.py`、不做页面提示；M35 批次级分配时再接入 |
+
+**[功能] 页面增量**
+
+| 页面 | 查询／展示 | 操作与交互 |
+|---|---|---|
+| `asns.html`（#9） | 单据详情增「原内部批次号」「专属库存口径」；明细行增「指定客户」chip；验收入库批次流水增专属徽章与缺号告警徽章，客户显示为「编码 · 名称」 | 新建弹窗单据头「原内部批次号」**只在 `doc_type=销退` 时显示**，切其他类型自动隐藏并清空；「填 /（确实没有）」一键登记；提交前内联拦截缺号（弹窗保留）；明细行加「指定客户」下拉（留空＝通用库存） |
+| `asn_receive.html`（#10） | 销退上下文提示条（写明 `/` 与告警）、单据类型 chip、明细表新增「指定客户」列、批次流水专属／告警徽章 | 工具栏拆成「作业参数／批次维度」两段；新增指定客户、质量状态下拉与 `/` 快捷按钮；切换明细行自动带出创建时的草稿值；提交前内联校验；成功后回显告警 |
+| `stock_batch.html`（#22） | 指定客户由「客户 #N」裸 ID 改为**彩色专属徽章（显示客户名）／灰色通用徽章**；质量状态徽章化；说明补「换客户须走 M24 转移单」 | 新增「指定客户」「质量状态」两个筛选下拉，走 `/api/stock/batch` 既有参数 |
+
+`dns.html`（#12）按用户选 A **不加任何专属库存提示或拦截**，本轮零改动。
+
+**[实现] 取证与验收**
+
+- 后端取证：`main.py::_migrate_m23()`、`batch_service.validate_external_batch_no()` /
+  `record_receipt()`、`routes_asn.create_asn()` / `receive()` / `get_asn()` /
+  `_dict_line()`、`constants.py`、`reservation_rules.py`、`inventory_service.BATCH_DIMS`。
+- 前端取证：`web_app/asns.html`、`web_app/asn_receive.html`、`web_app/stock_batch.html`。
+- 单测：`tests/test_m23_designated.py` 19 例；按新口径适配 `tests/test_batch.py` 1 例销退既有用例。
+- 全量 `unittest discover -s tests` **375 例全绿**；真实 Chrome E2E（独立库 + 端口 5112）**28/28**；
+  隔离 15/15、格子 13/13、M21 10/10、M22 28/28 四组基线复跑无回归；`node --check` 四个页面内联脚本通过。
+- **边界如实记录**：出库路由当前不拦截专属库存发给其他客户（测试 `test_16` 固化此边界）；
+  销退 `original_dn_id` / `original_internal_batch_no` 交叉校验未实现；
+  `dn_pick` 未记录实际消耗的批次归属；「先专属后通用」与 FEFO 优先级冲突未决定。
+  以上均不得写成现状已实现。
+
+---
+
 ## 3. API 与数据模型（单列一章）
 
 > 用户口径 4「单列一章」：**端点清单与数据表字典独立成章**，页面记录里只引用端点名，不复制字段定义。
@@ -1097,6 +1143,55 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 
 ---
 
+### 3.6 [实现] M23 增量：端点与数据表（2026-11-09 追加）
+
+> M23 **无新增端点、无新增表**，只扩既有端点的请求／响应字段与幂等补列。
+> 按「增量追加不重写」原则，不修改 §3.1–§3.5 已有内容。
+
+**[实现] 端点增量**
+
+| 方法 | 端点 | M23 增量 |
+|---|---|---|
+| POST | `/api/asns` | 请求体新增 `external_batch_no`（单据头默认值）；`lines[i]` 新增 `designated_customer_id`、`external_batch_no`（行级覆盖）；销退缺号 400、超长 400、跨货主指定客户 400；响应带 `asn.external_batch_no` 与 `lines[].designated_customer_id` / `external_batch_no` |
+| GET | `/api/asns/<id>` | `lines[].designated_customer_id` / `external_batch_no`；`batch_receipts[]` 增 `designated_customer_id` / `external_batch_no` / `warning` |
+| POST | `/api/asns/<id>/receive` | 请求体新增 `designated_customer_id` / `external_batch_no` / `stock_status`；取值优先级 payload > 行快照 > 单据头；销退缺号 400、`stock_status` 非法 400；响应 `batch` 增三字段、顶层增 `warning` |
+
+新增纯函数模块 `reservation_rules.py`（**不注册蓝图**）：`check_customer_reservation()` /
+`reservation_rule_matrix()` / `preferred_consumption_order()` /
+`can_change_goods_property()` / `quality_transition_matrix()` / `stock_status_allowed()`。
+
+**[实现] 数据表增量（幂等补列）**
+
+| 表 | 新增列 | 声明 |
+|---|---|---|
+| `asn` | `external_batch_no` | `TEXT NOT NULL DEFAULT ''` |
+| `batch_receipt` | `designated_customer_id` | `INTEGER` |
+| `batch_receipt` | `external_batch_no` | `TEXT NOT NULL DEFAULT ''` |
+| `batch_receipt` | `warning` | `TEXT NOT NULL DEFAULT ''` |
+
+`stock_batch` / `stock_movement` 的 `designated_customer_id` / `stock_status` 为 M21 已建列，
+本轮只写入值；`uq_stock_batch` 唯一键、I1 / I2 / I3 不变式均未改动。
+
+**[实现] 常量与规则**
+
+| 常量／规则 | 值 |
+|---|---|
+| `EXTERNAL_BATCH_NO_ABSENT` | `/` |
+| `EXTERNAL_BATCH_NO_MAXLEN` | `64` |
+| `WARN_MISSING_EXTERNAL_BATCH_NO` | `MISSING_EXTERNAL_BATCH_NO` |
+| `CUSTOMER_RESERVED_FORBIDDEN` | 专属库存与出库单客户不一致／出库单无客户 |
+| `GOODS_PROPERTIES` | `("合格", "不合格")`（**未改**） |
+| `STOCK_STATUSES` | `("非限制", "质检", "冻结")`（新增，`''` = 老数据未设置） |
+| 质量转换矩阵 | 合格⇄不合格允许；不合格→合格禁止，除非 `special_approval` 特采审批 |
+| 出库校验规则表 | 通用→任意允许；专属→同客户允许；专属→异客户／未指定客户拒绝 |
+
+**[实现] 口径覆盖说明**：`docs/PUTAWAY_RECOMMENDATION.md` §5.2 / §204 的「`goods_property` 扩四值」
+与 §7.4 / §420 的「两字段独立」冲突，用户 2026-11-09 选 B 以两字段独立为准；
+§7.5 的「销退静默兜底 + 告警」被「缺号 400、显式 `/` 才兜底」覆盖。
+设计文档保留定稿原文用于追溯，最终 PRD **以实现口径为准**。
+
+---
+
 ## 4. 里程碑与页面归属索引
 
 | 里程碑 | 主题（以 `DEVELOPMENT.md` Roadmap 为准） | 主要页面 | 状态 |
@@ -1123,6 +1218,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | M20 | 储区与上架作业基础（阶段 A 基础资料与推荐作业页 / 阶段 B 单据标识位） | `zones.html` / `asn_receive.html` / `asn_putaway.html` / `locations.html` / `products.html` / `asns.html` / `dns.html` / `app.html` | 已完成 |
 | M21 | 批次级库存明细层（两层账 / 流水 9 维 / 五动作同步钩子 / I2·I3 硬校验 / 老库回填） | `stock_batch.html` + `asns.html` / `dns.html` / `transfers.html` / `stocktakes.html` 的过账链路 | **已完成 2026-11-06** |
 | M22 | 库存调整单 + 盘点增强（唯一手工数量入口 / 盘点方案四类盘点 / 真盲盘分级接口 / 差异人工生成调整单 / 审核·取消·冲销） | `stock_adjustments.html` / `stocktake_plans.html` + `stocktakes.html` 增强 | **已完成 2026-11-06** |
+| M23 | 指定客户专属库存 + 销退口径（指定客户贯穿四层 / 销退外部批次号必填且 `/` 占位 / 出库校验只落规则 / 质量状态两字段独立） | `asns.html` / `asn_receive.html` / `stock_batch.html` 三页增强，**无新增页面** | **已完成 2026-11-09** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -1143,6 +1239,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | v0.4 | 2026-11-05 | 追加 §6.5「货主 × 仓库业务关系格子」（架构增强第二次优化，非里程碑）：多对多关系表、可见范围取交集、矩阵配置页、兼容边界、验收基线更新为 309 例 + E2E 13/13；追加数据库选型口径（继续方案 A，PG/RLS 为未来路线）。**按增量追加规则不改写 §1–§6.4 已有内容**；21 页逐页记录进度仍为 2/21 | 取证自 `scope.py`、`main.py`、`routes_owner_warehouse.py`、`web_app/owner_warehouses.html`、`web_app/js/layout.js`、`tests/test_owner_warehouse.py`、`docs/DOMAIN_BLUEPRINT.md` §9、`DEVELOPMENT.md` 文末同名章节 |
 | v0.5 | 2026-11-06 | **M21 批次级库存明细层**：进度表续编 #22（M21 追加页，不计入回溯 21 页分母）+ 追加 §2.3「批次库存」11 项完整记录；记录 `stock_batch` 两层账、流水 9 维、I1/I2/I3 三条不变式、老库回填、五动作钩子、验收基线 331 例 + E2E 10/10。**按增量追加规则不改写 §1 已有 21 行、§2.1/§2.2、§3–§6.5 内容** | 取证自 `main.py::_migrate_m21_columns`、`inventory_service.py`、`routes_asn.py`、`routes_stock.py`、`web_app/stock_batch.html`、`web_app/js/layout.js`、`tests/test_m21_stock_batch.py`、`DEVELOPMENT.md` M21 章 |
 | v0.6 | 2026-11-06 | **M22 库存调整单 + 盘点增强**：进度表续编 #23 / #24（M22 追加页，不计入回溯 21 页分母）+ 追加 §2.4「盘点方案」、§2.5「库存调整」两页 11 项完整记录 + §3.5 增量端点与数据表（含 `stocktake_line` 唯一键重建）；进度改为 **2/21（回溯）+ 3/3（追加页）**；里程碑索引加 M22。记录数量变化唯一入口、真盲盘分级接口、按批号盘点、审核/取消/冲销、验收基线 356 例 + E2E 28/28。**按增量追加规则不改写 §1 已有 21 行、§2.1/§2.2/§2.3、§3.1–§3.4、§4 已有行、§5–§6.5 内容**；`stocktakes.html`（#13）增量记在 §2.5 与 §3.5，不改 #13 原行 | 取证自 `main.py::_migrate_m22()`、`routes_stocktake.py`、`routes_stock_adjustment.py`、`routes_stocktake_plan.py`、`adjustment_service.py`、`stocktake_service.py`、`constants.py`、`web_app/stock_adjustments.html`、`web_app/stocktake_plans.html`、`web_app/stocktakes.html`、`web_app/js/layout.js`、`tests/test_m22_adjustment.py`、`DEVELOPMENT.md` M22 章 |
+| v0.7 | 2026-11-09 | **M23 指定客户专属库存 + 销退口径**：M23 不新增页面，进度表 #9 / #10 / #22 原行**不改**，增量按「追加不重写」记在新增 §2.6（业务口径 / 三页功能增量 / 取证与边界）与 §3.6（端点与数据表增量 / 常量与规则 / 口径覆盖说明）；§4 加 M23 行；**回溯仍 2/21、追加页仍 3/3，分母不混算**。记录用户四条确认口径（质量状态 B / 出库校验只落规则 A / 销退缺号 400 且 `/` 占位 / PRD 回溯另起提交）、设计 §5.2 与 §7.4 的字段冲突消解、§7.5 销退口径覆盖、验收基线 375 例 + E2E 28/28 + 四组基线复跑；如实记录「出库路由未接入专属校验」等 4 条边界，**不把规划写成现状** | 取证自 `main.py::_migrate_m23()`、`constants.py`、`reservation_rules.py`、`batch_service.py`、`routes_asn.py`、`web_app/asns.html`、`web_app/asn_receive.html`、`web_app/stock_batch.html`、`tests/test_m23_designated.py`、`tests/test_batch.py`、`DEVELOPMENT.md` M23 章；交叉审阅为独立只读核对，未改代码 |
 
 ---
 

@@ -160,3 +160,23 @@ def parse_doc_flags(payload):
     if len(ext) > EXTERNAL_DOC_TYPE_MAXLEN:
         errors.append(f"external_doc_type 最长 {EXTERNAL_DOC_TYPE_MAXLEN} 字符")
     return flags, ext, errors
+
+
+# ── M23 指定客户专属库存 / 销退口径（用户 2026-11-09 确认）──
+# designated_customer_id 是「出库对象锁定」，与 owner_id（物权归属）正交。
+# 本轮只落规则与链路，出库分配校验不接入 routes_dn.py（用户选 A）。
+CUSTOMER_RESERVED_OK = "OK"
+CUSTOMER_RESERVED_FORBIDDEN = "CUSTOMER_RESERVED_FORBIDDEN"
+RESERVATION_CONSUME_OWN_FIRST = "own_first"  # 建议先专属后通用，仅为规则定义
+
+# 销退单外部批次号（＝外部传入的原内部批次号）：必填；确实没有时显式填 '/'
+EXTERNAL_BATCH_NO_ABSENT = "/"
+EXTERNAL_BATCH_NO_MAXLEN = 64
+WARN_MISSING_EXTERNAL_BATCH_NO = "MISSING_EXTERNAL_BATCH_NO"
+
+# 质量状态按用户选 B：两个独立字段，GOODS_PROPERTIES 保持两值不变。
+#   goods_property（批次维度）：合格 / 不合格
+#   stock_status  （库位维度）：非限制 / 质检 / 冻结；'' = 老数据未设置
+STOCK_STATUSES = ("非限制", "质检", "冻结")
+STOCK_STATUS_UNSET = ""
+QUALITY_SPECIAL_APPROVAL = "special_approval"  # 不合格 → 合格 的特采审批标记

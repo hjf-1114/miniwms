@@ -57,7 +57,7 @@
 - M20 储区与上架作业基础（**阶段 A 已交付 2026-11-05**：储区主数据 / 仓库维度 / 混放字段 / 推荐储区 / 固定货位 / 简版上架推荐 / 验收·上架作业页；**阶段 B 已交付 2026-11-05**：asn·dn 各 4 个单据标识 + external_doc_type 的字段 / 表单 / 17 例单测）✅ **M20 收尾完成**；混放·冷链·危险拦截改为配置化规则并入 M25/M26，过渡期不拦截
 - M21 批次级库存明细层（stock_batch + stock_movement 扩维度列 + I2/I3 硬校验 + 一次性回填）✅ **2026-11-06 已交付**：五动作同步钩子 + batch_location + I2/I3 端点 + 老库回填 + 批次库存页，详见文末同名章节；331 测全绿
 - M22 库存调整单 + 盘点增强（stock_adjustment 唯一手工数量入口 / stocktake_plan 全盘·部分·盲盘·动碰；动碰支持手工时间窗 + 交易类型 / 差异由人工按钮生成调整单）✅ **2026-11-06 已交付**：3 张新表 + 真盲盘分级接口 + 按批号盘点 + 审核过账 / 取消 / 冲销 + 3 个页面，详见文末同名章节；356 测全绿
-- M23 指定客户专属库存 + 销退口径（designated_customer_id 只在明细行 / 出库校验规则 / 销退外部批次号）
+- M23 指定客户专属库存 + 销退口径（designated_customer_id 只在明细行 / 出库校验规则 / 销退外部批次号）✅ **2026-11-09 已交付**：指定客户贯穿单据→批次→明细→流水、销退外部批次号必填且允许 `/` 显式占位、出库校验只落纯规则、质量状态两字段独立；375 测全绿，详见文末同名章节
 - M24 库存转移单（只改批次信息、数量净零 / 制单→分配库存（真实占用可用库存）→审核生效终态 / 未分配可关闭删除 / 取消分配 / 冲销留痕）
 - M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback 链 + **配置化硬约束** + 可解释 Top-N）**继续安排**；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**
 - M26 规则配置与推荐交互（条件组编辑器 + fallback 链拖拽 + 推荐弹窗一键采纳 + 推荐日志；13 维起步、预留扩展位）**继续安排**
@@ -1159,6 +1159,119 @@ CREATE TABLE IF NOT EXISTS batch_location (... 批次实物分布 ...);
 - `location_group` 在 M34 货位组主数据落地前按 `location.zone` 文本近似；部分盘点暂不支持排除条件（18-F 默认口径）。
 - 录入人与复核人的权限分离只留钩子，角色矩阵后置；`auto_adjust` 字段已落库但**代码不实现自动生成**（规格要求人工按钮）。
 - 盘点差异按批号分摊时，同一批号若存在多条不同 `goods_property` 明细，按 FEFO 选取；专属客户 / 质量状态四值 / 净零库存转移留 M23 / M24。
+
+---
+
+## M23 指定客户专属库存 + 销退口径（2026-11-09）✅
+
+### 目标与用户确认口径
+
+用户 2026-11-09 对计划中的 4 个编号疑问给出答复：
+
+| # | 问题 | 答复 | 实现口径 |
+|---|---|---|---|
+| 1 | 质量状态「扩四值」扩哪个字段 | **B** | `goods_property`（批次维度，合格/不合格）与 `stock_status`（库位维度，非限制/质检/冻结）两字段独立，不改 `GOODS_PROPERTIES` 枚举；M23 只接链路与转换矩阵 |
+| 2 | 出库校验「只落规则」的边界 | **A** | 纯函数 + 常量 + 单测，不接 `routes_dn.py`、不做页面提示，M35 分配时再接 |
+| 3 | 销退缺外部批次号告警形态 | **A 变体** | 创建 / 验收一律 400 拒绝；确实没有可显式填 `/` 作为合法占位，走历史回溯兜底并写告警 |
+| 4 | PRD 回溯节奏 | 按推荐 A | 回溯 #3–#21 不混进代码提交，另起独立提交；本轮只随里程碑补 M23 增量素材 |
+
+**设计文档口径冲突的消解（重要）**：`docs/PUTAWAY_RECOMMENDATION.md` §5.2 / §204 写
+「把 `goods_property` 扩为合格·待检·不合格·冻结四值」，但 §7.4 与 §420 又明确
+「`stock_status`（库位维度）与 `goods_property`（批次维度）是两个独立概念，不能合成一个字段」，
+§763 硬约束清单把四值并列。M21 代码里两列都已存在。按用户选 B，**以两字段独立为准**，
+`GOODS_PROPERTIES` 保持 `("合格", "不合格")` 不变；M22 章末尾「质量状态四值留 M23」
+的表述按本节修正（增量追加、不改原文）。
+
+**§7.5 销退口径覆盖**：设计定稿写「销退但外部没传 → 沿用历史内部批次号 + 告警」（静默兜底）。
+用户 2026-11-09 确认改为**缺号直接 400**，必须显式填 `/` 才允许走兜底；
+设计 §7.5 原行保持定稿可追溯，实现以本节为准。
+
+### 数据模型增量（不新增表，全部幂等补列）
+
+`main.py::_migrate_m23(conn)` 复用 M22 的 `_ensure_columns()`，新库 DDL 已带列、
+老库 ALTER 补齐，两条路径同一语义：
+
+| 表 | 新增列 | 用途 |
+|---|---|---|
+| `asn` | `external_batch_no TEXT NOT NULL DEFAULT ''` | 销退单头登记外部传入的原内部批次号，作为明细行默认值 |
+| `batch_receipt` | `designated_customer_id INTEGER` | 验收时的指定客户（批次维度留痕） |
+| `batch_receipt` | `external_batch_no TEXT NOT NULL DEFAULT ''` | 本次验收实际采用的外部批次号（含 `/`） |
+| `batch_receipt` | `warning TEXT NOT NULL DEFAULT ''` | `MISSING_EXTERNAL_BATCH_NO` 告警码 |
+
+`stock_batch` / `stock_movement` 的 `designated_customer_id` / `stock_status` 两列
+**M21 已建**，本轮只是把值真正写进去，唯一键与 I1/I2/I3 一条未改。
+`asn_line.extra` 继续用 JSON 快照承载 `designated_customer_id` / `external_batch_no`，
+不新增单据头字段、不建 `doc_kind` 枚举。
+
+### 链路：验收时取值，创建时只是草稿
+
+取值优先级 `payload > 明细行快照 > 单据头默认值`，与 §6.2「验收时人工填写」一致：
+
+1. `create_asn()`：逐行跑 `validate_external_batch_no(doc_type, 行值 or 单头值)`；销退缺号 400；
+   `/` 归一保留；指定客户可选，且必须 `customer.owner_id == asn.owner_id`。
+   单头值单独 `UPDATE asn SET external_batch_no`，**不动 M16 起沿用至今的 INSERT 列序**。
+2. `receive()`：在既有 `BEGIN IMMEDIATE` 事务内取三个维度（`designated_customer_id` /
+   `external_batch_no` / `stock_status`），销退缺号直接 `raise ValueError` → 400 且整单回滚；
+   `stock_status` 非法值同样 400。
+3. `batch_service.record_receipt()`：写入 `batch_receipt` 三列；`/` 时不把占位值当内部批次号，
+   交给 `_resolve_internal()` 的历史回溯兜底并落 `warning`；真实值则
+   `internal_source=external`、无告警。
+4. `inventory_service.stock_up(batches=[...])`：把 `designated_customer_id` 与 `stock_status`
+   一起写进 `stock_batch` + `stock_movement`，**禁止路由层直写明细**这一 M21 纪律不变。
+5. 上架 `stock_move()` 由 M21 `spread_batches()` 自动继承维度，专属归属不丢失。
+
+专属与通用库存**永不合并**：`uq_stock_batch` 唯一键含 `IFNULL(designated_customer_id, 0)`，
+两次收货（一次指定、一次留空）自然分成两行，I3 仍等于主账。指定客户**不加入**
+M19 `batch_key` 指纹（设计 §6.2 口径），同一批货分给两个客户仍是一个批次档案。
+
+### 规则层：`reservation_rules.py`（只落规则，用户选 A）
+
+纯函数模块，不读 DB、不写 DB、不注册蓝图、不接 `routes_dn.py`、不做前端提示：
+
+- `check_customer_reservation(stock_customer_id, dn_customer_id)` → `allowed / code / reason`；
+  规则表：通用→任意允许、专属→同客户允许、专属→异客户或未指定客户拒绝
+  `CUSTOMER_RESERVED_FORBIDDEN`。
+- `reservation_rule_matrix()` / `preferred_consumption_order()`（先专属后通用，
+  `implemented=False`）/ `quality_transition_matrix()` /
+  `can_change_goods_property()`（不合格单向，回合格须特采审批标记）/ `stock_status_allowed()`。
+- **边界固化测试** `test_16_reservation_rule_not_wired_to_dn`：专属库存发给别的客户，
+  当前出库路由仍不拦截，明确留 M35 接入，避免把「只落规则」误读成「已实现校验」。
+
+### 前端交互（用户授权「看着优化」，参考成熟 WMS 的条件字段 / 就地校验）
+
+| 页面 | 增量 |
+|---|---|
+| `asns.html` | 单据头「原内部批次号」只在 `doc_type=销退` 时显示，切换其他类型自动隐藏并清空；「填 /（确实没有）」一键登记；提交前内联拦截缺号（抛错保留弹窗）；明细行加「指定客户」下拉（留空＝通用）；单据详情补「原内部批次号」与专属口径说明；明细批次流水加专属 / 缺号徽章，客户 ID 显示为「编码 · 名称」 |
+| `asn_receive.html` | 销退上下文提示条（写明 `/` 与告警）、单据类型 chip；工具栏拆成「作业参数 / 批次维度」两段，新增指定客户、质量状态下拉与 `/` 快捷按钮；切换明细行自动带出草稿值；提交前内联校验；成功后回显告警；明细表新增「指定客户」列与徽章 |
+| `stock_batch.html` | 指定客户由「客户 #N」裸 ID 改为彩色专属徽章（显示客户名）/ 灰色通用徽章；质量状态徽章化；新增专属客户与质量状态两个筛选下拉；说明补充「换客户须走 M24 转移单」 |
+
+不引第三方依赖，全部原生 JS；`dns.html` 按用户选 A **不加任何提示或拦截**。
+
+### 验证
+
+- `./.venv/Scripts/python.exe -m unittest discover -s tests` → **375 例全绿**
+  （356 基线 + 新增 19 例 `tests/test_m23_designated.py`）。
+- 按新口径适配 1 例既有用例：`tests/test_batch.py::test_return_receipt_reuses_internal_batch_no`
+  改为 `test_return_with_absent_marker_traces_and_warns`，显式填 `/` 并断言回溯结果 + 告警；
+  「销退静默兜底」不再是无输入合法路径。
+- `node --check`：`asns.html` / `asn_receive.html` / `stock_batch.html` / `asn_putaway.html`
+  内联脚本全通过。
+- 真实 Chrome E2E（独立库 + 端口 5112）：M23 **28/28**，覆盖条件字段显隐、`/` 一键登记、
+  缺号内联拦截、草稿值带出、验收告警、专属 / 通用 / 质量状态徽章、客户筛选、无 JS 错误。
+- 基线 E2E 复跑无回归：数据隔离 **15/15**、格子矩阵 **13/13**、M21 批次库存 **10/10**、
+  M22 全链路 **28/28**。
+
+### 已知边界 / 后续里程碑
+
+- 出库校验规则**未接入** `routes_dn.py`，专属库存当前不阻止发给其他客户；M35 实现批次级
+  `dn_pick` 时接入，并在 `dn_pick` 记录实际消耗的批次归属（设计 §6.2 落点）。
+- 「优先专属后通用」与 FEFO 的优先级冲突仍是第 16 章待确认项，本轮不决定。
+- 专属绑定 / 解绑 / 换客户必须走 **M24 库存转移单**（`customer_bind` / `customer_unbind` /
+  `customer_rebind`），页面不允许直接改 `stock_batch.designated_customer_id`；
+  `can_change_goods_property()` 只判定不写库，质量状态变更同属 M24。
+- 销退单的 `original_dn_id` / `original_internal_batch_no` 交叉校验（设计 §7.5 补充建议）
+  本轮未实现；当前只校验「必填 / `/` 占位」，不校验该外部号在本系统存在。
+- PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交，不与代码提交混在一起。
 
 ---
 

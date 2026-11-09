@@ -11,6 +11,11 @@
 .chk .ok { color: var(--success, #1d7a4d); }
 .chk .bad { color: var(--danger, #c0392b); }
 .hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
+.m23-pill { display:inline-block; border-radius:10px; padding:1px 8px; font-size:11px; white-space:nowrap; }
+.m23-reserved { background:#eef2ff; color:#4338ca; border:1px solid #c7d2fe; }
+.m23-common { background:#f1f5f9; color:#64748b; border:1px solid #e2e8f0; }
+.m23-frozen { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }
+.m23-qc { background:#fff7ed; color:#b45309; border:1px solid #fed7aa; }
 </style>
 </head>
 <body>
@@ -33,8 +38,10 @@
         </div>
         <p class="hint">
           汇总层 <b>stock</b> 仍按「货主 × 物料 × 库位」一行；这里展示明细层 <b>stock_batch</b>，
-          按批号 / 指定客户 / 货品属性 / 质量状态再细分。三条不变式：I1 主账＝流水累加、
-          I2 批次明细＝批次流水累加、I3 主账＝批次明细累加；<b>任何不一致都不豁免</b>。
+          按批号 / 指定客户 / 货品属性 / 质量状态再细分。<b>指定客户</b>有值时该批库存只能发给该客户，
+          与通用库存永不合并；换客户 / 解绑须走 M24 库存转移单留痕。
+          三条不变式：I1 主账＝流水累加、I2 批次明细＝批次流水累加、I3 主账＝批次明细累加；
+          <b>任何不一致都不豁免</b>。
         </p>
         <div id="reconcileBox" class="chk"></div>
         <div class="toolbar">
@@ -43,7 +50,14 @@
             <option value="">全部明细</option>
             <option value="1">仅非零库存</option>
           </select>
-          <input id="goodsProperty" placeholder="货品属性" style="width:120px">
+          <select id="customerFilter" style="min-width:170px"><option value="">全部客户归属</option></select>
+          <select id="statusFilter" style="min-width:120px">
+            <option value="">全部质量状态</option>
+            <option value="非限制">非限制</option>
+            <option value="质检">质检</option>
+            <option value="冻结">冻结</option>
+          </select>
+          <input id="goodsProperty" placeholder="货品属性" style="width:110px">
         </div>
         <div class="table-wrap">
           <table>
@@ -68,15 +82,47 @@
 <script src="/js/api.js"></script>
 <script src="/js/layout.js"></script>
 <script>
-let page = 1, pageSize = 20;
+let page = 1, pageSize = 20, customerMap = {};
+
+function customerName(id) {
+  const c = customerMap[id];
+  return c ? `${c.code} · ${c.name}` : `客户 #${id}`;
+}
+function reservedPill(id) {
+  return id
+    ? `<span class="m23-pill m23-reserved" title="专属库存：只能发给该客户">专属 ${esc(customerName(id))}</span>`
+    : '<span class="m23-pill m23-common" title="通用库存：任意客户均可出库">通用</span>';
+}
+function statusCell(s) {
+  if (!s) return '<span class="muted">—</span>';
+  const cls = s === "冻结" ? "m23-frozen" : (s === "质检" ? "m23-qc" : "m23-common");
+  return `<span class="m23-pill ${cls}">${esc(s)}</span>`;
+}
+
+async function loadCustomers() {
+  try {
+    const d = await api("GET", "/api/customers?page_size=200");
+    (d.customers || []).forEach(c => { customerMap[c.id] = c; });
+    const sel = document.getElementById("customerFilter");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">全部客户归属</option>' +
+      (d.customers || []).map(c =>
+        `<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join("");
+    sel.value = cur;
+  } catch (e) { /* 客户主数据不可用时退化为显示 ID，不阻断库存查询 */ }
+}
 
 async function load() {
   const qs = new URLSearchParams({ page, page_size: pageSize });
   const bno = document.getElementById("batchNo").value.trim();
   const has = document.getElementById("hasStock").value;
+  const cust = document.getElementById("customerFilter").value;
+  const st = document.getElementById("statusFilter").value;
   const prop = document.getElementById("goodsProperty").value.trim();
   if (bno) qs.set("batch_no", bno);
   if (has) qs.set("has_stock", has);
+  if (cust) qs.set("designated_customer_id", cust);
+  if (st) qs.set("stock_status", st);
   if (prop) qs.set("goods_property", prop);
   try {
     const d = await api("GET", "/api/stock/batch?" + qs);
@@ -89,8 +135,8 @@ async function load() {
         <td>${r.qty}</td><td>${r.allocated_qty}</td><td>${r.available_qty}</td>
         <td>${esc(r.expiry_date || "—")}</td>
         <td>${esc(r.goods_property || "—")}</td>
-        <td>${esc(r.stock_status || "—")}</td>
-        <td>${r.designated_customer_id == null ? "通用" : "客户 #" + r.designated_customer_id}</td>
+        <td>${statusCell(r.stock_status)}</td>
+        <td>${reservedPill(r.designated_customer_id)}</td>
       </tr>`).join("") || `<tr><td colspan="12" class="muted">暂无批次库存明细</td></tr>`;
     document.getElementById("pageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
     document.getElementById("prevBtn").disabled = page <= 1;
@@ -127,7 +173,7 @@ async function reconcile() {
 }
 
 function turn(d) { page += d; load(); }
-load();
+loadCustomers().then(load);
 </script>
 </body>
 </html>

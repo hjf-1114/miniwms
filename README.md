@@ -208,9 +208,28 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - 验证：unittest **356 绿**（新增 25 例）、真实 Chrome E2E **28/28**；既有 331 例中 10 例断言
   按新状态机适配，M21 批次库存 / 格子矩阵 / 数据隔离 E2E 复跑无回归。
 
+### M23 指定客户专属库存 + 销退口径（2026-11-09 里程碑 ✅）
+
+- **指定客户**：`asn_line.extra.designated_customer_id` 只在明细行、默认空、验收时可改；
+  贯通 `batch_receipt → stock_batch → stock_movement`，专属与通用库存按 `uq_stock_batch`
+  唯一键**永不合并**。客户必须归属该货主；换客户 / 解绑须走 M24 库存转移单留痕。
+- **销退外部批次号**（用户 2026-11-09 口径）：销退单创建 / 验收**必填**，缺号一律 400；
+  确实没有请显式填 `/`，系统回溯历史内部批次号并写 `MISSING_EXTERNAL_BATCH_NO` 告警。
+  单据头可填一次作为全单默认值，验收时可逐行改。设计 §7.5 的「静默兜底」已被此口径覆盖。
+- **质量状态按 B 口径**：`goods_property`（合格/不合格）与 `stock_status`
+  （非限制/质检/冻结）两个独立字段，枚举不改；验收时可录质量状态。
+- **出库校验只落规则**：新增 `reservation_rules.py` 纯函数（`CUSTOMER_RESERVED_FORBIDDEN`
+  规则表、先专属后通用建议、质量状态转换矩阵），**不接 `routes_dn.py`、不做页面提示**，
+  批次级出库分配留 M35 接入。
+- **前端**：收货单条件字段 + 内联校验 + 一键 `/`；验收页上下文提示条 / 草稿值带出 /
+  指定客户与质量状态下拉；批次库存页专属徽章（显示客户名）与客户 / 质量状态筛选。
+- **无新增端点 / 无新增表**：只扩 `POST /api/asns`、`POST /api/asns/<id>/receive`、
+  `GET /api/asns/<id>` 的请求与响应字段，`main.py::_migrate_m23()` 幂等补 4 列。
+- 验证：unittest **375 绿**（新增 19 例 + 按新口径适配 1 例销退既有用例）、
+  真实 Chrome E2E **28/28**；隔离 / 格子 / M21 / M22 四组基线 E2E 复跑无回归。
+
 ### 规划中（见 DEVELOPMENT.md）
 
-- M23 指定客户专属库存 + 销退口径
 - M24 库存转移单（只改批次信息、数量净零；分配库存会真实占用可用库存）
 - M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback + **配置化硬约束** + 可解释推荐）· M26 规则配置与推荐交互（13 维起步、编辑器预留扩展位）— **继续安排**；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**
 - 报表统计（M28，归入蓝图第 4 层经营报表）
@@ -331,7 +350,8 @@ adjustment_service.py  M22 库存调整单服务层：制单/审核过账/取消
 stocktake_service.py  M22 盘点方案服务层：生效配置解析、范围条件组编译、动碰时间窗与交易类型、盘点行试算
 putaway_service.py    简版上架推荐引擎（硬过滤 + 可解释打分，只读）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
-batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则）
+batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则；M23 销退外部批次号校验）
+reservation_rules.py  M23 规则层（纯函数）：指定客户出库校验规则表、先专属后通用建议、质量状态转换矩阵；不接路由
 routes_owner.py       货主主数据 Blueprint
 routes_product.py     物料主数据 Blueprint（含推荐储区）
 routes_location.py    库位主数据 Blueprint（含仓库/储区/混放继承）
@@ -378,6 +398,10 @@ DEVELOPMENT.md        里程碑开发记录
 - **数量变化唯一入口（M22）**：手工调整 / 盘点差异 / 冲销都必须有一张 `stock_adjustment`，
   `draft` 不过账、审核通过才写流水（`ref_id = adjustment_id`）；盘点路由不得直接调 `adjust_stock()`，
   冲销是生成反向单而非回改原单；盲盘录入接口不返回账存与差异，复核接口才返回
+- **专属库存与销退（M23）**：`designated_customer_id` 只在 ASN 明细行、默认空，验收时取值才写进
+  `batch_receipt` / `stock_batch` / `stock_movement`；专属与通用按唯一键分开且永不合并；
+  出库校验只落纯规则（M35 才接入分配）；销退外部批次号必填，缺号 400，显式 `/` 才走回溯并告警；
+  `goods_property` 与 `stock_status` 两字段独立，绑定解绑 / 状态变更一律走 M24 转移单
 - **数据隔离三层**：连接层按 `warehouse.db_path` 选库（仓库），SQL 层注入 `owner_id`（货主），数据层行内带标识列；
   货主 / 仓库主数据以**中央库为唯一权威写入点**，业务库持有只读副本
 - **ALL 必须显式**：账号「看全部仓 / 全部货主」由 `user.*_scope='all'` 明确给出；授权行缺失、上下文缺失一律 403 拒绝，

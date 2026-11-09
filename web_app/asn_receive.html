@@ -5,6 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>验收作业 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
+<style>
+.m23-notice { padding:9px 12px; border-radius:6px; font-size:13px; line-height:1.65;
+  margin:0 0 12px; background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }
+.m23-notice.ok { background:#f0fdf4; border-color:#bbf7d0; color:#166534; }
+.m23-err { color:#b91c1c; font-size:12.5px; margin-top:8px; min-height:16px; }
+.m23-pill { display:inline-block; border-radius:10px; padding:1px 8px; font-size:11px; white-space:nowrap; }
+.m23-reserved { background:#eef2ff; color:#4338ca; border:1px solid #c7d2fe; }
+.m23-common { background:#f1f5f9; color:#64748b; border:1px solid #e2e8f0; }
+.m23-warn { background:#fff7ed; color:#b45309; border:1px solid #fed7aa; }
+.m23-tag { background:#eef2ff; color:#4338ca; border:1px solid #c7d2fe;
+  border-radius:10px; padding:2px 10px; font-size:12px; }
+.toolbar.sub { border-top:1px dashed var(--border, #e2e8f0); padding-top:12px; margin-top:2px; }
+.toolbar.sub label { white-space:nowrap; }
+</style>
 </head>
 <body>
 <div class="app">
@@ -34,7 +48,8 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><h2>验收入库</h2></div>
+        <div class="card-head"><h2>验收入库</h2><span id="docTypeChip"></span></div>
+        <div id="returnNotice" class="m23-notice"></div>
         <div class="text-sm muted" style="margin:0 0 10px">
           每次确认验收生成一条唯一批次流水（入库后可在下方查看批次号）。内部批次号留空时：首次入库自动等于批次号，销退沿用原内部批次号。
         </div>
@@ -42,13 +57,24 @@
           <label class="muted text-sm">明细行</label>
           <select id="lineSel" style="min-width:300px"><option value="">请选择明细行</option></select>
           <label class="muted text-sm">收货位</label>
-          <select id="recvLocSel" style="min-width:200px"><option value="">请选择收货位</option></select>
+          <select id="recvLocSel" style="min-width:190px"><option value="">请选择收货位</option></select>
           <label class="muted text-sm">本次验收数量</label>
           <input id="recvQty" type="number" min="0.01" step="0.01" style="width:110px" placeholder="数量">
-          <label class="muted text-sm">内部批次号</label>
-          <input id="recvInternal" style="width:190px" placeholder="一般由外部数据传入，可留空">
+        </div>
+        <div class="toolbar sub">
+          <label class="muted text-sm">原内部批次号</label>
+          <input id="recvExternal" style="width:190px" placeholder="销退必填；没有请填 /">
+          <button class="btn secondary sm" id="slashBtn" title="显式登记「确实没有外部批次号」">填 /</button>
+          <label class="muted text-sm">指定客户</label>
+          <select id="recvCustomer" style="min-width:170px"><option value="">通用库存</option></select>
+          <label class="muted text-sm">质量状态</label>
+          <select id="recvStatus" style="min-width:110px">
+            <option value="">未设置</option><option value="非限制">非限制</option>
+            <option value="质检">质检</option><option value="冻结">冻结</option>
+          </select>
           <button class="btn" id="recvBtn" onclick="doReceive()">确认验收入库</button>
         </div>
+        <div id="fieldErr" class="m23-err"></div>
         <div id="lineHint" class="text-sm muted"></div>
       </div>
 
@@ -56,7 +82,7 @@
         <div class="card-head"><h2>明细与验收进度</h2></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>行</th><th>货品</th><th>规格</th><th>应收</th><th>已收</th><th>已上架</th><th>批号</th><th>验收批次流水</th><th>操作</th></tr></thead>
+            <thead><tr><th>行</th><th>货品</th><th>规格</th><th>应收</th><th>已收</th><th>已上架</th><th>批号</th><th>指定客户</th><th>验收批次流水</th><th>操作</th></tr></thead>
             <tbody id="lineBody"></tbody>
           </table>
         </div>
@@ -71,11 +97,28 @@
 const params = new URLSearchParams(location.search);
 let asnId = params.get("asn_id") || "";
 const presetLine = params.get("line_id") || "";
-let asnCode = "", asnData = null, recvLocs = [];
+let asnCode = "", asnData = null, recvLocs = [], customers = [], customerMap = {};
 
+function customerName(id) {
+  const c = customerMap[id];
+  return c ? `${c.code} · ${c.name}` : `客户 #${id}`;
+}
+function reservedPill(id) {
+  return id
+    ? `<span class="m23-pill m23-reserved" title="该批库存只能发给此客户">专属 ${esc(customerName(id))}</span>`
+    : '<span class="m23-pill m23-common">通用库存</span>';
+}
+function warnPill(w) {
+  return w
+    ? `<span class="m23-pill m23-warn" title="${esc(w)}">缺外部批次号</span>`
+    : "";
+}
 function asnStatusTag(s) {
   const map = { open: "待收货", receiving: "收货中", putaway: "上架中", closed: "已完成", cancelled: "已取消" };
   return `<span class="tag ${s === "closed" ? "ok" : "off"}">${map[s] || s}</span>`;
+}
+function isReturn() {
+  return !!(asnData && asnData.asn && asnData.asn.doc_type === "销退");
 }
 
 async function loadAsnOptions() {
@@ -101,10 +144,34 @@ async function loadRecvLocs() {
   sel.value = cur || (recvLocs.length ? String(recvLocs[0].id) : "");
 }
 
+async function loadCustomers() {
+  const d = await api("GET", "/api/customers?page_size=200");
+  customers = d.customers || [];
+  customerMap = {};
+  customers.forEach(c => { customerMap[c.id] = c; });
+  const sel = document.getElementById("recvCustomer");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">通用库存（留空）</option>' +
+    customers.map(c => `<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join("");
+  sel.value = cur;
+}
+
 function renderMeta() {
   const a = asnData ? asnData.asn : null;
   asnCode = a ? a.code : "";
   document.getElementById("asnTitle").textContent = a ? `验收作业：${a.code}` : "验收作业（未选择收货单）";
+  document.getElementById("docTypeChip").innerHTML = a
+    ? `<span class="m23-tag">${esc(a.doc_type || "-")}</span>` : "";
+  const notice = document.getElementById("returnNotice");
+  if (a && a.doc_type === "销退") {
+    notice.className = "m23-notice";
+    notice.innerHTML = '<b>销退单：</b>「原内部批次号」必填（一般随外部数据传入）。' +
+      '确实没有请点<b>「填 /」</b>显式登记为「无」——系统会回溯历史批次并写入告警，' +
+      '不会静默当作漏填。单据头默认值：<b>' + esc(a.external_batch_no || "（未填）") + '</b>。';
+    notice.style.display = "";
+  } else {
+    notice.style.display = "none";
+  }
   document.getElementById("asnMeta").innerHTML = a ? [
     ["单据状态", asnStatusTag(a.status), "货主", `${esc(a.owner_code || "")} ${esc(a.owner_name || "")}`],
     ["单据类型", a.doc_type || "-", "来源仓库", a.source_warehouse_name || a.source_warehouse_code || "-"],
@@ -128,16 +195,16 @@ function renderLines() {
   sel.value = cur || (lines.length ? String(lines[0].id) : "");
   document.getElementById("lineBody").innerHTML = lines.map(l => {
     const batches = (l.batch_receipts || []).map(b =>
-      `<div class="mono text-sm">${esc(b.batch_no)} · 内部 ${esc(b.internal_batch_no)} · ${b.qty}${esc(l.unit || "")} · ${esc(b.goods_property || "-")}</div>`
+      `<div class="mono text-sm">${esc(b.batch_no)} · 内部 ${esc(b.internal_batch_no)} · ${b.qty}${esc(l.unit || "")} · ${esc(b.goods_property || "-")}${reservedPill(b.designated_customer_id)}${warnPill(b.warning)}</div>`
     ).join("") || '<span class="muted text-sm">尚未验收</span>';
-    const left = Number(l.expected_qty) - Number(l.received_qty);
     return `<tr>
       <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td><td>${esc(l.spec || "-")}</td>
       <td>${l.expected_qty}</td><td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
-      <td>${esc(l.batch_no || "-")}</td><td>${batches}</td>
+      <td>${esc(l.batch_no || "-")}</td><td>${reservedPill(l.designated_customer_id)}</td>
+      <td>${batches}</td>
       <td><button class="btn secondary sm" onclick="pickLine(${l.id})">选为当前行</button></td>
     </tr>`;
-  }).join("") || '<tr><td colspan="9" class="muted">该收货单暂无明细行</td></tr>';
+  }).join("") || '<tr><td colspan="10" class="muted">该收货单暂无明细行</td></tr>';
   updateHint();
 }
 
@@ -147,10 +214,16 @@ function updateHint() {
   const box = document.getElementById("lineHint");
   if (!l) { box.textContent = ""; return; }
   const left = Number(l.expected_qty) - Number(l.received_qty);
-  box.textContent = `当前行：${l.product_name || l.sku || ""}｜剩余可收 ${Math.max(0, left)}${l.unit || ""}｜批号 ${l.batch_no || "（明细未填）"}`;
+  box.textContent = `当前行：${l.product_name || l.sku || ""}｜剩余可收 ${Math.max(0, left)}${l.unit || ""}｜批号 ${l.batch_no || "（明细未填）"}` +
+    (l.designated_customer_id ? `｜指定客户 ${customerName(l.designated_customer_id)}` : "｜通用库存");
   if (!document.getElementById("recvQty").value && left > 0) {
     document.getElementById("recvQty").value = left;
   }
+  // 切换行时带出创建时的草稿值，验收时可就地改（三层账只认验收值）。
+  document.getElementById("recvCustomer").value = l.designated_customer_id || "";
+  document.getElementById("recvExternal").value =
+    l.external_batch_no || (asnData && asnData.asn ? asnData.asn.external_batch_no || "" : "");
+  document.getElementById("fieldErr").textContent = "";
 }
 
 function pickLine(id) {
@@ -161,31 +234,47 @@ function pickLine(id) {
 
 async function doReceive() {
   const msg = document.getElementById("msg");
-  if (!asnId) { showMsg(msg, "请先选择收货单", "error"); return; }
+  const errBox = document.getElementById("fieldErr");
+  errBox.textContent = "";
+  if (!asnId) { errBox.textContent = "请先选择收货单"; return; }
   const lineId = document.getElementById("lineSel").value;
   const locationId = document.getElementById("recvLocSel").value;
   const qty = parseFloat(document.getElementById("recvQty").value);
-  const internal_batch_no = document.getElementById("recvInternal").value.trim();
+  const external = document.getElementById("recvExternal").value.trim();
   if (!lineId || !locationId || !(qty > 0)) {
-    showMsg(msg, "明细行 / 收货位 / 数量均必填，数量须大于 0", "error");
+    errBox.textContent = "明细行 / 收货位 / 数量均必填，数量须大于 0";
+    return;
+  }
+  // M23 内联校验：销退缺外部批次号直接挡在提交前，避免打断现场作业节奏。
+  if (isReturn() && !external) {
+    errBox.textContent = "销退单必须填写原内部批次号；确实没有请点「填 /」按钮登记为无";
+    document.getElementById("recvExternal").focus();
     return;
   }
   try {
     const r = await api("POST", `/api/asns/${asnId}/receive`, {
-      line_id: Number(lineId), location_id: Number(locationId), qty, internal_batch_no,
+      line_id: Number(lineId), location_id: Number(locationId), qty,
+      external_batch_no: external,
+      internal_batch_no: external === "/" ? "" : external,
+      designated_customer_id: document.getElementById("recvCustomer").value,
+      stock_status: document.getElementById("recvStatus").value,
     });
-    showMsg(msg, `验收成功：批次号 ${r.batch ? r.batch.batch_no : "-"}（内部 ${r.batch ? r.batch.internal_batch_no : "-"}），单据状态 ${r.status}`, "success");
+    const tail = r.warning
+      ? "；⚠ 已登记「无外部批次号」，系统回溯历史批次并写入告警"
+      : "";
+    showMsg(msg, `验收成功：批次号 ${r.batch ? r.batch.batch_no : "-"}（内部 ${r.batch ? r.batch.internal_batch_no : "-"}），单据状态 ${r.status}${tail}`, "success");
     document.getElementById("recvQty").value = "";
-    document.getElementById("recvInternal").value = "";
+    document.getElementById("recvExternal").value = "";
+    document.getElementById("recvStatus").value = "";
     await loadAll();
   } catch (e) {
-    showMsg(msg, "验收失败：" + e.message, "error");
+    errBox.textContent = "验收失败：" + e.message;
   }
 }
 
 async function loadAll() {
   try {
-    await loadRecvLocs();
+    await Promise.all([loadRecvLocs(), loadCustomers()]);
     if (!asnId) { asnData = null; renderMeta(); renderLines(); return; }
     asnData = await api("GET", "/api/asns/" + asnId);
     document.getElementById("asnSel").value = String(asnId);
@@ -199,6 +288,11 @@ async function loadAll() {
 document.getElementById("lineSel").addEventListener("change", () => {
   document.getElementById("recvQty").value = "";
   updateHint();
+});
+document.getElementById("slashBtn").addEventListener("click", () => {
+  document.getElementById("recvExternal").value = "/";
+  document.getElementById("fieldErr").textContent = "";
+  document.getElementById("recvExternal").focus();
 });
 loadAsnOptions().then(loadAll);
 </script>

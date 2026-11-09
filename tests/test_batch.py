@@ -229,14 +229,20 @@ class BatchApiTest(unittest.TestCase):
         self.assertEqual(b["internal_batch_no"], "IB-FROM-API")
         self.assertEqual(b["internal_source"], C.INTERNAL_BATCH_EXTERNAL)
 
-    def test_return_receipt_reuses_internal_batch_no(self):
+    def test_return_with_absent_marker_traces_and_warns(self):
+        """M23 口径：销退外部批次号必填；确实没有须显式填 '/' → 走回溯并告警。"""
         first = self._mk_asn(dict(FULL_INFO, internal_batch_no="IB-OUT-1"), code="ASN-B1")
         self._receive(first["asn"]["id"], first["lines"][0]["id"], 4)
-        ret = self._mk_asn(FULL_INFO, doc_type="销退", code="ASN-B2")
-        b = self._receive(ret["asn"]["id"], ret["lines"][0]["id"], 2)["batch"]
+        ret = self._mk_asn(dict(FULL_INFO, external_batch_no=C.EXTERNAL_BATCH_NO_ABSENT),
+                           doc_type="销退", code="ASN-B2")
+        r = self._receive(ret["asn"]["id"], ret["lines"][0]["id"], 2)
+        b = r["batch"]
         self.assertEqual(b["internal_batch_no"], "IB-OUT-1",
                          "退货应沿用出库的内部批次号")
         self.assertEqual(b["internal_source"], C.INTERNAL_BATCH_RETURN)
+        self.assertEqual(b["external_batch_no"], C.EXTERNAL_BATCH_NO_ABSENT)
+        self.assertEqual(b["warning"], C.WARN_MISSING_EXTERNAL_BATCH_NO)
+        self.assertEqual(r["warning"], C.WARN_MISSING_EXTERNAL_BATCH_NO)
         self.assertEqual(self.client.get("/api/batch/profiles").get_json()["total"], 1)
 
     # ---------- ④ 手动预配置批次档案 ----------

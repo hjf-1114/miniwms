@@ -219,6 +219,41 @@ function bindLinkage(ov) {
   const ownerSel = ov.querySelector('[name="owner_id"]');
   const supSel = ov.querySelector('[name="supplier_id"]');
   const cusSel = ov.querySelector('[name="customer_id"]');
+
+  // M23 条件字段：只有「销退」才需要外部批次号，选其他类型自动隐藏并清空脏值。
+  const docSel = ov.querySelector('[name="doc_type"]');
+  const extInput = ov.querySelector('[name="external_batch_no"]');
+  const extWrap = extInput ? extInput.parentElement : null;
+  let extHint = null, slashBtn = null;
+  if (extWrap) {
+    extHint = document.createElement("div");
+    extHint.className = "field-help";
+    extHint.style.cssText = "color:#b45309;font-size:12px;margin-top:4px";
+    extWrap.appendChild(extHint);
+    slashBtn = document.createElement("button");
+    slashBtn.type = "button";
+    slashBtn.className = "btn secondary sm";
+    slashBtn.textContent = "填 /（确实没有）";
+    slashBtn.style.marginTop = "6px";
+    extWrap.appendChild(slashBtn);
+  }
+  const syncDoc = () => {
+    const isReturn = !!(docSel && docSel.value === "销退");
+    if (extWrap) extWrap.style.display = isReturn ? "" : "none";
+    if (!isReturn && extInput) extInput.value = "";
+    if (extHint) extHint.textContent = isReturn
+      ? "必填 · 该值作为所有明细行的默认值，验收时可逐行修改"
+      : "";
+    if (slashBtn) slashBtn.style.display = isReturn ? "" : "none";
+  };
+  if (slashBtn) slashBtn.addEventListener("click", () => {
+    extInput.value = "/";
+    syncDoc();
+    extInput.focus();
+  });
+  if (docSel) docSel.addEventListener("change", syncDoc);
+  syncDoc();
+
   const sync = () => {
     const oid = ownerSel.value;
     reorderScoped(supSel, allSupplierOptions, oid);
@@ -327,6 +362,8 @@ async function showDetail(id) {
   document.getElementById("asnMeta").innerHTML = [
     ["单据类型", a.doc_type || "-", "外部单号", a.external_no || "-"],
     ["外部单据类别", a.external_doc_type || "-", "单据标识", docFlagsText(a)],
+    ["原内部批次号", a.doc_type === "销退" ? (a.external_batch_no || "-") : "非销退不适用",
+     "专属库存口径", "明细行「指定客户」留空＝通用库存"],
     ["来源仓库", a.source_warehouse_name || (a.source_warehouse_code || "-"), "订单来源", a.order_source || "-"],
     ["供应商", a.supplier_name || "-", "客户", a.customer_name || "-"],
     ["供应商联系人", a.supplier_contact || "-", "供应商电话", a.supplier_phone || "-"],
@@ -346,6 +383,22 @@ function detailChip(k, v) {
   return `<span style="display:inline-block;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:4px;padding:2px 7px;margin:2px 6px 2px 0;font-size:11.5px">${esc(k)}：${esc(v || "-")}</span>`;
 }
 
+/** M23：客户 ID → 「编码 · 名称」，避免界面只显示一串数字。 */
+function customerName(id) {
+  const c = customerMap[id];
+  return c ? `${c.code} · ${c.name}` : `客户 #${id}`;
+}
+function reservedChip(id) {
+  return id
+    ? `<span style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:6px">专属 ${esc(customerName(id))}</span>`
+    : "";
+}
+function warnChip(w) {
+  return w
+    ? `<span style="background:#fff7ed;color:#b45309;border:1px solid #fed7aa;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:6px" title="${esc(w)}">缺外部批次号（已显式登记 /）</span>`
+    : "";
+}
+
 function renderLines() {
   const d = currentAsn;
   const cell = (v) => esc(v === 0 || v ? v : "-");
@@ -355,9 +408,11 @@ function renderLines() {
       ["UDI", l.udi], ["灭菌批号", l.sterilization_batch_no], ["患者名称", l.patient_name],
       ["内部批次号", l.internal_batch_no], ["货品属性", l.goods_property],
       ["效期(天)", l.shelf_life_days],
+      ["指定客户", l.designated_customer_id ? customerName(l.designated_customer_id) : "通用库存"],
+      ["原内部批次号", l.external_batch_no],
     ].map(([k, v]) => detailChip(k, v)).join("");
     const batches = (l.batch_receipts || []).map((b) =>
-      `<div class="mono text-sm">${esc(b.batch_no)} · 内部 ${esc(b.internal_batch_no)} · ${b.qty}${esc(l.unit || "")} · ${esc(b.goods_property || "-")} <span class="muted">${esc(b.created_at)}</span></div>`
+      `<div class="mono text-sm">${esc(b.batch_no)} · 内部 ${esc(b.internal_batch_no)} · ${b.qty}${esc(l.unit || "")} · ${esc(b.goods_property || "-")} <span class="muted">${esc(b.created_at)}</span>${reservedChip(b.designated_customer_id)}${warnChip(b.warning)}</div>`
     ).join("") || '<span class="muted text-sm">尚未验收</span>';
     return `<tr>
       <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td>
@@ -403,6 +458,8 @@ async function openCreate() {
       { value: "销退", label: "销退" }, { value: "期初", label: "期初" },
       { value: "其他", label: "其他" },
     ] },
+    { name: "external_batch_no", label: "原内部批次号（销退必填）",
+      help: "销退单由外部传入原出库内部批次号，作为全单默认值；验收时可逐行改。确实没有请填 / 表示「无」，系统会记录告警并回溯历史批次。" },
     { name: "external_no", label: "外部单号" },
     { name: "order_source", label: "订单来源" },
     { name: "source_warehouse", label: "来源仓库 *", type: "select", required: true,
@@ -441,6 +498,9 @@ async function openCreate() {
           required: true, options: productOptions, optionData: productData() },
         { name: "expected_qty", label: "数量 *", type: "number", required: true },
         ...SNAP_FIELDS, ...BATCH_FIELDS,
+        // M23：指定客户只在明细行，默认空＝通用库存；有值则该批库存只能发给该客户。
+        { name: "designated_customer_id", label: "指定客户（留空＝通用）",
+          type: "select", placeholder: "通用库存", options: allCustomerOptions },
       ],
       autoFill: { product_id: {
         product_name: "name", spec: "spec", article_no: "article_no", unit: "unit",
@@ -470,6 +530,10 @@ async function openCreate() {
   modalEl = openForm({
     title: "新建收货单（ASN）", submitText: "创建", width: 1000, fields,
     onSubmit: async (p) => {
+      // M23：销退外部批次号先做前端内联拦截，避免提交后被 400 打断整屏录入。
+      if (p.doc_type === "销退" && !String(p.external_batch_no || "").trim()) {
+        throw new Error("销退单必须填写「原内部批次号」；确实没有请点「填 /」按钮表示无");
+      }
       await api("POST", "/api/asns", p);
       showMsg(document.getElementById("msg"), "创建成功", "success");
       load();

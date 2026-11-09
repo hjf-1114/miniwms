@@ -45,6 +45,29 @@ def prepare_info(db, line_info):
     return info
 
 
+def validate_external_batch_no(doc_type, value):
+    """M23 销退口径（用户 2026-11-09 确认）。
+
+    * 非销退：可留空；填 ``/`` 归一为空串，不产生告警。
+    * 销退：**外部批次号（原内部批次号）必填**，缺失直接拒绝；
+      确实没有时显式填 ``/`` 作为合法占位，允许通过但写告警
+      ``MISSING_EXTERNAL_BATCH_NO``，仍走历史回溯兜底。
+
+    返回 ``(normalized, warning_code, error)``；``error`` 非空时调用方应返回 400。
+    """
+    raw = str(value or "").strip()
+    if len(raw) > C.EXTERNAL_BATCH_NO_MAXLEN:
+        return "", "", f"外部批次号最长 {C.EXTERNAL_BATCH_NO_MAXLEN} 字符"
+    if doc_type != "销退":
+        return ("" if raw == C.EXTERNAL_BATCH_NO_ABSENT else raw), "", ""
+    if not raw:
+        return "", "", ("销退单必须填写外部批次号（原内部批次号）；"
+                        "确实没有请填 / 表示无")
+    if raw == C.EXTERNAL_BATCH_NO_ABSENT:
+        return C.EXTERNAL_BATCH_NO_ABSENT, C.WARN_MISSING_EXTERNAL_BATCH_NO, ""
+    return raw, "", ""
+
+
 def _resolve_internal(db, batch_id, batch_no, doc_type, provided, info):
     """内部批次号规则：数据传入 > 销退沿用原批次 > 首次入库 = 批次号。"""
     if provided:
@@ -63,8 +86,13 @@ def _resolve_internal(db, batch_id, batch_no, doc_type, provided, info):
 
 
 def record_receipt(db, *, owner_id, product_id, location_id, asn_id, asn_line_id,
-                   qty, doc_type, line_info, internal_batch_no=""):
-    """登记一次验收入库。调用方须已开启事务（库存增加与批次写入同事务）。"""
+                   qty, doc_type, line_info, internal_batch_no="",
+                   designated_customer_id=None, external_batch_no=""):
+    """登记一次验收入库。调用方须已开启事务（库存增加与批次写入同事务）。
+
+    M23：``designated_customer_id`` 是验收时的「指定客户」录入值（默认空＝通用库存）；
+    ``external_batch_no`` 是销退单外部传入的原内部批次号，``/`` 表示显式声明没有。
+    """
     info = prepare_info(db, line_info)
     key_hash, key_info = build_batch_key(db, owner_id, product_id, info)
 
@@ -86,18 +114,27 @@ def record_receipt(db, *, owner_id, product_id, location_id, asn_id, asn_line_id
         profile_id, profile_code = profile[0], profile[1]
 
     batch_no = _next_no(db, "batch_receipt", "batch_no", C.BATCH_RECEIPT_PREFIX)
+    ext_norm, warning, ext_err = validate_external_batch_no(doc_type, external_batch_no)
+    if ext_err:
+        raise ValueError(ext_err)
+    # 外部批次号（销退单必填）优先作为内部批次号来源；显式 '/' 时不采用，
+    # 交给 _resolve_internal 的历史回溯兜底，并保留告警标记。
+    provided = str(internal_batch_no or "").strip()
+    if not provided and ext_norm and ext_norm != C.EXTERNAL_BATCH_NO_ABSENT:
+        provided = ext_norm
     internal, source = _resolve_internal(
-        db, profile_id, batch_no, doc_type,
-        str(internal_batch_no or "").strip(), info,
+        db, profile_id, batch_no, doc_type, provided, info,
     )
     cur = db.execute(
         """INSERT INTO batch_receipt
            (batch_no, batch_id, internal_batch_no, internal_source, owner_id, product_id,
-            location_id, asn_id, asn_line_id, qty, doc_type, goods_property, info)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            location_id, asn_id, asn_line_id, qty, doc_type, goods_property, info,
+            designated_customer_id, external_batch_no, warning)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (batch_no, profile_id, internal, source, owner_id, product_id,
          location_id, asn_id, asn_line_id, qty, doc_type,
-         info.get("goods_property", ""), json.dumps(info, ensure_ascii=False)),
+         info.get("goods_property", ""), json.dumps(info, ensure_ascii=False),
+         designated_customer_id, ext_norm, warning),
     )
     db.execute(
         "UPDATE batch SET receipt_count = receipt_count + 1, "
@@ -113,6 +150,9 @@ def record_receipt(db, *, owner_id, product_id, location_id, asn_id, asn_line_id
         "info": info,
         "internal_batch_no": internal,
         "internal_source": source,
+        "designated_customer_id": designated_customer_id,
+        "external_batch_no": ext_norm,
+        "warning": warning,
     }
 
 
