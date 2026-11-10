@@ -2,7 +2,7 @@
    纯原生，零依赖。独立页面提供 <aside class="sidebar" id="sidebar"></aside> 即可；
    工作台 app.html 通过 window.MWS_NAV_TOOLS.mount() 复用同一份树与交互，只把叶子点击换成开标签。
 
-   结构：一级 3 / 二级 7 / 三级 22；渲染器递归，后续加到第 4 层无需改代码。
+   结构：一级 3 / 二级 7 / 三级 23；渲染器递归，后续加到第 4 层无需改代码。
    展示策略：默认只展开「当前页所在分支」，其余折叠；用户手动展开/收起的节点记在 localStorage。 */
 (function () {
   const NAV = [
