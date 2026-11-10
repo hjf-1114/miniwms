@@ -30,8 +30,8 @@ def _temp_required(product):
     return None
 
 
-def recommend(db, asn_id, line_id, qty=None, top_n=5):
-    """返回 Top-N 候选货位 + 分数明细 + 被拒绝的货位与原因。"""
+def _legacy_recommend(db, asn_id, line_id, qty=None, top_n=5):
+    """M20 简版推荐：仅在「零启用规则」时作为兜底，不再承担任何强制拦截。"""
     asn = db.execute("SELECT * FROM asn WHERE id = ?", (asn_id,)).fetchone()
     if asn is None:
         raise ValueError("ASN 不存在")
@@ -182,7 +182,21 @@ def recommend(db, asn_id, line_id, qty=None, top_n=5):
         "batch_no": batch_no, "qty": q,
         "default_zone_id": product["default_zone_id"],
         "bound_location_count": len(binds),
+        # 与 M25 规则引擎分支保持同一可解释字段；前端据此区分引擎，不参与排序。
+        "engine": "legacy",
         "recommendations": accepted[:top_n],
         "rejected": rejected,
         "candidate_count": len(rows),
     }
+
+
+def recommend(db, asn_id, line_id, qty=None, top_n=5):
+    """M25 分发：有启用规则 → 规则引擎；零配置 → 沿用 M20 简版推荐。
+
+    设计 §12「无策略时沿用现有行为」与 v3.3 3B「没配规则就不拦」在这里合流：
+    老库若把种子规则行全删掉，推荐退回简版、过账也不再拦截，代码不二次兜底。
+    """
+    import putaway_rules as PR
+    if PR.has_enabled_rules(db, C.RULE_TYPE_PUTAWAY):
+        return PR.recommend(db, asn_id, line_id, qty, top_n)
+    return _legacy_recommend(db, asn_id, line_id, qty, top_n)

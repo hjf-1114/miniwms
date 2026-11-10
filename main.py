@@ -16,6 +16,7 @@ import sqlite3
 from flask import Flask, g, jsonify, request
 
 import scope as S
+import putaway_rules as PR
 
 DB_PATH = os.environ.get(
     "MINIWMS_DB",
@@ -812,6 +813,69 @@ def _migrate_m24(conn):
     )
 
 
+def _migrate_m25(conn):
+    """M25 上架推荐规则引擎：三张幂等表（老库零迁移成本）。
+
+    * ``putaway_rule_set`` 策略包头（货主×仓库精确 > 仓库默认 > 系统默认）
+    * ``putaway_rule`` 规则行：13 维条件组 / fallback 链 / limits / 评分权重；
+      带 ``rule_type``，M35 出库分配规则复用同一张表（用户 3A）
+    * ``putaway_recommendation`` 推荐日志，供 M26 统计命中率 / 驳回率
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS putaway_rule_set (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            code          TEXT    NOT NULL UNIQUE,
+            name          TEXT    NOT NULL,
+            warehouse_id  INTEGER REFERENCES warehouse(id),
+            owner_id      INTEGER REFERENCES owner(id),
+            status        TEXT    NOT NULL DEFAULT 'active',
+            note          TEXT    NOT NULL DEFAULT '',
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_prs_status ON putaway_rule_set(status);
+
+        CREATE TABLE IF NOT EXISTS putaway_rule (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_set_id  INTEGER NOT NULL REFERENCES putaway_rule_set(id) ON DELETE CASCADE,
+            rule_type    TEXT    NOT NULL DEFAULT 'putaway',
+            priority     INTEGER NOT NULL DEFAULT 10,
+            name         TEXT    NOT NULL,
+            condition    TEXT    NOT NULL DEFAULT '{}',
+            steps        TEXT    NOT NULL DEFAULT '[]',
+            limits       TEXT    NOT NULL DEFAULT '{}',
+            score        TEXT    NOT NULL DEFAULT '{}',
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            note         TEXT    NOT NULL DEFAULT '',
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE (rule_set_id, rule_type, priority, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pr_set      ON putaway_rule(rule_set_id, enabled);
+        CREATE INDEX IF NOT EXISTS idx_pr_type     ON putaway_rule(rule_type, priority);
+
+        CREATE TABLE IF NOT EXISTS putaway_recommendation (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            asn_id              INTEGER NOT NULL,
+            asn_line_id         INTEGER NOT NULL,
+            rule_set_id         INTEGER,
+            rule_id             INTEGER,
+            hit_priority        INTEGER,
+            hit_step            INTEGER,
+            top_json            TEXT NOT NULL DEFAULT '[]',
+            chosen_location_id  INTEGER,
+            action              TEXT NOT NULL DEFAULT 'preview',
+            operator            TEXT NOT NULL DEFAULT '',
+            override_reason     TEXT NOT NULL DEFAULT '',
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_prec_asn    ON putaway_recommendation(asn_id);
+        CREATE INDEX IF NOT EXISTS idx_prec_action ON putaway_recommendation(action);
+        """
+    )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1533,7 +1597,9 @@ def init_db(path=None):
         _migrate_m22(conn)
         _migrate_m23(conn)
         _migrate_m24(conn)
+        _migrate_m25(conn)
         _seed_zones(conn)
+        PR.seed_rules(conn)
         _seed_auth(conn)
         conn.commit()
     finally:
@@ -1574,6 +1640,7 @@ else:
     from routes_stocktake_plan import plan_bp  # noqa: E402
     from routes_reservation_log import log_bp  # noqa: E402
     from routes_inventory_transfer import it_bp  # noqa: E402
+    from routes_putaway_rules import pr_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1598,3 +1665,4 @@ else:
     app.register_blueprint(plan_bp)
     app.register_blueprint(log_bp)
     app.register_blueprint(it_bp)
+    app.register_blueprint(pr_bp)

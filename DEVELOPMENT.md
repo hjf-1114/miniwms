@@ -54,12 +54,12 @@
 - M17 移库（库位间转移：同数量一减一增两条流水，原子事务）✅
 - M18 盘点（冻结 → 盲盘 → 差异生成调整流水 → 解冻）✅
 - M19 批次与验收入库追溯（批次字段配置 + 批次档案 + 每次入库唯一批次流水）✅
-- M20 储区与上架作业基础（**阶段 A 已交付 2026-11-05**：储区主数据 / 仓库维度 / 混放字段 / 推荐储区 / 固定货位 / 简版上架推荐 / 验收·上架作业页；**阶段 B 已交付 2026-11-05**：asn·dn 各 4 个单据标识 + external_doc_type 的字段 / 表单 / 17 例单测）✅ **M20 收尾完成**；混放·冷链·危险拦截改为配置化规则并入 M25/M26，过渡期不拦截
+- M20 储区与上架作业基础（**阶段 A 已交付 2026-11-05**：储区主数据 / 仓库维度 / 混放字段 / 推荐储区 / 固定货位 / 简版上架推荐 / 验收·上架作业页；**阶段 B 已交付 2026-11-05**：asn·dn 各 4 个单据标识 + external_doc_type 的字段 / 表单 / 17 例单测）✅ **M20 收尾完成**；混放·冷链·危险拦截改为配置化规则并入 M25/M26，过渡期不拦截 **（过渡期为 v3 历史口径，已随 M25 于 2026-11-10 交付结束，见文末 M25 章）**
 - M21 批次级库存明细层（stock_batch + stock_movement 扩维度列 + I2/I3 硬校验 + 一次性回填）✅ **2026-11-06 已交付**：五动作同步钩子 + batch_location + I2/I3 端点 + 老库回填 + 批次库存页，详见文末同名章节；331 测全绿
 - M22 库存调整单 + 盘点增强（stock_adjustment 唯一手工数量入口 / stocktake_plan 全盘·部分·盲盘·动碰；动碰支持手工时间窗 + 交易类型 / 差异由人工按钮生成调整单）✅ **2026-11-06 已交付**：3 张新表 + 真盲盘分级接口 + 按批号盘点 + 审核过账 / 取消 / 冲销 + 3 个页面，详见文末同名章节；356 测全绿
 - M23 指定客户专属库存 + 销退口径（designated_customer_id 只在明细行 / 出库校验规则 / 销退外部批次号）✅ **2026-11-09 已交付**：指定客户贯穿单据→批次→明细→流水、销退外部批次号必填且允许 `/` 显式占位、出库校验只落纯规则、质量状态两字段独立；375 测全绿，详见文末同名章节
 - M24 库存转移单（只改批次信息、数量净零 / 制单→分配库存（真实占用可用库存）→审核生效终态 / 未分配可关闭删除 / 取消分配 / 冲销留痕）✅ **2026-11-09 已交付**：3 张表 + 双层 `allocated_qty` 真实占用 + 净零成对流水 + 字段级变更文档 + 7 类统一搬迁 + 冲销往返，415 测全绿、E2E 35/35，详见文末同名章节
-- M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback 链 + **配置化硬约束** + 可解释 Top-N）**继续安排**；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**
+- M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback 链 + **配置化硬约束** + 可解释 Top-N）✅ **2026-11-10 已交付**：3 张表 + 规则引擎 + 11 行种子（启用 7 行）+ 规则配置 API + 推荐分发 + 上架过账按规则行 limits 拦截；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**。447 测全绿、E2E 34/34，详见文末同名章节
 - M26 规则配置与推荐交互（条件组编辑器 + fallback 链拖拽 + 推荐弹窗一键采纳 + 推荐日志；13 维起步、预留扩展位）**继续安排**
 - M27 补货预警（min_stock 对比 + 拣货位缺料提示）— **降级暂缓**，编号保留不回收
 - M28 报表统计（按货主的收发汇总、周转率、库位利用率）— 归入领域蓝图第 4 层「经营报表」
@@ -94,6 +94,8 @@
 > `external_doc_type`；混放 / 冷链 / 危险拦截整体并入 M25/M26 的**多条上架规则（priority 优先级 +
 > 单号/产品信息条件组）**，不写死、不保留系统级 hardcoded 红线；过渡期 `putaway()` **完全不拦截**，
 > 只靠推荐页提示；条件维度 **13 维起步**，M26 编辑器预留扩展位。
+> **（v4 补注 2026-11-10：以上 ⑤ 为 v3 历史答复原文；「过渡期完全不拦截」已随 M25 交付结束，
+> 当前 `putaway()` 按命中规则行 `limits` 拦截，见文末 M25 章。）**
 > 口径细则见 `docs/PUTAWAY_RECOMMENDATION.md`（v3.3）§9.4 / §10.1 / §10.2 与
 > `docs/DOMAIN_BLUEPRINT.md` 第 1.2 / 7.1 节。
 > `DEVELOPMENT.md` Roadmap 仍是编号权威来源，`docs/DOMAIN_BLUEPRINT.md` 是框架级来源。
@@ -553,6 +555,9 @@ CSV 顺延为 M14。该需求不阻塞 M9-M12，但 M9-M12 实现时应注意：
   （前端 select 提交的是字符串）；非法值只报字段格式错误，**不附加任何业务约束**。
 - **2B 过渡期**：`receive()` / `putaway()` 均不因这些标识位拦截；`putaway()` 保持原有
   状态 / 数量 / 库位类型校验，冷链 + 危险单据仍可落到常温 `storage` 位（专项测试锁死该行为）。
+  **（v4 补注 2026-11-10：本条为 M20 时点历史口径，过渡期已随 M25 交付结束；`putaway()`
+  现在按命中规则行 `limits` 拦截，`tests/test_doc_flags.py` 相应用例已改写为「命中种子冷链规则
+  → 400、停用规则行 → 放行」，原先「专项测试锁死该行为」的表述不再成立，见文末 M25 章。）**
 - **1A / 3B**：拦截清单（混放 / 温区 / 危化等）将在 M25 由 `putaway_rule.limits` 配置，
   M26 提供条件组编辑器；本版代码中**无 hardcoded 红线**。
 - **4A**：M25 条件组首批 13 维起步；本版不建 `external_doc_type` 字典表，字典维护留 M26。
@@ -1441,6 +1446,125 @@ M19 `batch_key` 指纹（设计 §6.2 口径），同一批货分给两个客户
   与 M22 调整单同一口径，未在本轮改变。
 - 冲销单仍需走完「分配 → 审核」才生效，不自动过账；`reversal_of_id` 不可重复冲销。
 - DN 拣货分配取消、M35 批次级出库分配与 FEFO 仍未实现；「先专属后通用」优先级冲突未决定。
+- PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交，不与代码提交混在一起。
+
+---
+
+## M25 上架推荐规则引擎（2026-11-10）✅
+
+> 用户 2026-11-10 口径：**1A** 编号一个不动，只把实施顺序改为 `M25 → M26 → M35 → M36`；
+> **2A** M25/M26 一次做全，拦截完全来自规则行 `limits`，代码零 hardcoded 红线，
+> 种子只启用 7 行核心路径；**3A** 出库分配规则与上架规则共用一张 `putaway_rule` 表，
+> 用 `rule_type` 分两类（M35 直接复用）；**4B** 独立复核单 + 作业页 + 登记差异按钮，
+> 差异只留痕、不生成调整单（属 M36）。
+> 本里程碑先交付 M25 后端（规则引擎 + 配置 API + 上架拦截），M26 编辑器另起提交。
+
+### 交付清单
+
+| 层 | 文件 | 内容 |
+| --- | --- | --- |
+| DDL | `main.py::_migrate_m25()` | `putaway_rule_set` / `putaway_rule` / `putaway_recommendation` 三张幂等表 + **5 个索引**（`idx_prs_status` / `idx_pr_set` / `idx_pr_type` / `idx_prec_asn` / `idx_prec_action`）；老库零迁移成本 |
+| 常量 | `constants.py` | 2 类 `rule_type`、13 维条件组、9 种寻址步骤、9 条评分规则 R07–R15、8 项 limits 与拒绝码、3 种推荐日志 action |
+| 引擎 | `putaway_rules.py`（新增，≈860 行） | 上下文构造 / 条件组匹配 / 策略包解析 / 规则行命中 / fallback 链寻址 / 8 步硬约束过滤 / 评分 / 可解释输出 / 推荐日志 / 过账校验 / 配置 CRUD / 种子规则 |
+| API | `routes_putaway_rules.py`（新增） | 策略包与规则行 CRUD、编辑器数据字典、条件组试算、推荐日志查询 |
+| 接入 | `putaway_service.py` | `recommend()` 改为分发器：有启用规则 → 规则引擎；零启用规则 → M20 简版；两分支都带 `engine` 字段 |
+| 接入 | `routes_putaway.py` | 推荐日志 INSERT 后 `db.commit()`；异常 `db.rollback()` |
+| 接入 | `routes_asn.py::putaway()` | 过账前调 `validate_location()`，按命中规则行的 `limits` 硬拦截 |
+| 隔离 | `scope.py` | `putaway_recommendation` 归入 `PUBLIC_TABLES`（控制面统计，按 `asn_id` / `action` 过滤） |
+| 测试 | `tests/test_m25_putaway_rules.py`（新增） | 32 例，覆盖 DDL / 常量 / 种子 / 条件组 / 优先级 / 策略包 / 推荐可解释 / 日志 / CRUD / 试算 / 拦截 / 三态 / 零配置退回 |
+
+### 执行模型（设计 §10.1）
+
+1. **策略包匹配**：货主+仓库精确 > 仓库默认（`owner_id` 空） > 系统默认（仓库空）；
+2. **条件组匹配**：13 维 AND、每维单选/多选、`null` 与空串通配；按 `priority` 升序，**第一行命中即停**；
+3. **fallback 链**：按 `steps` 顺序，第一个产出「过滤后非空候选」的步骤生效；
+4. **硬约束过滤**：只执行规则行 `limits` 中已配置的检查项；命中约束按 pass/reject 执行、
+   **不参与打分**（约束不能被权重买通）；
+5. **候选内排序**：M20 六项打分保持不变，R07–R15 只有规则行 `score` 显式配置权重才叠加；
+   绑定货位 +100 仍优先；同分按 `location.code` 稳定排序；
+6. 全部失败 → 兜底行 priority 999 + `NO_CANDIDATE`。
+
+13 维条件组：`doc_type / goods_property / is_virtual / is_direct / is_cold_chain / is_hazard /
+external_doc_type / abc_class / owner_id / is_designated / zone_id / product_id / category_l1`。
+9 种寻址：8 种预设（`zone_by_product / zone_by_code / fixed_location / empty_in_zone /
+same_product / same_category / last_putaway / batch_location`）+ 第 9 种 `all_active`
+（M20 兼容型，全部启用库位一起打分；删掉它即启用 v3.3 递降 fallback）。
+8 项 limits：`loc_status / storage_class / quality_state / capacity /
+mix_product / mix_batch / mix_owner / designated_customer`，各有独立拒绝码。
+
+### 硬约束三态（本轮新设计，代码零 hardcoded 红线）
+
+M20 的三类混放只是**推荐阶段排除候选**，用户仍可手工选目标货位绕过；过账从不拦截。
+若 M25 上线就把混放设成过账硬拦截，既有演示与老单据（同一货位放不同货品 / 不同货主）
+会大面积 400。因此 `filter_location(..., for_post=)` 让每项 limits 支持三态，
+强度完全由规则行配置决定：
+
+| 配置 | 推荐阶段 | 上架过账 |
+| --- | --- | --- |
+| `enabled=true` | 排除候选 | **拦截** |
+| `recommend_only=true` | 排除候选 | 放行 |
+| 两者皆假 | 不检查 | 不检查 |
+
+`validate_location()` 传 `for_post=True` 只执行 enforce 级；推荐阶段默认 `False`。
+种子 `normal` 行把 `mix_product` / `mix_owner` 设为 `recommend_only`（保留 M20 已验证的
+推荐排序，同时老链路过账不回归），`mix_batch` 连推荐阶段也不排除（M21 明细层本身支持
+同库位多批次，M22 按批号盘点与 M23 专属/通用分明细都依赖它）；
+`loc_status / storage_class / capacity` 为 enforce 级。M26 编辑器把 `enabled` 打开即升级为
+过账硬拦截，无需改代码。
+
+### 种子规则（11 行，启用 7 行）
+
+启用优先级 `5 / 8 / 10 / 20 / 25 / 50 / 999`：冷链分流（`ZONE-COLD`）、危险分流（`ZONE-NG`）、
+不合格隔离、虚拟货位、直调暂存（`XDOCK-01`）、常规上架（默认）、兜底异常区。
+另 4 行（30 待检冻结 / 35 EDI 分流 / 40 销退良品回流 / 60 A 类黄金拣货位）配置好但
+`enabled=0`，M26 编辑器可直接启用。储区编码用库里真实存在的
+`ZONE-SHARED / ZONE-COLD / ZONE-NG`，不引用设计 §10.3 的占位 code，避免 fallback 全空。
+`seed_rules()` 只在策略包不存在时插入：**用户删掉规则行后重启不复活**，删光规则行即
+`has_enabled_rules()` 为假，推荐退回 M20 简版、过账不再拦截。
+
+### API（新增）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/putaway-rule-types` | 编辑器数据字典：2 类 rule_type / 13 维 / 9 种寻址 / 8 项 limits / 9 条评分 |
+| GET/POST | `/api/putaway-rule-sets` | 策略包列表 / 新建 |
+| PUT | `/api/putaway-rule-sets/<id>` | 修改策略包 |
+| GET/POST | `/api/putaway-rules` | 规则行列表（可按 `set_id` / `rule_type` 过滤）/ 新建；校验 13 维与寻址类型合法性 |
+| PUT/DELETE | `/api/putaway-rules/<id>` | 修改 / 删除规则行（删除即不再拦截） |
+| POST | `/api/putaway-rules/trial` | 条件组试算，只读比对，不写库、不查规则表 |
+| GET | `/api/putaway-recommendations` | 推荐日志分页查询 + action 统计 |
+
+既有 `GET /api/putaway/recommend` 响应新增 `engine / rule_set / rule_set_id / hit_rule /
+hit_priority / hit_condition / hit_step / step_name / fallback / recommendation_id`，
+M20 原有字段（`recommendations / rejected / candidate_count / bound_location_count / sku` 等）
+全部保留。
+
+### 验证
+
+- 全量 unittest **447 例全绿**（M25 新增 32 例；`test_doc_flags.py` 原「过渡期不拦截」
+  用例改为「命中种子冷链规则 → 400；停用规则行 → 放行」）。
+- 真实 Chrome E2E（独立库 + 端口 5117）：**34/34**，覆盖数据字典、种子 11 行、
+  outbound 复用同表、试算、上架推荐页无回归、一键采纳、可解释字段、推荐日志落库、
+  冷链 400 拦截、停用规则即放行、零配置退回简版、无 JS 错误与业务 404。
+- 基线 E2E 复跑无回归：数据隔离 15/15、格子矩阵 13/13、M21 10/10、M22 28/28、
+  M23 v1 28/28、M23 风险放行 26/26、M24 35/35。
+
+### 已知边界 / 后续里程碑
+
+- **M26 才有编辑器页面**：本轮只有配置 API 与数据字典，没有 `putaway_rules.html`；
+  策略包拖拽排序、fallback 链可视化、推荐弹窗采纳/驳回、命中率报表留 M26。
+  推荐日志的 `adopt` / `reject` action 常量已预留，写入端点未实现。
+- **推荐日志未做货主隔离**：与规则配置同属控制面统计，按 `asn_id` / `action` 过滤；
+  若 M26 需要按货主统计，需补 `owner_id` 列并注入 `owner_where()`。
+- **种子混放默认不过账拦截**：需 M26 编辑器把 `mix_product` / `mix_owner` 的 `enabled`
+  打开；`mix_batch` 默认连推荐也不排除（M21 明细层口径）。
+- **`abc_class` 与 R12 无数据源**：13 维里 `abc_class` 恒为空，R12 评分恒不命中，
+  不臆造分数；待 M40 工作量统计或周转率缓存落地后接入。
+- **评分扩展默认关闭**：R07–R15 权重只在规则行 `score` 显式配置时叠加，
+  避免 M25 上线改变 M20 已验证的排序口径。
+- `putaway_rule.rule_type='outbound'` 只落了表结构与 CRUD 校验，**M35 才接入出库分配逻辑**。
+- M36 复核按用户 4B 修订：独立复核单 + 作业页 + 「登记差异」只留痕，
+  不生成调整单、不改库存；数量纠偏仍走 M22 调整单。
 - PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交，不与代码提交混在一起。
 
 ---

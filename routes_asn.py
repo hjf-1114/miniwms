@@ -20,6 +20,7 @@ import constants as C
 from batch_service import record_receipt, validate_external_batch_no
 from inventory_service import StockError, stock_move, stock_up
 from reservation_rules import stock_status_allowed
+from putaway_rules import validate_location
 from main import get_db, gen_doc_no, request_payload
 
 asn_bp = Blueprint("asn", __name__, url_prefix="/api/asns")
@@ -580,6 +581,11 @@ def putaway(asn_id):
             raise ValueError(f"上架数量必须为正且不超过待上架 {remaining}")
         _check_location(db, from_loc, ("receiving",), "上架来源")
         _check_location(db, to_loc, ("storage", "picking"), "上架目标")
+        # M25：按命中规则行的 limits 做配置化硬约束校验；没有启用规则 / 未启用
+        # 任何检查项时直接放行（v3.3 3B「没配就不拦」，代码不二次兜底）。
+        allowed, code, reason = validate_location(db, asn_id, line_id, to_loc, qty)
+        if not allowed:
+            raise ValueError(f"{code}: {reason}")
 
         moved = stock_move(db, asn["owner_id"], line["product_id"], from_loc, to_loc, qty,
                            C.MOVEMENT_ASN_PUTAWAY_OUT, C.MOVEMENT_ASN_PUTAWAY_IN, asn_id,

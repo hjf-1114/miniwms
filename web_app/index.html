@@ -61,12 +61,13 @@
       <tr><td>M18</td><td>盘点单（冻结快照→盲盘→差异调整→解冻结案，账实核对）</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M19</td><td>批次与验收入库追溯（批次字段配置 · 关键批次信息档案 · 每次入库唯一批次号 · 内部批次号规则）</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M20 阶段A</td><td>储区主数据（仓库维度 · 温区 · 混放开关）/ 货品推荐储区与固定货位 / 简版上架推荐 / 验收·上架独立作业页 / 工作台侧栏伸缩</td><td><span class="tag ok">已完成</span></td></tr>
-      <tr><td>M20 阶段B</td><td>ASN/DN 单据标识位（虚拟·直调·冷链·危险 + 外部单据类别）/ 仅记录不拦截 / 老库自动迁移</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M20 阶段B</td><td>ASN/DN 单据标识位（虚拟·直调·冷链·危险 + 外部单据类别）/ 仅记录不拦截（M20 时点口径；M25 起上架按规则拦截）/ 老库自动迁移</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M21</td><td>批次级库存明细层：stock_batch 明细 + 流水 9 维扩列 + 五动作同步钩子 + batch_location 实物分布 + I2/I3 硬校验 + 老库一次性回填 + 批次库存查询页；stock 汇总层主键与 I1 不变式原样保持</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M22</td><td>库存调整单 + 盘点增强：stock_adjustment 两张表（唯一手工数量入口）/ stocktake_plan 四类盘点（全盘·部分·按批号·动碰，含手工时间窗与交易类型）/ 真盲盘分级接口 / 差异人工生成调整单 + 审核过账 / 取消与冲销 / 盘点方案·库存调整·盘点增强 3 页</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M23</td><td>指定客户专属库存 + 销退口径：指定客户贯穿单据→批次→明细→流水，专属与通用永不合并 / 销退外部批次号必填（缺号 400，显式 / 走回溯并告警）/ 出库校验只落纯规则 / 质量状态两字段独立 / 收货·验收·批次库存三页交互增强</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M24</td><td>库存转移单：同库位批次维度净零变更 / 三表 + 双层分配真实占用 / 审核即生效终态 / 取消分配 / 字段级变更文档 / 冲销留痕</td><td><span class="tag ok">已完成</span></td></tr>
-      <tr><td>M25 / M26</td><td>上架推荐规则引擎 / 规则配置与推荐交互（混放·冷链·危险拦截改为配置化）</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>M25</td><td>上架推荐规则引擎：3 张配置表 / 13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 11 行种子（启用 7 行）/ 规则配置 API / 可解释推荐与日志 / 上架过账按规则拦截（承接 M20 的混放·冷链·危险配置化）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M26</td><td>规则配置与推荐交互：条件组编辑器 / fallback 链拖拽 / 推荐采纳与驳回 / 命中率与驳回率统计（13 维起步、预留扩展位）</td><td><span class="tag off">规划中</span></td></tr>
       <tr><td>M27 / M29 / M30</td><td>预警 / 外部对接 / CSV（降级暂缓，编号保留）</td><td><span class="tag off">暂缓</span></td></tr>
       <tr><td>M31–M34</td><td>领域蓝图第 1 层：司机车辆 / 产品类型字典 / 序列号台账 / 货位组主数据</td><td><span class="tag off">规划中</span></td></tr>
       <tr><td>M35–M38</td><td>领域蓝图第 2 层：波次与 FEFO 分配 / 复核 / 养护 / 拆单合单</td><td><span class="tag off">规划中</span></td></tr>

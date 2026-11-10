@@ -1,8 +1,9 @@
 """M20 剩余：ASN/DN 单据标识位与 external_doc_type 测试。
 
-按 docs/PUTAWAY_RECOMMENDATION.md v3.3 口径：本里程碑**只落字段**，
-混放 / 冷链 / 危险是否拦截由 M25/M26 的上架规则配置决定，
-因此 `test_flags_do_not_block_putaway` 明确验证过渡期 `putaway()` 不做任何校验。
+按 docs/PUTAWAY_RECOMMENDATION.md v3.3 口径：M20 里程碑**只落字段**，
+M20→M25 过渡期 `putaway()` 不做任何校验（原 `test_flags_do_not_block_putaway`）。
+**M25 起过渡期结束**：拦截完全来自 `putaway_rule.limits`，本文件相应测试改为验证
+「命中种子冷链规则→400 拒绝；停用规则行→立即放行」，即 2A「删规则行即不拦截」。
 """
 import os
 import sqlite3
@@ -76,6 +77,18 @@ class DocFlagApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         main.init_db()
+        # M25：共享物理库下 seed_rules() 只在策略包不存在时插规则行（用户删行不复活），
+        # 其他测试模块可能把规则行清空。这里显式重建种子基线，保证本类断言可重复。
+        import putaway_rules as PR  # noqa: E402
+        conn = sqlite3.connect(os.environ["MINIWMS_DB"])
+        try:
+            conn.execute("DELETE FROM putaway_rule")
+            conn.execute("DELETE FROM putaway_rule_set")
+            conn.commit()
+            PR.seed_rules(conn)
+            conn.commit()
+        finally:
+            conn.close()
         cls.client = main.app.test_client()
 
     def setUp(self):
@@ -195,8 +208,13 @@ class DocFlagApiTest(unittest.TestCase):
         self.assertIn("is_hazard 只能是 0/1", resp.get_json()["errors"])
 
     # ---------- 2B：过渡期不拦截 ----------
-    def test_flags_do_not_block_putaway(self):
-        """v3.3 2B：冷链/危险标识只记录，putaway 到常温 storage 位不被拦截。"""
+    def test_flags_rule_blocks_putaway_and_release_when_rule_removed(self):
+        """M25 起 v3.3 2B 过渡期结束（原 `test_flags_do_not_block_putaway` 口径已作废）。
+
+        冷链/危险标识命中种子规则行 5，上架到常温 storage 位被
+        `STORAGE_CLASS_MISMATCH` 拒绝；停用该规则行后立即放行——同时验证
+        用户 2A「删规则行即不拦截，代码不二次兜底」。
+        """
         recv = self._loc("FLAG-RCV", "receiving")
         store = self._loc("FLAG-ST", "storage")
         body = self._asn(is_cold_chain=1, is_hazard=1,
@@ -207,22 +225,39 @@ class DocFlagApiTest(unittest.TestCase):
             "line_id": line_id, "location_id": recv, "qty": 3})
         self.assertEqual(got.status_code, 200, got.get_json())
 
-        up = self.client.post(f"/api/asns/{asn_id}/putaway", json={
-            "line_id": line_id, "from_location_id": recv,
-            "to_location_id": store, "qty": 3})
-        self.assertEqual(up.status_code, 200, up.get_json())
-        self.assertEqual(up.get_json()["lines"][0]["putaway_qty"], 3)
+        payload = {"line_id": line_id, "from_location_id": recv,
+                   "to_location_id": store, "qty": 3}
+        up = self.client.post(f"/api/asns/{asn_id}/putaway", json=payload)
+        self.assertEqual(up.status_code, 400, up.get_json())
+        self.assertIn("STORAGE_CLASS_MISMATCH", str(up.get_json()))
 
         conn = sqlite3.connect(os.environ["MINIWMS_DB"])
         try:
-            qty = conn.execute(
-                "SELECT qty FROM stock WHERE owner_id=? AND product_id=? AND location_id=?",
-                (self.owner_id, self.product_id, store),
-            ).fetchone()
+            conn.execute("UPDATE putaway_rule SET enabled = 0 WHERE priority IN (5, 8)")
+            conn.commit()
         finally:
             conn.close()
-        self.assertIsNotNone(qty)
-        self.assertEqual(qty[0], 3)
+        try:
+            up2 = self.client.post(f"/api/asns/{asn_id}/putaway", json=payload)
+            self.assertEqual(up2.status_code, 200, up2.get_json())
+            self.assertEqual(up2.get_json()["lines"][0]["putaway_qty"], 3)
+            conn = sqlite3.connect(os.environ["MINIWMS_DB"])
+            try:
+                qty = conn.execute(
+                    "SELECT qty FROM stock WHERE owner_id=? AND product_id=? AND location_id=?",
+                    (self.owner_id, self.product_id, store),
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(qty)
+            self.assertEqual(qty[0], 3)
+        finally:
+            conn = sqlite3.connect(os.environ["MINIWMS_DB"])
+            try:
+                conn.execute("UPDATE putaway_rule SET enabled = 1 WHERE priority IN (5, 8)")
+                conn.commit()
+            finally:
+                conn.close()
 
 
 class LegacyMigrationTest(unittest.TestCase):

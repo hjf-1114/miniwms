@@ -1161,6 +1161,102 @@ M24 库存转移单（2026-11-09）。提交哈希以 `git log` / `DEVELOPMENT.m
 
 ---
 
+### 2.9 [实现] M25 增量：配置化上架约束（2026-11-10）
+
+> **本节性质**：M25 **不新增页面**（规则配置编辑器属 M26），进度表 21 行原行与
+> #22–#25 追加页一律**不改**，回溯进度仍 **2/21**、追加页仍 **4/4**，分母不混算。
+> 按「增量追加不重写」原则，§2.1–§2.8、§3.1–§3.8、§4 已有行、§5 v0.1–v0.9、§6
+> 全部保留。本节只记录代码里真实存在的实现，**不把 M26 / M35 规划写成现状**。
+
+**[业务] 用户口径与范围**
+
+| 项 | 内容 |
+| --- | --- |
+| 1A | 里程碑编号一个不动，只把实施顺序文字改为 `M25 → M26 → M35 → M36`；M31–M34 基础资料新域后移 |
+| 2A | M25/M26 一次做全；拦截内容**完全来自命中规则行 `limits`**，代码零 hardcoded 红线；种子只启用 7 行核心路径；删规则行即不拦截 |
+| 3A | 出库分配规则与上架规则**共用一张 `putaway_rule` 表**，用 `rule_type` 分 `putaway` / `outbound` 两类（M35 复用） |
+| 4B | 独立复核单 + 独立作业页 + 「登记差异」按钮，差异只留痕，**不生成调整单、不改库存**（属 M36） |
+| 承接 | M20 阶段 B 移来的混放 / 冷链 / 危险拦截，M20→M25 过渡期（`putaway()` 不拦截、只靠推荐页提示）**随本里程碑结束** |
+
+**[业务] 执行模型（取证自 `putaway_rules.py`）**
+
+1. 策略包匹配：货主+仓库精确 > 仓库默认（`owner_id` 空） > 系统默认（仓库空）；
+2. 条件组匹配：13 维 AND，`null` / 空串通配，列表值该维多选；按 `priority` 升序**第一行命中即停**；
+3. `steps` fallback 链按序执行，第一个产出「过滤后非空候选」的步骤生效；
+4. 硬约束按规则行 `limits` 三态过滤，命中约束 **pass/reject、不参与打分**；
+5. 候选内排序保留 M20 六项打分 + 绑定货位 +100，R07–R15 只在 `score` 显式配置时叠加，同分按 `location.code`；
+6. 全部失败 → 兜底行 priority 999 + `NO_CANDIDATE`。
+
+**[业务] 硬约束三态（本轮新设计）**
+
+| 配置 | 推荐阶段 | 上架过账 |
+| --- | --- | --- |
+| `enabled=true` | 排除候选 | **拦截**（`validate_location(for_post=True)`） |
+| `recommend_only=true` | 排除候选 | 放行 |
+| 两者皆假 | 不检查 | 不检查 |
+
+M20 的三类混放只在推荐阶段排除候选、用户可手工绕过；若 M25 上线即全设为过账拦截，
+既有演示与老单据（同一货位放不同货品 / 不同货主）会大面积 400。故种子 `normal` 行把
+`mix_product` / `mix_owner` 设为 `recommend_only`，`mix_batch` 连推荐阶段也不排除
+（M21 明细层支持同库位多批次，M22 按批号盘点与 M23 专属/通用分明细均依赖它）；
+`loc_status` / `storage_class` / `capacity` 为 enforce 级。**强度全部来自配置，
+M26 编辑器把 `enabled` 打开即升级为过账硬拦截，无需改代码。**
+
+**[功能] 既有页面增量（如实记录代码事实）**
+
+| 页面 | M25 实际变化 |
+| --- | --- |
+| `asn_putaway.html`（进度表 #20 相关） | **页面代码零改动**。推荐接口响应新增 `engine` / `rule_set` / `hit_rule` / `hit_priority` / `hit_condition` / `hit_step` / `recommendation_id` 等可解释字段，但页面只消费 M20 原有字段（`recommendations` / `rejected` / `candidate_count` / `bound_location_count` / `sku`），新字段暂不展示；一键采纳仍是前端把 `location_id` 填进 `#toLocSel`，过账仍由「确认上架」触发 |
+| `asns.html`（#9） | **零改动**；上架过账入口不变，但后端 `POST /api/asns/<id>/putaway` 新增按规则行 `limits` 的硬校验，命中即 400 带拒绝码 |
+| `web_app/index.html`（里程碑清单） | M25 行改为「已完成」，M26 拆出独立「规划中」行 |
+| 规则配置编辑器 | **不存在**，属 M26；本轮只有 API 与数据字典，如实记录为边界 |
+
+**[功能] 配置能力（后端先行，无界面）**
+
+- 策略包：列表 / 新建 / 修改（`code` / `name` 必填，`status` 限 `active` / `disabled`，
+  可绑 `warehouse_id` / `owner_id`）。
+- 规则行：列表（按 `set_id` / `rule_type` 过滤）/ 新建 / 修改 / 删除；
+  `condition` 必须对象且维度在 13 维白名单内，`steps` 必须数组且 `type` 在 9 种寻址白名单内，
+  `limits` / `score` 必须对象，`rule_type` 限两类，`priority` / `rule_set_id` 必须整数。
+  删除规则行的响应文案为「规则行已删除，该规则不再拦截」。
+- 数据字典 `GET /api/putaway-rule-types` 返回 2 类 `rule_type` / 13 维 / 9 种寻址 /
+  8 项 limits（含拒绝码与中文标签）/ 9 条评分（含建议权重），供 M26 数据驱动渲染。
+- 条件组试算 `POST /api/putaway-rules/trial` **只读**，不写库、不查规则表，未知维度 400。
+- 推荐日志 `GET /api/putaway-recommendations` 分页（`page` / `page_size`，上限 200）
+  + 按 `asn_id` / `action` / `rule_id` 过滤 + 全表 `action` 统计。
+
+**[实现] 取证与边界**
+
+- **口径覆盖**：§2.1 / §2.x 早期历史行曾记「`category_l1~l4` 当前上架推荐引擎未消费 /
+  同分类条件组属 M25 规划」；M25 的 `build_context()` 已把 `category_l1` 纳入 13 维，
+  `same_category` 寻址步骤与 R10 评分已消费该维。历史行按「增量追加不重写」保留，以本节为准。
+- 取证自 `main.py::_migrate_m25()`、`constants.py`、`putaway_rules.py`、
+  `routes_putaway_rules.py`、`putaway_service.py`、`routes_putaway.py`、`routes_asn.py`、
+  `scope.py`、`tests/test_m25_putaway_rules.py`、`tests/test_doc_flags.py`、
+  `DEVELOPMENT.md` M25 章、`README.md` M25 章。
+- 种子 11 行、启用 7 行（5 / 8 / 10 / 20 / 25 / 50 / 999），储区编码用库里真实存在的
+  `ZONE-SHARED` / `ZONE-COLD` / `ZONE-NG`；`seed_rules()` 只在策略包不存在时插入，
+  **用户删行后重启不复活**。
+- `putaway_service.recommend()` 分发：有启用规则走规则引擎（`engine="rules"`），
+  零启用规则走 M20 简版（`engine="legacy"`）；两分支共用可解释字段。
+- `routes_putaway.py` 在推荐后 `db.commit()` 落推荐日志，异常 `db.rollback()`；
+  **不改库存**。推荐日志与规则配置同属控制面统计，归入 `scope.PUBLIC_TABLES`，
+  **未注入货主条件**（如需按货主统计，须补 `owner_id` 列）。
+- 如实记录边界：① 无编辑器页面（M26）；② 推荐日志 `adopt` / `reject` 只落常量、
+  写入端点未实现；③ `abc_class` 维度恒空、R12 评分恒不命中（无周转率缓存，不臆造分数）；
+  ④ `rule_type='outbound'` 只落表结构与 CRUD 校验，M35 才接入出库分配逻辑；
+  ⑤ 种子混放默认不过账拦截；⑥ PRD 回溯 #3–#21 共 19 页仍另起独立提交。
+- 验收基线：全量 unittest **447 例全绿**（M25 新增 32 例）、真实 Chrome E2E **34/34**
+  （独立库 + 端口 5117）、七组基线 E2E 复跑无回归。
+
+**[实现] 对应里程碑与提交**
+
+M25 上架推荐规则引擎（2026-11-10）。提交哈希以 `git log` / `DEVELOPMENT.md` M25 章为准，
+本节不编造未确认的哈希。设计口径见 `docs/PUTAWAY_RECOMMENDATION.md` §9.4 / §10.1–§10.5 /
+§14 阶段 E；端点与数据表增量见 §3.9。
+
+---
+
 ## 3. API 与数据模型（单列一章）
 
 > 用户口径 4「单列一章」：**端点清单与数据表字典独立成章**，页面记录里只引用端点名，不复制字段定义。
@@ -1569,6 +1665,84 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 
 ---
 
+### 3.9 [实现] M25 增量：端点与数据表（2026-11-10 追加）
+
+> 按「增量追加不重写」原则，§3.1–§3.8 已有内容一律保留。本节只记录 M25 代码里真实存在的
+> 端点、表与常量；M26 编辑器、M35 出库分配规则接入**均不写成现状**。
+
+**[实现] 新增端点（`routes_putaway_rules.py`，Blueprint `pr_bp`，前缀 `/api`）**
+
+| 方法 | 路径 | 请求 / 响应要点 |
+| --- | --- | --- |
+| GET | `/api/putaway-rule-types` | 数据字典：`rule_types`（2）/ `condition_dims`（13）/ `step_types`（9）/ `limit_keys`（8，含 `reason_code`）/ `score_rules`（9，含建议权重） |
+| GET | `/api/putaway-rule-sets` | 策略包列表（`ok=true`, `rule_sets`） |
+| POST | `/api/putaway-rule-sets` | 新建，201 + `id`；`code` / `name` 必填 |
+| PUT | `/api/putaway-rule-sets/<sid>` | 修改，请求 `id` 由路径覆盖 |
+| GET | `/api/putaway-rules` | 规则行列表，查询参数 `set_id` / `rule_type`，返回 `rules` + `total` |
+| POST | `/api/putaway-rules` | 新建，201 + `id`；校验 13 维条件 / 9 种寻址 / 2 类 `rule_type` / JSON 字段类型 |
+| PUT | `/api/putaway-rules/<rid>` | 修改 |
+| DELETE | `/api/putaway-rules/<rid>` | 删除，返回「规则行已删除，该规则不再拦截」 |
+| POST | `/api/putaway-rules/trial` | 只读试算：`condition` / `ctx` 必须对象，未知维度 400，返回 `matched` + `dims` |
+| GET | `/api/putaway-recommendations` | 日志分页：`page`（≥1）/ `page_size`（1–200）/ `asn_id` / `action` / `rule_id`；返回 `total` / `page` / `page_size` / `recommendations` / `stats` |
+
+写动作统一走 `_run()` 的 `BEGIN IMMEDIATE`；`RuleError` → 400 带 `code`，
+`ValueError` / `TypeError` → 400，`sqlite3.IntegrityError` → 400「配置冲突（编码/优先级重复）」，
+异常一律 `rollback()`。只读端点（字典 / 列表 / 试算 / 日志）不包事务。
+
+**[实现] 既有端点增量**
+
+| 端点 | 增量 |
+| --- | --- |
+| `GET /api/putaway/recommend` | 响应新增 `engine` / `rule_set` / `rule_set_id` / `hit_rule` / `hit_priority` / `hit_condition` / `hit_step` / `step_name` / `fallback` / `top_n` / `recommendation_id`；M20 原有 `recommendations` / `rejected` / `candidate_count` / `bound_location_count` / `sku` 等全部保留；`routes_putaway.py` 在推荐后 `db.commit()` 落日志、异常 `db.rollback()`，**仍不写库存** |
+| `POST /api/asns/<id>/putaway` | 过账前调 `putaway_rules.validate_location()`；命中规则行 `limits` 且 `enabled=true` 的检查项不通过 → `ValueError(f"{code}: {reason}")` → 400，如冷链上架常温位返回 `STORAGE_CLASS_MISMATCH`；零启用规则 / 无命中规则行时直接放行 |
+
+**[实现] 新增数据表（`main.py::_migrate_m25()`，全部 `CREATE TABLE IF NOT EXISTS`）**
+
+| 表 | 字段 | 约束 / 索引 |
+| --- | --- | --- |
+| `putaway_rule_set` | `id`, `code`, `name`, `warehouse_id`, `owner_id`, `status`, `note`, `created_at`, `updated_at` | `code UNIQUE`；`idx_prs_status(status)` |
+| `putaway_rule` | `id`, `rule_set_id`, `rule_type`, `priority`, `name`, `condition`, `steps`, `limits`, `score`, `enabled`, `note`, `created_at`, `updated_at` | `rule_set_id` FK ON DELETE CASCADE；`UNIQUE(rule_set_id, rule_type, priority, name)`；`idx_pr_set(rule_set_id, enabled)`、`idx_pr_type(rule_type, priority)`；4 个 JSON 文本列默认 `'{}'` / `'[]'` |
+| `putaway_recommendation` | `id`, `asn_id`, `asn_line_id`, `rule_set_id`, `rule_id`, `hit_priority`, `hit_step`, `top_json`, `chosen_location_id`, `action`, `operator`, `override_reason`, `created_at` | `idx_prec_asn(asn_id)`、`idx_prec_action(action)`；**无 `owner_id` 列** |
+
+`init_db()` 顺序：`_migrate_m25(conn)` → `_seed_zones(conn)` → `PR.seed_rules(conn)` →
+`_seed_auth(conn)`。`seed_rules()` 用裸连接按位置取值（`row[0]`），避免 `row_factory` 未设置的坑。
+三表均为幂等新建，老库零迁移成本。
+
+**[实现] 常量（`constants.py`）**
+
+- `RULE_TYPE_PUTAWAY="putaway"` / `RULE_TYPE_OUTBOUND="outbound"` / `RULE_TYPES`；
+  `RULE_SET_DEFAULT_CODE="PUTAWAY-DEFAULT"`；`RULE_STATUS_ACTIVE` / `DISABLED` / `RULE_STATUSES`；
+  `RULE_FALLBACK_PRIORITY=999`。
+- `PUTAWAY_CONDITION_DIMS`（13）与 `PUTAWAY_CONDITION_LABELS`；
+  `PUTAWAY_STEP_TYPES`（9 种，含 M20 兼容型 `all_active`）与 `PUTAWAY_STEP_LABELS`。
+- `PUTAWAY_SCORE_RULES`（R07–R15，值＝(中文名, 建议权重)）；`PUTAWAY_LIMIT_KEYS`（8 项）
+  与 `PUTAWAY_REJECT_CODES` / `PUTAWAY_REJECT_LABELS`（含 `NO_CANDIDATE`）。
+- `PUTAWAY_RECOMMEND_ACTIONS=("preview","adopt","reject")`：`adopt` / `reject` **只落常量**，
+  写入端点未实现（M26）。
+
+**[实现] 既有模块增量**
+
+| 文件 | 增量 |
+| --- | --- |
+| `main.py` | 顶部 `import putaway_rules as PR`；新增 `_migrate_m25()`；`init_db()` 调用 `PR.seed_rules(conn)`；`else` 分支注册 `pr_bp` |
+| `putaway_service.py` | 原 `recommend()` 改名 `_legacy_recommend()` 并补 `engine="legacy"`；新 `recommend()` 按 `PR.has_enabled_rules()` 分发 |
+| `routes_putaway.py` | 取 `db` 一次，`recommend()` 后 `db.commit()`，异常 `db.rollback()` |
+| `routes_asn.py` | 导入 `validate_location`；`putaway()` 在 `_check_location()` 之后、`stock_move()` 之前校验 |
+| `scope.py` | `PUBLIC_TABLES` 增 `putaway_recommendation`（控制面统计，按 `asn_id` / `action` 过滤） |
+| `tests/test_doc_flags.py` | `setUpClass` 显式重建 M25 种子基线（共享物理库）；「过渡期不拦截」用例改为「命中种子冷链规则 → 400、停用规则行 → 放行」 |
+| `web_app/index.html` | 里程碑清单拆 M25（已完成）/ M26（规划中） |
+
+**[实现] 事务与隔离**
+
+- 规则配置 CRUD 写动作在 `BEGIN IMMEDIATE` 内，失败整单回滚；只读端点不包事务。
+- 推荐日志与推荐计算**同一请求、同一连接**，由 `routes_putaway.py` 统一 `commit()`；
+  日志写入不参与库存过账，I1 / I2 / I3 不变式不受影响。
+- 上架拦截发生在 `putaway()` 的过账事务内、`stock_move()` 之前，拒绝时不产生任何流水。
+- `putaway_recommendation` 归入 `PUBLIC_TABLES`，**未注入 `owner_where()`**；
+  规则配置与日志均按控制面处理，若 M26 要按货主统计需补 `owner_id` 列。
+
+---
+
 ## 4. 里程碑与页面归属索引
 
 | 里程碑 | 主题（以 `DEVELOPMENT.md` Roadmap 为准） | 主要页面 | 状态 |
@@ -1598,6 +1772,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | M23 | 指定客户专属库存 + 销退口径（指定客户贯穿四层 / 销退外部批次号必填且 `/` 占位 / 出库校验只落规则 / 质量状态两字段独立） | `asns.html` / `asn_receive.html` / `stock_batch.html` 三页增强，**无新增页面** | **已完成 2026-11-09** |
 | M23 补充（非新里程碑） | 同日口径修订：专属库存风险事前提示 + 用户二次确认（可继续／可不继续）+ 风险放行日志，**仍不拦截** | `dns.html` 增强（#12 增量记 §2.7），**无新增页面** | **已完成 2026-11-09** |
 | M24 | 库存转移单（同库位批次维度净零变更 / 制单→分配真实占用→审核生效终态 / 取消分配 / 空单关闭删除 / 字段级变更文档 / 冲销） | `inventory_transfers.html`（#25 追加页） | **已完成 2026-11-09** |
+| M25 | 上架推荐规则引擎（三张配置表 / 13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 11 行种子启用 7 行 / 规则配置 API / 可解释推荐与日志 / 上架过账按 limits 拦截） | `asn_putaway.html` / `asns.html` 页面代码零改动，**无新增页面**；增量记 §2.9 / §3.9 | **已完成 2026-11-10** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -1621,6 +1796,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | v0.7 | 2026-11-09 | **M23 指定客户专属库存 + 销退口径**：M23 不新增页面，进度表 #9 / #10 / #22 原行**不改**，增量按「追加不重写」记在新增 §2.6（业务口径 / 三页功能增量 / 取证与边界）与 §3.6（端点与数据表增量 / 常量与规则 / 口径覆盖说明）；§4 加 M23 行；**回溯仍 2/21、追加页仍 3/3，分母不混算**。记录用户四条确认口径（质量状态 B / 出库校验只落规则 A / 销退缺号 400 且 `/` 占位 / PRD 回溯另起提交）、设计 §5.2 与 §7.4 的字段冲突消解、§7.5 销退口径覆盖、验收基线 375 例 + E2E 28/28 + 四组基线复跑；如实记录「出库路由未接入专属校验」等 4 条边界，**不把规划写成现状** | 取证自 `main.py::_migrate_m23()`、`constants.py`、`reservation_rules.py`、`batch_service.py`、`routes_asn.py`、`web_app/asns.html`、`web_app/asn_receive.html`、`web_app/stock_batch.html`、`tests/test_m23_designated.py`、`tests/test_batch.py`、`DEVELOPMENT.md` M23 章；交叉审阅为独立只读核对，未改代码 |
 | v0.8 | 2026-11-09 | **M23 同日口径修订（不新增里程碑、不新增页面）**：用户二次确认「专属库存发给其他客户要提示，让用户决定是否继续，可以选择继续也可以不继续，但要补事前提示 + 风险放行日志」，并确认 `/` 口径理解无误。按「增量追加不重写」新增 §2.7（`dns.html` #12 页面增量 / 业务口径修订对照 / 取证与边界）与 §3.7（2 个新端点 / `ship` 增量 / `customer_reservation_log` 新表 / 常量 / `spread_batches(rows=)` / 事务与隔离）；§4 加「M23 补充」一行；**§2.6、§3.6、v0.7 原文一律保留用于追溯**，其 v1 时点表述（「`dns.html` 零改动」「无新增端点、无新增表」「出库校验只落规则不接路由」）由本次增量覆盖；进度表 #9 / #10 / #12 / #22 原行不动，**回溯仍 2/21、追加页仍 3/3**。如实记录两个回归测试暴露并修复的既有缺陷（预检批次与实扣不一致、分次拣货分配／释放不对称），以及「仍不拦截、`dn_pick` 未记录实际批次归属、M35 分配未接入」等边界，**不把规划写成现状**；验收基线 390 例 + E2E 26/26 + 五组基线复跑 | 取证自 `constants.py`、`reservation_audit.py`、`routes_reservation_log.py`、`routes_dn.py`、`inventory_service.py`、`main.py::_migrate_m23()`、`web_app/dns.html`、`tests/test_m23_reservation_audit.py`、`DEVELOPMENT.md` M23 章「同日口径修订补充」、`README.md` M23 补充段；交叉审阅为独立只读核对，未改代码 |
 | v0.9 | 2026-11-09 | **M24 库存转移单**：进度表续编 **#25**（`inventory_transfers.html` 追加页，不计入回溯 21 页分母）+ 追加 §2.8「库存转移」按模板逐项完整记录（12 个小节、三层标记）+ §3.8 端点／3 张表／常量／既有模块增量；§4 加 M24 行；§1 追加 v0.9 计数说明块，**v0.6 的 3/3 原文保留用于追溯**，当前进度更新为 **2/21（回溯）+ 4/4（M21／M22／M24 追加页）**。记录用户四条 A 口径（同库位 / 7 类统一搬迁 / 只做 IT 单 unallocate / 权限码与特采不落地）、数量净零与 `adjust_stock()` 零 qty 分支、双层分配占用、字段级变更文档、冲销往返、验收基线 415 例 + E2E 35/35 + 六组基线复跑。**按增量追加不重写原则，§1 原有 21 行与 #22–#24、§2.1–§2.7、§3.1–§3.7、§4 已有行、§5 v0.1–v0.8、§6 一律保留**。如实记录 6 条边界（不新建批次档案 / `location_move` 仅标签 / 单据头无 `owner_id` 导致受限账号看不到自建空单 / 冲销仍需分配审核 / M35 与 DN 分配取消未做 / PRD 回溯 19 页另起提交），**不把规划写成现状**。交叉审阅另按模板 §3 如实记录一处前端文案与后端不一致（业务发生时间占位「留空=系统时间」，后端实际落空串，不擅自改代码）；并发现、修正两处文档与代码不一致：`DEVELOPMENT.md` M24 动作表的「删除」前置状态补为 `draft` 或 `closed`（代码 `delete()` 同时允许两者）；`docs/DOMAIN_BLUEPRINT.md` 实施顺序的「下一棒 M24」改为**下一棒 M25**并补 M24 交付事实 | 取证自 `main.py::_migrate_m24()`、`constants.py`、`inventory_transfer_service.py`、`routes_inventory_transfer.py`、`inventory_service.py`、`scope.py`、`web_app/inventory_transfers.html`、`web_app/js/layout.js`、`tests/test_m24_inventory_transfer.py`、`DEVELOPMENT.md` M24 章、`README.md` M24 章；交叉审阅为独立只读核对，除上述两处文档一致性修正外未改代码 |
+| v1.0 | 2026-11-10 | **M25 上架推荐规则引擎**：M25 **不新增页面**（编辑器属 M26），进度表 21 行原行与 #22–#25 追加页**一律不改**，**回溯仍 2/21、追加页仍 4/4，分母不混算**；按「增量追加不重写」新增 §2.9（业务口径 / 执行模型 / 硬约束三态 / 既有页面增量如实记录「页面代码零改动」/ 配置能力 / 取证与边界）与 §3.9（10 个新端点 / 2 个既有端点增量 / 3 张表 DDL / 常量 / 既有模块增量 / 事务与隔离）；§4 加 M25 行。**§2.1–§2.8、§3.1–§3.8、§4 已有行、§5 v0.1–v0.9、§6 全部保留**。记录用户 1A / 2A / 3A / 4B 口径、M20→M25 过渡期结束、13 维条件组、按 `priority` 命中即停、fallback 链、8 项 limits 的 `enabled` / `recommend_only` 三态、11 行种子启用 7 行、删行即不拦截、零配置退回简版、`rule_type` 两类共用表（M35 复用）、验收基线 447 例 + E2E 34/34 + 七组基线复跑；如实记录 6 条边界（无编辑器页 / 日志 `adopt`·`reject` 只落常量 / `abc_class` 与 R12 无数据源 / `outbound` 未接业务 / 种子混放默认不过账拦截 / PRD 回溯 19 页另起提交），**不把 M26 / M35 规划写成现状**。另如实记录两处测试基线修复：共享物理库下 `seed_rules()` 因策略包仍在而不复活规则行，故 `test_doc_flags` 与 M25 测试各自显式重建种子基线；M25 测试用 `contextlib.closing` 包住写事务，避免连接泄漏锁死后续模块 | 取证自 `main.py::_migrate_m25()`、`constants.py`、`putaway_rules.py`、`routes_putaway_rules.py`、`putaway_service.py`、`routes_putaway.py`、`routes_asn.py`、`scope.py`、`web_app/asn_putaway.html`、`web_app/index.html`、`tests/test_m25_putaway_rules.py`、`tests/test_doc_flags.py`、`DEVELOPMENT.md` M25 章、`README.md` M25 章、`docs/DOMAIN_BLUEPRINT.md` §1.3；交叉审阅为独立只读核对，未改代码 |
 
 ---
 

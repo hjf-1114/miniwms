@@ -229,3 +229,85 @@ IT_PERMISSIONS = (IT_PERM_CREATE, IT_PERM_ALLOCATE, IT_PERM_UNALLOCATE,
 MOVEMENT_IT_ALLOCATE = "it_allocate"        # 分配占用（allocated_delta > 0）
 MOVEMENT_IT_UNALLOCATE = "it_unallocate"    # 取消分配（allocated_delta < 0）
 MOVEMENT_IT_TRANSFER = "it_transfer"        # 审核生效：源 -Q / 目标 +Q
+
+# ── M25 上架推荐规则引擎（v3.3 配置化；用户 2026-11-10 1A/2A/3A 定稿）──
+# 3A：出库分配规则与上架规则共用 putaway_rule 表，用 rule_type 分两类，M35 直接复用。
+RULE_TYPE_PUTAWAY = "putaway"
+RULE_TYPE_OUTBOUND = "outbound"
+RULE_TYPES = (RULE_TYPE_PUTAWAY, RULE_TYPE_OUTBOUND)
+RULE_SET_DEFAULT_CODE = "PUTAWAY-DEFAULT"
+RULE_STATUS_ACTIVE = "active"
+RULE_STATUS_DISABLED = "disabled"
+RULE_STATUSES = (RULE_STATUS_ACTIVE, RULE_STATUS_DISABLED)
+RULE_FALLBACK_PRIORITY = 999
+
+# 13 维条件组（v3.3 4A：首批 13 维起步，M26 编辑器预留扩展位）
+PUTAWAY_CONDITION_DIMS = (
+    "doc_type", "goods_property", "is_virtual", "is_direct", "is_cold_chain",
+    "is_hazard", "external_doc_type", "abc_class", "owner_id", "is_designated",
+    "zone_id", "product_id", "category_l1",
+)
+PUTAWAY_CONDITION_LABELS = {
+    "doc_type": "单据类型", "goods_property": "货品属性", "is_virtual": "虚拟标识",
+    "is_direct": "直调标识", "is_cold_chain": "冷链标识", "is_hazard": "危险标识",
+    "external_doc_type": "外部单据类别", "abc_class": "ABC 分类", "owner_id": "货主",
+    "is_designated": "指定客户专属", "zone_id": "储区", "product_id": "物料",
+    "category_l1": "一级分类",
+}
+
+# 9 种寻址步骤（业界 6 种 + 本项目 zone_by_product / same_category + M20 兼容型 all_active）
+PUTAWAY_STEP_TYPES = (
+    "zone_by_product", "zone_by_code", "fixed_location", "empty_in_zone",
+    "same_product", "same_category", "last_putaway", "batch_location",
+    # 第 9 种为 M20 兼容型：全部启用库位一起打分，避免规则一上线就改变既有排序口径。
+    # 删掉它、改用上面的递降链，即按 v3.3 §10.3「三者递降 fallback」执行。
+    "all_active",
+)
+PUTAWAY_STEP_LABELS = {
+    "zone_by_product": "货品默认储区找位", "zone_by_code": "指定储区找位",
+    "fixed_location": "固定库位", "empty_in_zone": "推荐空位",
+    "same_product": "同品集中", "same_category": "同分类聚拢",
+    "last_putaway": "最近一次上架位", "batch_location": "同内部批次号原库位",
+    "all_active": "全部启用库位（M20 兼容）",
+}
+
+# 9 条内置评分规则（R07–R15，只用于同一 fallback 步骤内候选排序，不参与硬约束）
+PUTAWAY_SCORE_RULES = {
+    "R07": ("同关键批次信息 batch_key", 30),
+    "R08": ("同批号 / 内部批次号", 25),
+    "R09": ("同产品集中", 25),
+    "R10": ("产品分类聚拢", 15),
+    "R11": ("效期分档（FEFO 友好）", 15),
+    "R12": ("ABC 周转 / 黄金位", 20),
+    "R13": ("容积 best-fit", 10),
+    "R14": ("动线距离", 10),
+    "R15": ("零散库位合并", 10),
+}
+
+# 8 步硬约束检查项（§9.4 流水线）；每项 enabled 缺省 False＝不检查、不拦截
+PUTAWAY_LIMIT_KEYS = (
+    "loc_status", "storage_class", "quality_state", "capacity",
+    "mix_product", "mix_batch", "mix_owner", "designated_customer",
+)
+PUTAWAY_REJECT_CODES = {
+    "loc_status": "LOC_DISABLED",
+    "storage_class": "STORAGE_CLASS_MISMATCH",
+    "quality_state": "QUALITY_STATE_CONFLICT",
+    "capacity": "CAPACITY_EXCEEDED",
+    "mix_product": "MIX_PRODUCT_FORBIDDEN",
+    "mix_batch": "MIX_BATCH_FORBIDDEN",
+    "mix_owner": "MIX_OWNER_FORBIDDEN",
+    "designated_customer": "DESIGNATED_CUSTOMER_CONFLICT",
+}
+PUTAWAY_REJECT_LABELS = {
+    "LOC_DISABLED": "库位停用或类型不符",
+    "STORAGE_CLASS_MISMATCH": "储区属性不匹配",
+    "QUALITY_STATE_CONFLICT": "质量状态冲突",
+    "CAPACITY_EXCEEDED": "剩余容量不足",
+    "MIX_PRODUCT_FORBIDDEN": "该货位禁止产品混放",
+    "MIX_BATCH_FORBIDDEN": "该货位禁止批号混放",
+    "MIX_OWNER_FORBIDDEN": "该货位禁止货主混放",
+    "DESIGNATED_CUSTOMER_CONFLICT": "该货位禁止指定客户混放",
+    "NO_CANDIDATE": "无可用货位，待人工处理",
+}
+PUTAWAY_RECOMMEND_ACTIONS = ("preview", "adopt", "reject")

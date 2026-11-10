@@ -25,8 +25,11 @@ def recommend():
             "asn_id/line_id/top_n 必填且为整数，qty 为数字"
         ]}), 400
 
+    db = get_db()
     try:
-        data = putaway_service.recommend(get_db(), asn_id, line_id, qty, top_n)
+        data = putaway_service.recommend(db, asn_id, line_id, qty, top_n)
+        db.commit()          # M25 推荐日志落库；不改库存
     except ValueError as e:
+        db.rollback()
         return jsonify({"ok": False, "error": str(e)}), 400
     return jsonify({"ok": True, **data})
