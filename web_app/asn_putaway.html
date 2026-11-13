@@ -55,9 +55,19 @@
       <div class="card">
         <div class="card-head">
           <h2>推荐货位</h2>
-          <button class="btn secondary sm" onclick="loadRecommend()">重新计算推荐</button>
+          <div class="flex">
+            <span id="engineHint" class="text-sm muted"></span>
+            <button class="btn secondary sm" onclick="loadRecommend()">重新计算推荐</button>
+          </div>
         </div>
         <div id="recSummary" class="text-sm muted" style="margin:0 0 10px">选择明细行后自动计算。</div>
+        <div class="toolbar">
+          <label class="muted text-sm">改位 / 驳回原因码</label>
+          <select id="overrideReasonSel" style="min-width:170px"><option value="">请选择…</option></select>
+          <input id="overrideReasonText" placeholder="或手工填写原因（选「其他」时必填）" style="min-width:230px">
+          <button class="btn secondary sm" onclick="rejectRecommend()">驳回本次推荐</button>
+          <span class="text-sm muted">人工选了非推荐货位时，上架前必须留原因码</span>
+        </div>
         <div class="table-wrap">
           <table>
             <thead><tr><th>#</th><th>货位</th><th>仓库 / 储区</th><th>分数</th><th>推荐理由</th><th>已用 / 容量</th><th>操作</th></tr></thead>
@@ -93,7 +103,36 @@ const params = new URLSearchParams(location.search);
 let asnId = params.get("asn_id") || "";
 const presetLine = params.get("line_id") || "";
 let asnCode = "", asnData = null, recvLocs = [], destLocs = [], lastRec = null;
-let recTimer = null;
+let recTimer = null, adoptedLoc = null, overrideReasons = [];
+
+/** 改位 / 驳回原因码：下拉值与手工文本二选一，「其他」必须补文本。 */
+function getOverrideReason() {
+  const sel = document.getElementById("overrideReasonSel").value;
+  const text = document.getElementById("overrideReasonText").value.trim();
+  if (sel === "其他") return text;
+  return sel || text;
+}
+
+async function loadOverrideReasons() {
+  try {
+    const d = await api("GET", "/api/external-doc-types");
+    overrideReasons = d.override_reasons || [];
+    document.getElementById("overrideReasonSel").innerHTML =
+      '<option value="">请选择…</option>' +
+      overrideReasons.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+  } catch (e) {
+    document.getElementById("overrideReasonSel").innerHTML =
+      '<option value="">字典不可用，请手工填写</option>';
+  }
+}
+
+/** 登记一次推荐日志动作；简版引擎（无日志 id）只提示、不阻断作业。 */
+async function logAction(action, payload) {
+  if (!lastRec || !lastRec.recommendation_id) return false;
+  await api("POST", `/api/putaway-recommendations/${lastRec.recommendation_id}/action`,
+    Object.assign({ action, operator: "web" }, payload));
+  return true;
+}
 
 function asnStatusTag(s) {
   const map = { open: "待收货", receiving: "收货中", putaway: "上架中", closed: "已完成", cancelled: "已取消" };
@@ -193,8 +232,9 @@ async function loadRecommend() {
   const sum = document.getElementById("recSummary");
   const lineId = document.getElementById("lineSel").value;
   if (!asnId || !lineId) {
-    lastRec = null; body.innerHTML = ""; rej.innerHTML = "";
+    lastRec = null; adoptedLoc = null; body.innerHTML = ""; rej.innerHTML = "";
     sum.textContent = "请选择收货单与明细行后自动计算。";
+    document.getElementById("engineHint").textContent = "";
     document.getElementById("rejSummary").textContent = "被排除的货位（0）";
     return;
   }
@@ -203,7 +243,16 @@ async function loadRecommend() {
   try {
     const d = await api("GET", "/api/putaway/recommend?" + qs);
     lastRec = d;
+    adoptedLoc = null;
     sum.textContent = `${d.sku} ${d.product_name}｜批号 ${d.batch_no || "—"}｜候选 ${d.candidate_count} 个，通过 ${d.recommendations.length ? "（已取前 " + d.recommendations.length + "）" : "0 个"}｜绑定货位 ${d.bound_location_count} 个｜推荐储区 ${d.default_zone_id ? "#" + d.default_zone_id : "未设置"}`;
+    // M25 可解释字段在 M26 落到页面上，方便按「策略包 / 规则 / 日志 id」排查
+    const trace = [`引擎 ${d.engine || "—"}`];
+    if (d.rule_set) trace.push(`策略包 ${d.rule_set}`);
+    if (d.hit_rule) trace.push(`命中规则 ${d.hit_rule}`);
+    if (d.hit_priority !== undefined && d.hit_priority !== null) trace.push(`优先级 ${d.hit_priority}`);
+    if (d.hit_step !== undefined && d.hit_step !== null) trace.push(`步骤 ${d.hit_step}`);
+    if (d.recommendation_id) trace.push(`日志 #${d.recommendation_id}`);
+    document.getElementById("engineHint").textContent = trace.join(" · ");
     body.innerHTML = d.recommendations.map((r, i) =>
       `<tr>
         <td>${i + 1}</td>
@@ -220,18 +269,44 @@ async function loadRecommend() {
     ).join("") || '<tr><td colspan="2" class="muted">无</td></tr>';
     document.getElementById("rejSummary").textContent = `被排除的货位（${d.rejected.length}）`;
   } catch (e) {
-    lastRec = null;
+    lastRec = null; adoptedLoc = null;
+    document.getElementById("engineHint").textContent = "";
     body.innerHTML = `<tr><td colspan="7" class="muted">推荐计算失败：${esc(e.message)}</td></tr>`;
     sum.textContent = "推荐计算失败。";
   }
 }
 
-/** 采纳只是把推荐货位填入目标货位下拉，不写库存；过账仍由「确认上架」触发。 */
-function adopt(locationId) {
+/** 采纳 = 填目标货位 + 写推荐日志；不写库存，过账仍由「确认上架」触发。 */
+async function adopt(locationId) {
   const sel = document.getElementById("toLocSel");
+  const msgEl = document.getElementById("msg");
   sel.value = String(locationId);
-  showMsg(document.getElementById("msg"), `已采纳货位 #${locationId}，请确认数量后点「确认上架」`, "success");
+  adoptedLoc = Number(locationId);
+  try {
+    const logged = await logAction("adopt", { chosen_location_id: Number(locationId) });
+    showMsg(msgEl, logged
+      ? `已采纳货位 #${locationId}（推荐日志已留痕），请确认数量后点「确认上架」`
+      : `已采纳货位 #${locationId}（简版引擎无推荐日志），请确认数量后点「确认上架」`, "success");
+  } catch (e) {
+    showMsg(msgEl, `已采纳货位 #${locationId}，但推荐日志留痕失败：${e.message}`, "error");
+  }
   sel.focus();
+}
+
+/** 驳回本次推荐：原因码必填，只写日志、不改库存、不影响后续人工上架。 */
+async function rejectRecommend() {
+  const msgEl = document.getElementById("msg");
+  const reason = getOverrideReason();
+  if (!reason) { showMsg(msgEl, "驳回推荐必须选择或填写原因码", "error"); return; }
+  if (!lastRec || !lastRec.recommendation_id) {
+    showMsg(msgEl, "简版引擎没有推荐日志，无法登记驳回动作", "error"); return;
+  }
+  try {
+    await logAction("reject", { override_reason: reason });
+    showMsg(msgEl, `已驳回本次推荐并留痕（原因：${reason}）`, "success");
+  } catch (e) {
+    showMsg(msgEl, "驳回留痕失败：" + e.message, "error");
+  }
 }
 
 async function doPutaway() {
@@ -244,6 +319,22 @@ async function doPutaway() {
   if (!lineId || !fromId || !toId || !(qty > 0)) {
     showMsg(msg, "明细行 / 来源暂存位 / 目标货位 / 数量均必填，数量须大于 0", "error");
     return;
+  }
+  // 设计 §14 阶段 F「改位必填原因码」：有推荐候选却选了非采纳货位，
+  // 先写一条 reject 日志留痕再过账；后端过账接口本身保持 M25 原样，不受影响。
+  const hasRec = lastRec && lastRec.recommendations && lastRec.recommendations.length;
+  if (hasRec && adoptedLoc !== Number(toId)) {
+    const reason = getOverrideReason();
+    if (!reason) {
+      showMsg(msg, "目标货位与已采纳的推荐货位不一致：请先在「改位 / 驳回原因码」选择或填写原因", "error");
+      return;
+    }
+    try {
+      await logAction("reject", { override_reason: reason });
+    } catch (e) {
+      showMsg(msg, "改位留痕失败，已阻止上架：" + e.message, "error");
+      return;
+    }
   }
   try {
     const r = await api("POST", `/api/asns/${asnId}/putaway`, {
@@ -282,6 +373,7 @@ document.getElementById("putQty").addEventListener("input", () => {
   clearTimeout(recTimer);
   recTimer = setTimeout(loadRecommend, 350);
 });
+loadOverrideReasons();
 loadAsnOptions().then(loadAll);
 </script>
 </body>

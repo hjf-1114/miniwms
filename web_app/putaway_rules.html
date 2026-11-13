@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上架规则配置 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
+.dim { font-size: 12px; color: #64748b; }
+.grid13 { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 8px 14px; }
+.grid13 label, .fld { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #475569; }
+.grid13 input, .grid13 select, .fld input, .fld select { padding: 5px 7px; border: 1px solid #d5dbe4;
+  border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+.rate { display: inline-block; min-width: 132px; padding: 8px 12px; margin: 0 8px 8px 0;
+  border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; font-size: 13px; }
+.rate b { font-size: 18px; color: #0f172a; }
+.step-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.step-row select { min-width: 190px; }
+.step-row input { flex: 1; min-width: 180px; }
+.editor-sec { border-top: 1px solid #e8edf3; padding-top: 12px; margin-top: 14px; }
+.editor-sec h3 { font-size: 14px; font-weight: 500; margin: 0 0 8px; }
+.handle { cursor: grab; color: #94a3b8; user-select: none; }
+tr.dragging { opacity: .45; }
+.tag.ok { background: #e6f6ec; color: #1d7a4d; }
+.tag.off { background: #f1f5f9; color: #64748b; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>上架规则配置</h1><div class="crumb">MiniWMS / 仓储作业 / 上架策略与推荐日志</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>策略包与规则类型</h2>
+          <div class="flex">
+            <button class="btn secondary sm" onclick="toggleSetForm(true)">+ 新建策略包</button>
+            <button class="btn secondary sm" onclick="loadAll()">刷新</button>
+          </div>
+        </div>
+        <p class="hint">
+          规则按<b>优先级升序</b>匹配，<b>第一行命中即停</b>；命中行的 <code>steps</code> 依序寻找货位，
+          <code>limits</code> 里打开的检查项会先排除候选，候选内部再按评分排序。
+          硬约束强度完全来自配置：<b>过账硬拦截</b> = 推荐排除 + 上架拦截，<b>仅推荐排除</b> = 过账放行。
+        </p>
+        <div class="toolbar">
+          <label class="muted text-sm">策略包</label>
+          <select id="setSel" style="min-width:230px"></select>
+          <label class="muted text-sm">规则类型</label>
+          <select id="typeSel" style="min-width:150px">
+            <option value="putaway">上架推荐</option>
+            <option value="outbound">出库分配（M35 复用）</option>
+          </select>
+          <button class="btn secondary sm" onclick="deleteSet()">删除当前策略包</button>
+          <span id="setMeta" class="dim"></span>
+        </div>
+        <div id="setForm" class="toolbar" style="display:none">
+          <input id="setCode" placeholder="策略包编码（必填，如 PUTAWAY-VIP）">
+          <input id="setName" placeholder="策略包名称（必填）">
+          <input id="setNote" placeholder="备注（选填）">
+          <button class="btn sm" onclick="createSet()">保存</button>
+          <button class="btn secondary sm" onclick="toggleSetForm(false)">取消</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>规则行 <span id="ruleCount" class="dim"></span></h2>
+          <button class="btn sm" onclick="openEditor(null)">+ 新增规则行</button>
+        </div>
+        <p class="hint">拖动行首手柄或用 ↑ / ↓ 调整顺序，保存后即时生效；停用 / 删除规则行后，命中的检查项即不再拦截。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th style="width:36px"></th><th style="width:76px">优先级</th><th>规则名称</th>
+              <th>条件组（13 维）</th><th>fallback 链</th><th>硬约束</th>
+              <th style="width:70px">状态</th><th style="width:230px">操作</th>
+            </tr></thead>
+            <tbody id="ruleBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="editorCard" style="display:none">
+        <div class="card-head">
+          <h2 id="editorTitle">规则行编辑</h2>
+          <button class="btn secondary sm" onclick="closeEditor()">收起</button>
+        </div>
+        <div class="grid13" style="grid-template-columns:repeat(4,minmax(150px,1fr))">
+          <label class="fld"><span>规则名称 *</span><input id="ruleName" placeholder="如：冷链分流"></label>
+          <label class="fld"><span>优先级 *</span><input id="rulePriority" type="number" min="1" value="10"></label>
+          <label class="fld"><span>状态</span><select id="ruleEnabled">
+            <option value="1">启用</option><option value="0">停用</option></select></label>
+          <label class="fld"><span>备注</span><input id="ruleNote" placeholder="选填"></label>
+        </div>
+
+        <div class="editor-sec">
+          <h3>① 条件组（13 维 AND，留空 = 通配；多值用英文逗号分隔）</h3>
+          <div id="condGrid" class="grid13"></div>
+        </div>
+
+        <div class="editor-sec">
+          <h3>② fallback 链（自上而下，第一个产出候选的步骤生效）</h3>
+          <div id="stepsBox"></div>
+          <button class="btn secondary sm" onclick="addStep()">+ 追加寻址步骤</button>
+        </div>
+
+        <div class="editor-sec">
+          <h3>③ 硬约束 limits（三态；未勾任何项 = 不检查）</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>检查项 / 拒绝码</th><th style="width:150px">过账硬拦截</th>
+              <th style="width:150px">仅推荐排除</th><th>说明</th></tr></thead>
+            <tbody id="limitsBody"></tbody>
+          </table></div>
+        </div>
+
+        <div class="editor-sec">
+          <h3>④ 扩展评分 R07–R15（留空 / 0 = 不叠加，保持 M20 排序口径）</h3>
+          <div id="scoreBody" class="grid13"></div>
+        </div>
+
+        <div class="toolbar" style="margin-top:14px">
+          <button class="btn" onclick="saveRule()">保存规则行</button>
+          <button class="btn secondary" onclick="fillTrialFromEditor()">用当前条件组试算 →</button>
+          <span id="editorMeta" class="dim"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>条件组试算（只读，不写库）</h2></div>
+        <div class="grid13" style="grid-template-columns:1fr 1fr">
+          <label class="fld"><span>condition（条件组 JSON）</span>
+            <textarea id="trialCond" rows="4" style="width:100%;box-sizing:border-box">{}</textarea></label>
+          <label class="fld"><span>ctx（模拟单据上下文 JSON）</span>
+            <textarea id="trialCtx" rows="4" style="width:100%;box-sizing:border-box">{}</textarea></label>
+        </div>
+        <div class="toolbar">
+          <button class="btn secondary sm" onclick="runTrial()">试算匹配</button>
+          <span id="trialResult" class="dim">尚未试算</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>外部单据类别字典</h2></div>
+        <p class="hint">给 <code>external_doc_type</code> 条件维度提供可选值与默认目标储区；ASN/DN 上的字段仍是自由文本，字典不做强制枚举校验。</p>
+        <div class="toolbar">
+          <input id="dtCode" placeholder="编码（如 EDI）" style="width:150px">
+          <input id="dtName" placeholder="名称" style="width:180px">
+          <select id="dtEnabled"><option value="1">启用</option><option value="0">停用</option></select>
+          <input id="dtZone" placeholder="默认储区 ID（选填）" style="width:160px">
+          <button class="btn sm" onclick="createDocType()">+ 新增</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>状态</th><th>默认储区</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody id="docTypeBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>推荐日志与命中率</h2>
+          <button class="btn secondary sm" onclick="loadLogs()">刷新</button>
+        </div>
+        <div id="ratesBox"></div>
+        <div class="toolbar">
+          <input id="logAsn" placeholder="ASN ID" style="width:120px">
+          <select id="logAction">
+            <option value="">全部动作</option><option value="preview">仅预览</option>
+            <option value="adopt">已采纳</option><option value="reject">已驳回 / 改位</option>
+          </select>
+          <input id="logDateFrom" type="date" title="起始日期">
+          <input id="logDateTo" type="date" title="截止日期">
+          <button class="btn secondary sm" onclick="loadLogs()">查询</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th>ID</th><th>ASN / 行</th><th>命中规则</th><th>优先级 / 步骤</th>
+            <th>动作</th><th>采纳货位</th><th>改位原因</th><th>操作人</th><th>时间</th><th>推荐明细</th>
+          </tr></thead>
+          <tbody id="logBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+/* M26 规则配置编辑器：零依赖，所有配置均通过 M25/M26 的配置 API 读写。 */
+let TYPES = null, SETS = [], RULES = [], DOC_TYPES = [], LOGS = [];
+let CUR_SET = null, CUR_TYPE = "putaway", editingId = null;
+let EDIT_STEPS = [], EDIT_LIMITS = {}, EDIT_SCORE = {};
+let dragIdx = null;
+const BOOL_DIMS = ["is_virtual", "is_direct", "is_cold_chain", "is_hazard", "is_designated"];
+const ACTION_LABELS = { preview: "仅预览", adopt: "已采纳", reject: "已驳回 / 改位" };
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function jparse(s, fallback) {
+  // 后端返回 JSON 字符串，编辑器内部新建行时已是对象/数组，两种都要接受
+  if (s && typeof s === "object") return s;
+  try { return JSON.parse(s || ""); } catch (e) { return fallback; }
+}
+function labelOf(list, value) {
+  const hit = (list || []).find(x => String(x.value) === String(value));
+  return hit ? hit.label : value;
+}
+function fmtVal(v) {
+  if (Array.isArray(v)) return v.join(" / ");
+  if (v === 0) return "否";
+  if (v === 1) return "是";
+  return String(v);
+}
+function condSummary(r) {
+  const c = jparse(r.condition, {});
+  const keys = Object.keys(c || {});
+  if (!keys.length) return '<span class="dim">通配（兜底行）</span>';
+  return keys.map(k => `<span class="tag off">${esc(labelOf(TYPES.condition_dims, k))}=${esc(fmtVal(c[k]))}</span>`).join(" ");
+}
+function stepSummary(r) {
+  const s = jparse(r.steps, []);
+  return s.length ? s.map(x => esc(labelOf(TYPES.step_types, x.type))).join(" → ")
+                  : '<span class="dim">未配置</span>';
+}
+function limitsSummary(r) {
+  const l = jparse(r.limits, {});
+  const hit = (TYPES.limit_keys || []).filter(k => (l[k.value] || {}).enabled);
+  const soft = (TYPES.limit_keys || []).filter(k => (l[k.value] || {}).recommend_only && !(l[k.value] || {}).enabled);
+  const parts = hit.map(k => `<span class="tag ok">${esc(k.label)}</span>`)
+    .concat(soft.map(k => `<span class="tag off">${esc(k.label)}（仅推荐）</span>`));
+  return parts.length ? parts.join(" ") : '<span class="dim">未启用</span>';
+}
+
+async function loadAll() {
+  try {
+    TYPES = await api("GET", "/api/putaway-rule-types");
+    const s = await api("GET", "/api/putaway-rule-sets");
+    SETS = s.rule_sets || [];
+    if (!SETS.some(x => String(x.id) === String(CUR_SET))) CUR_SET = SETS.length ? SETS[0].id : null;
+    renderSets();
+    await Promise.all([loadRules(), loadDocTypes(), loadLogs()]);
+  } catch (e) { msg("加载失败：" + e.message, "error"); }
+}
+
+function renderSets() {
+  const sel = document.getElementById("setSel");
+  sel.innerHTML = SETS.length
+    ? SETS.map(x => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}（${esc(x.status)}）</option>`).join("")
+    : '<option value="">暂无策略包</option>';
+  if (CUR_SET) sel.value = String(CUR_SET);
+  const cur = SETS.find(x => String(x.id) === String(CUR_SET));
+  document.getElementById("setMeta").textContent = cur
+    ? `仓库 ${cur.warehouse_id || "全部"} / 货主 ${cur.owner_id || "全部"}｜${cur.note || ""}` : "";
+}
+
+async function loadRules() {
+  if (!CUR_SET) { RULES = []; renderRules(); return; }
+  try {
+    const d = await api("GET", `/api/putaway-rules?set_id=${CUR_SET}&rule_type=${CUR_TYPE}`);
+    RULES = d.rules || [];
+    renderRules();
+  } catch (e) { msg("规则行加载失败：" + e.message, "error"); }
+}
+
+function renderRules() {
+  document.getElementById("ruleCount").textContent = `共 ${RULES.length} 行`;
+  const body = document.getElementById("ruleBody");
+  body.innerHTML = RULES.map((r, i) =>
+    `<tr draggable="true" data-idx="${i}" class="rule-row">
+      <td class="handle" title="拖拽排序">⠿</td>
+      <td><b>${r.priority}</b></td>
+      <td>${esc(r.name)}<div class="dim">#${r.id} · ${esc(r.rule_type)}</div></td>
+      <td>${condSummary(r)}</td>
+      <td>${stepSummary(r)}</td>
+      <td>${limitsSummary(r)}</td>
+      <td>${r.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag off">停用</span>'}</td>
+      <td>
+        <button class="btn secondary sm" onclick="openEditor(${r.id})">编辑</button>
+        <button class="btn secondary sm" onclick="toggleRule(${r.id})">${r.enabled ? "停用" : "启用"}</button>
+        <button class="btn secondary sm" onclick="moveRule(${i},-1)" title="上移">↑</button>
+        <button class="btn secondary sm" onclick="moveRule(${i},1)" title="下移">↓</button>
+        <button class="btn secondary sm" onclick="deleteRule(${r.id})">删除</button>
+      </td>
+    </tr>`).join("") || '<tr><td colspan="8" class="muted">该策略包下暂无规则行，点「新增规则行」创建</td></tr>';
+  body.querySelectorAll("tr.rule-row").forEach(tr => {
+    tr.addEventListener("dragstart", e => {
+      dragIdx = Number(tr.dataset.idx); tr.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+    });
+    tr.addEventListener("dragend", () => tr.classList.remove("dragging"));
+    tr.addEventListener("dragover", e => e.preventDefault());
+    tr.addEventListener("drop", e => {
+      e.preventDefault();
+      const to = Number(tr.dataset.idx);
+      if (dragIdx === null || dragIdx === to) return;
+      const arr = RULES.slice();
+      const [item] = arr.splice(dragIdx, 1);
+      arr.splice(to, 0, item);
+      persistOrder(arr);
+    });
+  });
+}
+
+function moveRule(i, delta) {
+  const to = i + delta;
+  if (to < 0 || to >= RULES.length) return;
+  const arr = RULES.slice();
+  [arr[i], arr[to]] = [arr[to], arr[i]];
+  persistOrder(arr);
+}
+
+async function persistOrder(arr) {
+  const items = arr.map((r, i) => ({ id: r.id, priority: (i + 1) * 10 }));
+  try {
+    await api("POST", "/api/putaway-rules/reorder", { items });
+    msg("优先级已保存（按新顺序 10 / 20 / 30 …）");
+    await loadRules();
+  } catch (e) { msg("排序保存失败：" + e.message, "error"); }
+}
+
+async function toggleRule(id) {
+  const r = RULES.find(x => x.id === id);
+  if (!r) return;
+  try {
+    await api("PUT", `/api/putaway-rules/${id}`, {
+      rule_set_id: r.rule_set_id, rule_type: r.rule_type, priority: r.priority,
+      name: r.name, condition: jparse(r.condition, {}), steps: jparse(r.steps, []),
+      limits: jparse(r.limits, {}), score: jparse(r.score, {}),
+      enabled: r.enabled ? 0 : 1, note: r.note || ""
+    });
+    msg("规则状态已更新，命中即生效");
+    await loadRules();
+  } catch (e) { msg("状态更新失败：" + e.message, "error"); }
+}
+
+async function deleteRule(id) {
+  if (!confirm("删除后该规则行不再拦截，确认删除？")) return;
+  try {
+    await api("DELETE", `/api/putaway-rules/${id}`);
+    msg("规则行已删除");
+    await loadRules();
+  } catch (e) { msg("删除失败：" + e.message, "error"); }
+}
+
+/* ── 策略包 ─────────────────────────────────────────────────────────── */
+function toggleSetForm(on) {
+  document.getElementById("setForm").style.display = on ? "flex" : "none";
+}
+async function createSet() {
+  const code = document.getElementById("setCode").value.trim();
+  const name = document.getElementById("setName").value.trim();
+  if (!code || !name) { msg("策略包编码与名称必填", "error"); return; }
+  try {
+    const d = await api("POST", "/api/putaway-rule-sets", {
+      code, name, note: document.getElementById("setNote").value.trim(), status: "active"
+    });
+    CUR_SET = d.id;
+    toggleSetForm(false);
+    msg("策略包已创建");
+    await loadAll();
+  } catch (e) { msg("创建失败：" + e.message, "error"); }
+}
+async function deleteSet() {
+  if (!CUR_SET || !confirm("确认删除当前策略包？默认策略包与含规则行的策略包不可删除。")) return;
+  try {
+    await api("DELETE", `/api/putaway-rule-sets/${CUR_SET}`);
+    CUR_SET = null; msg("策略包已删除");
+    await loadAll();
+  } catch (e) { msg("删除失败：" + e.message, "error"); }
+}
+
+/* ── 规则行编辑器 ───────────────────────────────────────────────────── */
+function parseCondVal(dim, raw) {
+  const s = String(raw || "").trim();
+  if (!s) return undefined;
+  if (BOOL_DIMS.indexOf(dim) >= 0) return Number(s);
+  if (s.indexOf(",") >= 0) {
+    return s.split(",").map(x => x.trim()).filter(Boolean)
+      .map(x => /^\d+$/.test(x) ? Number(x) : x);
+  }
+  return /^\d+$/.test(s) ? Number(s) : s;
+}
+function condValue(v) {
+  return v === undefined || v === null ? "" : Array.isArray(v) ? v.join(",") : String(v);
+}
+function renderCondGrid(cond) {
+  document.getElementById("condGrid").innerHTML = TYPES.condition_dims.map(d => {
+    const v = condValue(cond[d.value]);
+    const input = BOOL_DIMS.indexOf(d.value) >= 0
+      ? `<select id="cond_${d.value}"><option value="">不限</option>
+           <option value="1"${v === "1" ? " selected" : ""}>是</option>
+           <option value="0"${v === "0" ? " selected" : ""}>否</option></select>`
+      : `<input id="cond_${d.value}" value="${esc(v)}" placeholder="留空=不限">`;
+    return `<label class="fld"><span>${esc(d.label)} <span class="dim">${esc(d.value)}</span></span>${input}</label>`;
+  }).join("");
+}
+function renderSteps() {
+  document.getElementById("stepsBox").innerHTML = EDIT_STEPS.map((s, i) => {
+    const extra = Object.assign({}, s); delete extra.type;
+    return `<div class="step-row">
+      <span class="dim">${i + 1}</span>
+      <select id="step_type_${i}">${TYPES.step_types.map(t =>
+        `<option value="${t.value}"${t.value === s.type ? " selected" : ""}>${esc(t.label)}</option>`).join("")}</select>
+      <input id="step_extra_${i}" value="${esc(JSON.stringify(extra))}" placeholder='附加参数 JSON，如 {"zone_code":"ZONE-COLD"}'>
+      <button class="btn secondary sm" onclick="moveStep(${i},-1)">↑</button>
+      <button class="btn secondary sm" onclick="moveStep(${i},1)">↓</button>
+      <button class="btn secondary sm" onclick="removeStep(${i})">×</button>
+    </div>`;
+  }).join("") || '<div class="dim">暂无步骤，点下方按钮追加</div>';
+}
+function syncStepsFromDom() {
+  EDIT_STEPS = EDIT_STEPS.map((s, i) => {
+    const type = document.getElementById(`step_type_${i}`).value;
+    const extra = jparse(document.getElementById(`step_extra_${i}`).value, {});
+    if (typeof extra !== "object" || Array.isArray(extra)) throw new Error(`第 ${i + 1} 步附加参数必须是 JSON 对象`);
+    return Object.assign({ type }, extra);
+  });
+}
+function addStep() {
+  try { syncStepsFromDom(); } catch (e) { msg(e.message, "error"); return; }
+  EDIT_STEPS.push({ type: "all_active" }); renderSteps();
+}
+function removeStep(i) {
+  try { syncStepsFromDom(); } catch (e) { msg(e.message, "error"); return; }
+  EDIT_STEPS.splice(i, 1); renderSteps();
+}
+function moveStep(i, d) {
+  const to = i + d; if (to < 0 || to >= EDIT_STEPS.length) return;
+  try { syncStepsFromDom(); } catch (e) { msg(e.message, "error"); return; }
+  [EDIT_STEPS[i], EDIT_STEPS[to]] = [EDIT_STEPS[to], EDIT_STEPS[i]];
+  renderSteps();
+}
+function renderLimits() {
+  document.getElementById("limitsBody").innerHTML = TYPES.limit_keys.map(k => {
+    const cfg = EDIT_LIMITS[k.value] || {};
+    return `<tr>
+      <td><b>${esc(k.label)}</b><div class="dim">${esc(k.value)} · ${esc(k.reason_code)}</div></td>
+      <td><label><input type="checkbox" id="lim_en_${k.value}"${cfg.enabled ? " checked" : ""}> enabled</label></td>
+      <td><label><input type="checkbox" id="lim_ro_${k.value}"${cfg.recommend_only ? " checked" : ""}> recommend_only</label></td>
+      <td class="dim">${cfg.enabled ? "推荐排除 + 上架拦截" : cfg.recommend_only ? "仅推荐排除，过账放行" : "不检查"}</td>
+    </tr>`;
+  }).join("");
+}
+function renderScore() {
+  document.getElementById("scoreBody").innerHTML = TYPES.score_rules.map(s =>
+    `<label class="fld"><span>${esc(s.value)} ${esc(s.label)} <span class="dim">建议 ${s.weight}</span></span>
+      <input id="score_${s.value}" type="number" min="0" step="1"
+        value="${EDIT_SCORE[s.value] === undefined ? "" : esc(EDIT_SCORE[s.value])}" placeholder="留空=不叠加"></label>`
+  ).join("");
+}
+function openEditor(id) {
+  editingId = id;
+  const r = id ? RULES.find(x => x.id === id) : null;
+  const blank = {
+    name: "", priority: RULES.length ? Math.max.apply(null, RULES.map(x => x.priority)) + 10 : 10,
+    enabled: 1, note: "", condition: {}, steps: [{ type: "all_active" }], limits: {}, score: {}
+  };
+  const cur = r || blank;
+  document.getElementById("editorTitle").textContent = id ? `编辑规则行 #${id} · ${cur.name}` : "新增规则行";
+  document.getElementById("ruleName").value = cur.name;
+  document.getElementById("rulePriority").value = cur.priority;
+  document.getElementById("ruleEnabled").value = cur.enabled ? "1" : "0";
+  document.getElementById("ruleNote").value = cur.note || "";
+  const cond = jparse(cur.condition, {});
+  renderCondGrid(cond);
+  EDIT_STEPS = jparse(cur.steps, []).map(s => Object.assign({}, s));
+  EDIT_LIMITS = jparse(cur.limits, {});
+  EDIT_SCORE = jparse(cur.score, {});
+  renderSteps(); renderLimits(); renderScore();
+  document.getElementById("editorMeta").textContent =
+    `策略包 #${CUR_SET} · 类型 ${CUR_TYPE}${r ? " · 原规则类型 " + r.rule_type : ""}`;
+  document.getElementById("editorCard").style.display = "block";
+  document.getElementById("editorCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function closeEditor() {
+  editingId = null;
+  document.getElementById("editorCard").style.display = "none";
+}
+function collectRule() {
+  const cond = {};
+  TYPES.condition_dims.forEach(d => {
+    const el = document.getElementById("cond_" + d.value);
+    const v = parseCondVal(d.value, el ? el.value : "");
+    if (v !== undefined) cond[d.value] = v;
+  });
+  syncStepsFromDom();
+  const limits = Object.assign({}, EDIT_LIMITS);
+  TYPES.limit_keys.forEach(k => {
+    const en = document.getElementById("lim_en_" + k.value).checked;
+    const ro = document.getElementById("lim_ro_" + k.value).checked;
+    limits[k.value] = Object.assign({}, limits[k.value] || {}, {
+      enabled: en, recommend_only: ro && !en
+    });
+  });
+  const score = {};
+  TYPES.score_rules.forEach(s => {
+    const v = Number(document.getElementById("score_" + s.value).value || 0);
+    if (v > 0) score[s.value] = v;
+  });
+  const name = document.getElementById("ruleName").value.trim();
+  if (!name) throw new Error("规则名称必填");
+  return {
+    name, priority: Number(document.getElementById("rulePriority").value || 10),
+    enabled: Number(document.getElementById("ruleEnabled").value),
+    note: document.getElementById("ruleNote").value.trim(),
+    rule_set_id: Number(CUR_SET),
+    rule_type: editingId ? (RULES.find(x => x.id === editingId) || {}).rule_type : CUR_TYPE,
+    condition: cond, steps: EDIT_STEPS, limits, score
+  };
+}
+async function saveRule() {
+  if (!CUR_SET) { msg("请先创建 / 选择策略包", "error"); return; }
+  let payload;
+  try { payload = collectRule(); } catch (e) { msg(e.message, "error"); return; }
+  try {
+    if (editingId) await api("PUT", `/api/putaway-rules/${editingId}`, payload);
+    else await api("POST", "/api/putaway-rules", payload);
+    msg("规则行已保存，命中规则即时生效");
+    closeEditor();
+    await loadRules();
+  } catch (e) { msg("保存失败：" + e.message, "error"); }
+}
+function fillTrialFromEditor() {
+  try {
+    document.getElementById("trialCond").value = JSON.stringify(collectRule().condition, null, 2);
+    msg("已把当前条件组带入试算区，填好右侧 ctx 后点「试算匹配」");
+  } catch (e) { msg(e.message, "error"); }
+}
+
+/* ── 试算 ───────────────────────────────────────────────────────────── */
+async function runTrial() {
+  const cond = jparse(document.getElementById("trialCond").value, null);
+  const ctx = jparse(document.getElementById("trialCtx").value, null);
+  const box = document.getElementById("trialResult");
+  if (!cond || !ctx) { box.textContent = "condition / ctx 必须是合法 JSON"; return; }
+  try {
+    const d = await api("POST", "/api/putaway-rules/trial", { condition: cond, ctx });
+    box.textContent = d.matched ? `✅ 命中（覆盖 ${d.dims} 维）` : "❌ 未命中";
+  } catch (e) { box.textContent = "试算失败：" + e.message; }
+}
+
+/* ── 外部单据类别字典 ───────────────────────────────────────────────── */
+async function loadDocTypes() {
+  try {
+    const d = await api("GET", "/api/external-doc-types");
+    DOC_TYPES = d.doc_types || [];
+    renderDocTypes();
+  } catch (e) { msg("字典加载失败：" + e.message, "error"); }
+}
+function renderDocTypes() {
+  document.getElementById("docTypeBody").innerHTML = DOC_TYPES.map(x =>
+    `<tr><td>${x.id}</td><td><b>${esc(x.code)}</b></td><td>${esc(x.name)}</td>
+      <td>${x.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag off">停用</span>'}</td>
+      <td>${x.default_zone_id || "—"}</td><td class="dim">${esc(x.note || "")}</td>
+      <td><button class="btn secondary sm" onclick="toggleDocType(${x.id})">${x.enabled ? "停用" : "启用"}</button>
+        <button class="btn secondary sm" onclick="deleteDocType(${x.id})">删除</button></td></tr>`
+  ).join("") || '<tr><td colspan="7" class="muted">暂无字典项</td></tr>';
+}
+async function createDocType() {
+  const code = document.getElementById("dtCode").value.trim();
+  const name = document.getElementById("dtName").value.trim();
+  if (!code || !name) { msg("字典编码与名称必填", "error"); return; }
+  const zone = document.getElementById("dtZone").value.trim();
+  try {
+    await api("POST", "/api/external-doc-types", {
+      code, name, enabled: Number(document.getElementById("dtEnabled").value),
+      default_zone_id: zone ? Number(zone) : null, note: "规则配置页手工新增"
+    });
+    msg("字典项已新增"); await loadDocTypes();
+  } catch (e) { msg("新增失败：" + e.message, "error"); }
+}
+async function toggleDocType(id) {
+  const x = DOC_TYPES.find(d => d.id === id); if (!x) return;
+  try {
+    await api("PUT", `/api/external-doc-types/${id}`, {
+      code: x.code, name: x.name, enabled: x.enabled ? 0 : 1,
+      default_zone_id: x.default_zone_id, note: x.note || ""
+    });
+    msg("字典状态已更新"); await loadDocTypes();
+  } catch (e) { msg("更新失败：" + e.message, "error"); }
+}
+async function deleteDocType(id) {
+  if (!confirm("确认删除该字典项？")) return;
+  try {
+    await api("DELETE", `/api/external-doc-types/${id}`);
+    msg("字典项已删除"); await loadDocTypes();
+  } catch (e) { msg("删除失败：" + e.message, "error"); }
+}
+
+/* ── 推荐日志 / 命中率 ──────────────────────────────────────────────── */
+async function loadLogs() {
+  const qs = new URLSearchParams({ page_size: "50" });
+  const asn = document.getElementById("logAsn").value.trim();
+  const action = document.getElementById("logAction").value;
+  const from = document.getElementById("logDateFrom").value;
+  const to = document.getElementById("logDateTo").value;
+  if (asn) qs.set("asn_id", asn);
+  if (action) qs.set("action", action);
+  if (from) qs.set("date_from", from);
+  if (to) qs.set("date_to", to);
+  try {
+    const d = await api("GET", "/api/putaway-recommendations?" + qs);
+    LOGS = d.recommendations || [];
+    renderRates(d.rates || {});
+    renderLogs();
+  } catch (e) { msg("日志加载失败：" + e.message, "error"); }
+}
+function pct(v) { return (Number(v || 0) * 100).toFixed(1) + "%"; }
+function renderRates(r) {
+  const items = [
+    ["日志总数", r.total || 0], ["规则命中率", pct(r.hit_rate)],
+    ["采纳率", pct(r.adopt_rate)], ["驳回 / 改位率", pct(r.reject_rate)],
+    ["仅预览", r.preview || 0]
+  ];
+  document.getElementById("ratesBox").innerHTML = items.map(([k, v]) =>
+    `<span class="rate">${esc(k)}<br><b>${esc(v)}</b></span>`).join("");
+}
+function renderLogs() {
+  document.getElementById("logBody").innerHTML = LOGS.map(x =>
+    `<tr><td>${x.id}</td><td>${x.asn_id} / ${x.asn_line_id}</td>
+      <td>${x.rule_id ? "#" + x.rule_id : '<span class="dim">简版引擎</span>'}</td>
+      <td>${x.hit_priority === null ? "—" : x.hit_priority} / ${x.hit_step === null ? "—" : x.hit_step}</td>
+      <td>${x.action === "adopt" ? '<span class="tag ok">已采纳</span>' :
+           x.action === "reject" ? '<span class="tag off">已驳回</span>' :
+           '<span class="tag off">仅预览</span>'}</td>
+      <td>${x.chosen_location_id || "—"}</td><td>${esc(x.override_reason || "—")}</td>
+      <td>${esc(x.operator || "—")}</td><td class="dim">${esc(x.created_at)}</td>
+      <td><button class="btn secondary sm" onclick="showTopJson(${x.id})">查看 Top-N</button></td></tr>`
+  ).join("") || '<tr><td colspan="10" class="muted">当前过滤条件下无推荐日志</td></tr>';
+}
+function showTopJson(id) {
+  const x = LOGS.find(r => r.id === id); if (!x) return;
+  const rows = jparse(x.top_json, []);
+  alert(`推荐日志 #${id}\n引擎规则 #${x.rule_id || "—"} / 优先级 ${x.hit_priority ?? "—"}\n\n` +
+    (rows.length ? rows.map((r, i) => `${i + 1}. ${r.code} ${r.name || ""} 分数 ${r.score}`).join("\n")
+                 : "（无候选）"));
+}
+
+document.getElementById("setSel").addEventListener("change", e => {
+  CUR_SET = Number(e.target.value); renderSets(); loadRules();
+});
+document.getElementById("typeSel").addEventListener("change", e => {
+  CUR_TYPE = e.target.value; loadRules();
+});
+loadAll();
+</script>
+</body>
+</html>

@@ -15,6 +15,7 @@ import sqlite3
 
 from flask import Flask, g, jsonify, request
 
+import constants as C
 import scope as S
 import putaway_rules as PR
 
@@ -876,6 +877,35 @@ def _migrate_m25(conn):
     )
 
 
+def _migrate_m26(conn):
+    """M26 外部单据类别字典（v3.3 4A 两步法第二步）。
+
+    设计 §8.4：M20 只做自由文本字段，M26 再补可配字典（code / 名称 / 启用 /
+    默认目标储区）。字典**不反写** ``asn.external_doc_type``、不做强制枚举校验：
+    老单据里的自由文本仍然合法，字典只供编辑器与条件组下拉取值使用。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS external_doc_type_dict (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code            TEXT    NOT NULL UNIQUE,
+            name            TEXT    NOT NULL,
+            enabled         INTEGER NOT NULL DEFAULT 1,
+            default_zone_id INTEGER,
+            note            TEXT    NOT NULL DEFAULT '',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_edt_enabled ON external_doc_type_dict(enabled);
+        """
+    )
+    for code, name in C.EXTERNAL_DOC_TYPE_DICT_SEED:
+        conn.execute(
+            "INSERT OR IGNORE INTO external_doc_type_dict (code, name, note) "
+            "VALUES (?, ?, ?)", (code, name, "M26 种子字典，可在规则配置页维护"),
+        )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1598,6 +1628,7 @@ def init_db(path=None):
         _migrate_m23(conn)
         _migrate_m24(conn)
         _migrate_m25(conn)
+        _migrate_m26(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)

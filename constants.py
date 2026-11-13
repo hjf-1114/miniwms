@@ -311,3 +311,20 @@ PUTAWAY_REJECT_LABELS = {
     "NO_CANDIDATE": "无可用货位，待人工处理",
 }
 PUTAWAY_RECOMMEND_ACTIONS = ("preview", "adopt", "reject")
+
+# ── M26 规则配置编辑器与推荐交互（2026-11-13）──
+# 采纳 / 驳回是对一条 preview 日志的后续动作，不新增第二条日志，统计口径才不重复计数。
+PUTAWAY_ACTION_PREVIEW = "preview"
+PUTAWAY_ACTION_ADOPT = "adopt"
+PUTAWAY_ACTION_REJECT = "reject"
+# 「改位必填原因码」：用户绕过推荐货位时必须给出可审计的原因（设计 §14 阶段 F）。
+# 这里只落可选清单，不限制自由文本，避免老单据 / API 直调被卡住。
+PUTAWAY_OVERRIDE_REASONS = (
+    "现场货位已满", "客户指定货位", "设备临时故障", "批次隔离要求", "人工判断更优", "其他",
+)
+# external_doc_type 字典（v3.3 4A 两步法的第二步）：只是可选值与默认储区配置，
+# ASN/DN 上的 external_doc_type 仍是自由文本字段，不作外键或强制枚举校验。
+EXTERNAL_DOC_TYPE_DICT_SEED = (
+    ("PO", "采购订单"), ("SO", "销售订单"), ("EDI", "EDI 推送单"),
+    ("RET", "销退回仓"), ("TR", "调拨入仓"), ("OTH", "其他外部单据"),
+)

@@ -60,7 +60,7 @@
 - M23 指定客户专属库存 + 销退口径（designated_customer_id 只在明细行 / 出库校验规则 / 销退外部批次号）✅ **2026-11-09 已交付**：指定客户贯穿单据→批次→明细→流水、销退外部批次号必填且允许 `/` 显式占位、出库校验只落纯规则、质量状态两字段独立；375 测全绿，详见文末同名章节
 - M24 库存转移单（只改批次信息、数量净零 / 制单→分配库存（真实占用可用库存）→审核生效终态 / 未分配可关闭删除 / 取消分配 / 冲销留痕）✅ **2026-11-09 已交付**：3 张表 + 双层 `allocated_qty` 真实占用 + 净零成对流水 + 字段级变更文档 + 7 类统一搬迁 + 冲销往返，415 测全绿、E2E 35/35，详见文末同名章节
 - M25 上架推荐规则引擎（13 维条件组 + 多条规则 priority + fallback 链 + **配置化硬约束** + 可解释 Top-N）✅ **2026-11-10 已交付**：3 张表 + 规则引擎 + 11 行种子（启用 7 行）+ 规则配置 API + 推荐分发 + 上架过账按规则行 limits 拦截；**承接 M20 剩余移来的混放 / 冷链 / 危险拦截**。447 测全绿、E2E 34/34，详见文末同名章节
-- M26 规则配置与推荐交互（条件组编辑器 + fallback 链拖拽 + 推荐弹窗一键采纳 + 推荐日志；13 维起步、预留扩展位）**继续安排**
+- M26 规则配置与推荐交互（条件组编辑器 + fallback 链拖拽 + 推荐弹窗一键采纳 + 推荐日志；13 维起步、预留扩展位）✅ **2026-11-13 已交付**：`putaway_rules.html` 编辑器页 + 采纳/驳回端点 + 拖拽排序 + 外部单据类别字典 + 命中率统计 + 可复跑 E2E，460 测全绿、E2E 23/23，详见文末同名章节
 - M27 补货预警（min_stock 对比 + 拣货位缺料提示）— **降级暂缓**，编号保留不回收
 - M28 报表统计（按货主的收发汇总、周转率、库位利用率）— 归入领域蓝图第 4 层「经营报表」
 - M29 外部对接 API（X-API-Key 鉴权 + 出入库单据外部写入端点 + 数据回传 webhook + 文档）— **降级暂缓**，编号保留不回收
@@ -1566,6 +1566,107 @@ M20 原有字段（`recommendations / rejected / candidate_count / bound_locatio
 - M36 复核按用户 4B 修订：独立复核单 + 作业页 + 「登记差异」只留痕，
   不生成调整单、不改库存；数量纠偏仍走 M22 调整单。
 - PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交，不与代码提交混在一起。
+
+---
+
+## M26 规则配置编辑器与推荐交互（2026-11-13）✅
+
+### 目标与口径
+
+用户 2026-11-13 指令「根据规划持续完善系统，如果有测试数据也写到系统里面，方便后续排查和查询」，
+按 v4 实施顺序接 M25 之后的**下一棒 M26**（编号不动，其后 M35 → M36）。
+设计依据 `docs/PUTAWAY_RECOMMENDATION.md` §14 阶段 F：多规则增删改排序、试算面板可用、
+**改位必填原因码**、E2E 覆盖「推荐 → 采纳 → 上架」；以及 §8.4 v3.3 4A 两步法第二步
+（M20 只做自由文本 `external_doc_type`，M26 补可配字典）。
+
+本轮不做：出库分配逻辑（M35）、推荐日志货主隔离、打印、报表。M25 的过账拦截链路一行未改。
+
+### 交付清单
+
+| 层 | 文件 | 内容 |
+| --- | --- | --- |
+| DDL | `main.py::_migrate_m26()` | `external_doc_type_dict`（code / name / enabled / default_zone_id / note）+ 1 索引；6 条种子 `INSERT OR IGNORE`，老库零迁移成本 |
+| 常量 | `constants.py` | `PUTAWAY_ACTION_*` 三态动作、`PUTAWAY_OVERRIDE_REASONS` 6 条改位原因码清单、`EXTERNAL_DOC_TYPE_DICT_SEED` |
+| 引擎 | `putaway_rules.py` | `set_recommendation_action()` / `recommendation_rates()` / `reorder_rules()` / `delete_set()` / 字典 CRUD 五个函数 |
+| API | `routes_putaway_rules.py` | 新增 5 类端点；`_run()` 支持 `NOT_FOUND → 404`；日志查询扩过滤与 `rates` |
+| 隔离 | `scope.py` | `external_doc_type_dict` 归入 `PUBLIC_TABLES`（控制面配置，不按货主隔离） |
+| 页面 | `web_app/putaway_rules.html`（新增） | 规则配置编辑器：策略包 / 规则类型 / 13 维条件组 / fallback 链 / limits 三态 / 评分 / 试算 / 字典 / 日志统计 |
+| 页面 | `web_app/asn_putaway.html` | 一键采纳写日志、驳回与改位原因码、可解释字段上屏 |
+| 导航 | `web_app/js/layout.js` | 三级导航 23 → **24 页**，「仓储作业 → 入库单据与作业 → 上架规则配置」 |
+| 测试 | `tests/test_m26_rule_editor.py`（新增） | 13 例：字典 CRUD / 字符串 `"0"` 兼容 / 采纳驳回校验 / 同一行更新 / 404 / rates 与过滤 / 排序 UNIQUE / 删包保护 / 试算与字典回归 |
+| E2E | `tools/e2e_m26.py`（新增） | 可复跑 Playwright 回归，23 项断言，独立端口 5118 + 临时库，绝不碰 5100 demo |
+| 演示数据 | `tools/seed_module_demo.py` | 从「未跟踪」纳入版本管理，新增 M26 模块（见下） |
+
+### 数据模型与配置语义
+
+- **不改 M25 三表结构**。`putaway_recommendation.action` 的 `preview → adopt/reject` 是**同一行 UPDATE**，
+  不插入第二条日志：命中率 / 采纳率 / 驳回率按日志最终状态统计，重复点击不会把一次推荐算成多次动作。
+- `external_doc_type_dict` 只是**可选值清单 + 默认目标储区**：`asn.external_doc_type` 仍是自由文本，
+  不建外键、不做强制枚举校验；字典不反写单据，避免老单据与 API 直调被卡住。
+- `limits` 编辑器以当前规则行的原 JSON 为基底，只覆盖 `enabled` / `recommend_only` 两个键，
+  保证种子里的 `loc_types` / `allowed_zone_codes` / `temp_class_from_product` 等参数不被抹掉。
+- `reorder_rules()` 先把目标行 `priority` 挪到 `-1000-id` 负区间，再写目标值：
+  `UNIQUE(rule_set_id, rule_type, priority, name)` 会让逐行 UPDATE 在中间态撞键，
+  整个过程复用 `_run()` 的单个 `BEGIN IMMEDIATE` 事务。
+
+### API（新增 / 扩展）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/putaway-recommendations/<id>/action` | `adopt` 必填整数 `chosen_location_id`；`reject` 必填 `override_reason`；不存在 id → 404 |
+| POST | `/api/putaway-rules/reorder` | `{items:[{id,priority}]}` 批量写优先级，返回 `updated` |
+| DELETE | `/api/putaway-rule-sets/<id>` | 默认策略包 / 含规则行 → 400；空包 → 200 |
+| GET/POST | `/api/external-doc-types` | 列表另带 `override_reasons`；新建统一大写 code、重复 400 |
+| PUT/DELETE | `/api/external-doc-types/<id>` | 修改（兼容浏览器 select 的 `"0"` / `"1"` 字符串）/ 删除 |
+| GET | `/api/putaway-recommendations` | 扩 `asn_line_id` / `date_from` / `date_to` / `has_hit`，新增 `rates`（total / hit / preview / adopt / reject 与三个比率）；M25 的 `stats` 保持原样 |
+
+### 页面与交互（PRD 素材 · 追加页 #26）
+
+- **规则配置页**：顶部策略包下拉 + 新建 / 删除 + 规则类型切换（上架推荐 / 出库分配，后者 M35 复用）；
+  规则行表展示优先级、条件组摘要、fallback 链、已启用硬约束、状态，支持拖拽行首手柄与 ↑/↓ 排序、
+  编辑 / 启停 / 删除。编辑器四段：① 13 维条件组（布尔维度是/否下拉、多值逗号分隔、留空通配）、
+  ② fallback 链增删与上下移（每步附加参数保留原 JSON）、③ 8 项 limits 三态勾选矩阵（显示拒绝码）、
+  ④ 9 条 R07–R15 权重输入（留空 / 0 = 不叠加，保持 M20 排序口径）；另有只读试算面板。
+  下方是外部单据类别字典维护表、推荐日志与 5 张统计卡（日志总数 / 规则命中率 / 采纳率 /
+  驳回改位率 / 仅预览），日志支持 ASN / 动作 / 日期区间过滤并查看 Top-N 明细。
+- **上架作业页**：推荐卡片顶部展示 `engine / rule_set / hit_rule / hit_priority / hit_step /
+  recommendation_id` 可解释字段；「一键采纳」填目标货位并写 `adopt` 日志；「驳回本次推荐」与
+  **人工改位**（有推荐候选却选了非采纳货位）都要求先选 / 填原因码，写 `reject` 日志后再过账。
+  简版引擎（零启用规则，无日志 id）只提示、不阻断作业；过账接口本身保持 M25 原样。
+
+### 演示数据（用户「写到系统里方便排查」）
+
+`tools/seed_module_demo.py` 新增 `m26_rule_editor_data()`：通过**真实 API**（不直接写业务表）补
+① 一条演示字典项（`DEMO-EDI`，带默认储区）、② 一条停用示例规则行（13 维条件组示例，不参与拦截）、
+③ 把已有 preview 日志按哨兵标记为 `adopt` / `reject`（带原因码与操作人），使统计卡与日志页
+打开即有可查数据；每步可重复执行、不 `--reset`、不删现有数据。执行前已备份 `miniwms.db`
+到 `miniwms_backup_20261113.db`（该文件被 `.gitignore` 忽略，不入库）。
+
+### 验证
+
+- 全量 unittest **460 例全绿**（M25 447 + M26 新增 13），`test_m26_rule_editor.py` 单跑 13/13。
+- 真实 Chrome E2E `tools/e2e_m26.py` **23/23**（端口 5118 / 5119 两次复跑）：编辑器渲染、13 维 / 8 项 /
+  9 条控件、试算命中、规则行增→删、拖拽排序落库、字典 6→7、推荐日志 id、上架页可解释字段、
+  一键采纳写 `adopt`、统计卡与日志表格、无 JS 错误、无业务 4xx。
+- 前端 `node --check` 校验 `putaway_rules.html` / `asn_putaway.html` 内联脚本与 `layout.js` 全部通过。
+- 演示库补数后 `I1 / I2 / I3` 一致性体检保持 OK（播种脚本 `consistency()`）。
+
+### 踩坑与修正（真实调试记录）
+
+- `jparse()` 原本只接受 JSON 字符串；编辑器「新增规则行」传入的是**数组对象**，
+  `JSON.parse` 抛错后静默回退成 `[]`，导致 fallback 链空白。E2E 第 5 项断言抓到，
+  改为「已是对象/数组则直接返回」后 23/23。
+- `_migrate_m26()` 用到 `C.EXTERNAL_DOC_TYPE_DICT_SEED`，`main.py` 原先没有 `import constants as C`，
+  补上顶层导入（constants 不反向 import main，无循环）。
+- 浏览器 select 提交的 `enabled: "0"` 用 `bool()` 会误判为真，字典端点统一走 `_enabled_flag()` 兼容。
+
+### 已知边界 / 后续里程碑
+
+- 推荐日志仍属控制面统计，**未做货主隔离**；若 M35 或报表需要按货主统计，须补 `owner_id` 列并注入 `owner_where()`。
+- `abc_class` 与 R12 无数据源、`rule_type='outbound'` 仍只落配置，**M35 才接入出库分配逻辑**。
+- `external_doc_type` 字典不反写单据字段、不做强制校验；`default_zone_id` 目前只是配置项，
+  尚未接入上架推荐的条件组自动填充。
+- PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交；M26 追加页 #26 单独提交，不与代码提交混在一起。
 
 ---
 

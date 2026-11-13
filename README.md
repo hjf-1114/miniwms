@@ -21,7 +21,7 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
 货主/物料/库位/收货/出库/移库/库存等多个管理页，创建、搜索、启停、删除与
 收货/上架/拣货/发货/移库/账目核对均直接调用后端 API。
-也可打开 `http://localhost:5100/app.html` 进入**工作台**：左侧为**多层内嵌导航**（3 个一级域 / 7 个二级分类 / 23 个页面；默认只展开当前页所在分支，其余折叠，手动展开状态记忆在 localStorage），菜单区可独立上下滚动，顶部「收起导航 / 展开导航」按钮可伸缩侧栏（状态同样记忆）+
+也可打开 `http://localhost:5100/app.html` 进入**工作台**：左侧为**多层内嵌导航**（3 个一级域 / 7 个二级分类 / 24 个页面；默认只展开当前页所在分支，其余折叠，手动展开状态记忆在 localStorage），菜单区可独立上下滚动，顶部「收起导航 / 展开导航」按钮可伸缩侧栏（状态同样记忆）+
 多标签页，多个页面在同一窗口并存（工作台自身不会被嵌套进标签）。验收、上架各有独立作业页，可同时打开多张收货单的标签。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
@@ -123,7 +123,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - `constants.parse_doc_flags()` 集中解析，兼容整数 / 布尔 / 字符串 `"0"`/`"1"`；非法值或超长返回 400
   - **仅记录、不校验（蓝图 v3 口径，M20→M25 过渡期）**：`receive()` / `putaway()` 完全不因这些标识拦截，冷链 + 危险单据仍可上架到常温货位；混放 / 温区 / 危化拦截将在 M25 由**可配置上架规则**决定、M26 提供条件组编辑器，代码中无 hardcoded 红线。**（M25 起过渡期已结束：冷链 / 危险 / 不合格按命中规则行 `limits` 拦截，见下方 M25 章；本行保留 M20 时点原文用于追溯）**
 - **Web demo**（`web_app/`）
-  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/盘点方案/库存调整/批次/批次库存/库存/角色/用户/货主仓库关系 多个管理页，零依赖原生 JS，直接调用后端 API
+  - 首页导航 + 货主/物料/库位/储区/客户/供应商/承运商/仓库/收货/验收作业/上架作业/出库/移库/盘点/盘点方案/库存调整/批次/批次库存/库存/角色/用户/货主仓库关系/上架规则配置 多个管理页，零依赖原生 JS，直接调用后端 API
   - **工作台（`/app.html`）**：默认展开的左侧垂直一级菜单 + 内嵌可折叠子菜单 + 多标签页，顶部按钮收起/展开导航并记忆状态；单个页面以 iframe 标签并存；单据「明细」按钮与验收/上架作业在工作台内以新标签打开，独立打开页面时回退为新窗口；含防嵌套守卫，工作台不会被套进自己的标签；**顶栏账号区**显示当前登录账号与角色并提供「退出登录」（清除 token 与用户摘要后由顶层窗口跳登录页，避免登录页被嵌进 iframe），未登录时显示「登录」入口（详见 `app.html`）
 
 ### 架构增强：仓库 / 货主双维数据隔离（2026-11-05，非里程碑，不占用 M 编号）
@@ -309,10 +309,35 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **边界**：无编辑器页面（M26）、推荐日志未做货主隔离、`abc_class` 与 R12 暂无数据源、
   `rule_type='outbound'` 只落表与 CRUD（M35 才接入）；详见 `DEVELOPMENT.md` M25 章。
 
+### M26 规则配置编辑器与推荐交互（2026-11-13 里程碑 ✅）
+
+> 用户 2026-11-10 定稿实施顺序 `M25 → M26 → M35 → M36` 的第二棒；设计 §14 阶段 F 验收：
+> 多规则增删改排序、试算面板可用、改位必填原因码、E2E 覆盖推荐 → 采纳 → 上架。
+
+- **编辑器页** `web_app/putaway_rules.html`（三级导航 23 → 24 页，路径「仓储作业 → 入库单据与作业 → 上架规则配置」）：
+  策略包切换 / 新建 / 删除、规则类型（上架 / 出库）切换、**13 维条件组**（布尔维度是/否、多值逗号分隔、留空通配）、
+  fallback 链增删与上下移（附加参数保留原 JSON）、8 项 limits 三态勾选、9 条 R07–R15 扩展评分权重、
+  行拖拽与 ↑/↓ 排序、规则行增删改与启停、只读条件组试算面板。
+- **后端增量**（`routes_putaway_rules.py` / `putaway_rules.py` / `main.py::_migrate_m26()`）：
+  `POST /api/putaway-rules/reorder` 批量优先级（先挪负区间再写目标值，绕开 UNIQUE 中间态）、
+  `DELETE /api/putaway-rule-sets/<id>`（默认包 / 含规则行禁删）、
+  `POST /api/putaway-recommendations/<id>/action` 采纳 / 驳回同一条日志（不重复计数）、
+  日志查询扩 `asn_line_id` / `date_from` / `date_to` / `has_hit` 并返回 `rates`（命中率 / 采纳率 / 驳回率）、
+  `external_doc_type_dict` 可配字典 6 条种子 + CRUD（v3.3 4A 两步法第二步，字段仍是自由文本、不做强制枚举）。
+- **推荐交互**（`asn_putaway.html`）：一键采纳写 `adopt` 日志、驳回必填原因码、
+  **人工改位必留痕**（有推荐候选却选了非采纳货位时先写 `reject` 再过账）；
+  顶部展示 `engine / rule_set / hit_rule / hit_priority / hit_step / recommendation_id` 可解释字段，便于按日志排查。
+  后端过账接口保持 M25 原样；简版引擎无日志 id 时只提示、不阻断作业。
+- **演示与回归**：`tools/seed_module_demo.py` 纳入版本管理并新增 M26 模块，通过真实 API 补字典项、
+  示例规则行与 adopt/reject 日志；`tools/e2e_m26.py` 是可复跑的 Playwright 回归（独立端口 + 临时库）。
+- **验证**：全量 unittest **460 绿**（M26 新增 13 例）、E2E **23/23**；M25 八组基线无回归。
+- **边界**：推荐日志仍属控制面统计、未做货主隔离（如需按货主统计须补 `owner_id` 列并注入 `owner_where()`）；
+  `abc_class` / R12 无数据源；`rule_type='outbound'` 仍只落配置、M35 才接入分配逻辑；
+  字典不反写单据 `external_doc_type` 字段。
+
 ### 规划中（见 DEVELOPMENT.md）
 
-- M25 上架推荐规则引擎 ✅ **已交付 2026-11-10**（见上方 M25 章）；M26 规则配置与推荐交互
-  （条件组编辑器 + fallback 链拖拽 + 推荐采纳/驳回 + 日志统计，13 维起步、预留扩展位）— **继续安排**
+- M25 上架推荐规则引擎 ✅ **已交付 2026-11-10**；M26 规则配置与推荐交互 ✅ **已交付 2026-11-13**（见上方两章）
 - **主流程优先**：M35 出库波次分配 + FEFO → M36 独立复核单与作业页（用户 4B：登记差异只留痕，
   不生成调整单、不改库存）；M31–M34 基础资料新域按用户要求**后移**
 - 报表统计（M28，归入蓝图第 4 层经营报表）
@@ -324,7 +349,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 > 完整设计与口径见 `docs/PUTAWAY_RECOMMENDATION.md`（v3.3，2026-11-05 定稿）。
 > **5 层领域蓝图、现状对照、实施顺序、硬约束配置化与打印方案定稿**见 `docs/DOMAIN_BLUEPRINT.md`（v3，2026-11-05）。
-> 实施顺序（2026-11-10 用户 1A 修订，编号一个不动）：M1–M25 已交付 → **M26 → M35 → M36**
+> 实施顺序（2026-11-10 用户 1A 修订，编号一个不动）：M1–M26 已交付 → **M35 → M36**
 > 先把出入库 / 库存主流程跑完，M31–M34 基础资料新域后移。
 > **硬约束全部配置化**：混放 / 冷链 / 危险由 M25/M26 的多条上架规则（优先级 + 单号 / 产品信息条件组）决定，
 > 不写死、不保留系统级 hardcoded 红线；M20→M25 过渡期 `putaway()` 不拦截、只靠推荐页提示，
@@ -419,7 +444,12 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | GET/POST | `/api/putaway-rules` | M25 规则行列表（可按 `set_id` / `rule_type` 过滤）/ 新建；校验条件维度与寻址类型 |
 | PUT/DELETE | `/api/putaway-rules/<id>` | M25 修改 / 删除规则行（**删除即不再拦截**） |
 | POST | `/api/putaway-rules/trial` | M25 条件组只读试算，不写库、不查规则表 |
-| GET | `/api/putaway-recommendations` | M25 推荐日志分页 + action 统计，支持 `asn_id` / `action` / `rule_id` |
+| GET | `/api/putaway-recommendations` | M25 推荐日志分页 + action 统计；M26 扩 `asn_line_id` / `date_from` / `date_to` / `has_hit` 与 `rates` 命中率 |
+| POST | `/api/putaway-recommendations/<id>/action` | M26 采纳 / 驳回（改位必填原因码，同一条日志更新、不重复计数） |
+| POST | `/api/putaway-rules/reorder` | M26 拖拽排序批量写 priority |
+| DELETE | `/api/putaway-rule-sets/<id>` | M26 删除空策略包（默认包 / 含规则行禁删） |
+| GET/POST | `/api/external-doc-types` | M26 外部单据类别字典列表（含改位原因码清单）/ 新建 |
+| PUT/DELETE | `/api/external-doc-types/<id>` | M26 字典修改 / 删除 |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`、`default_zone_id` 推荐储区） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页（返回 `default_zone_name`） |
@@ -451,7 +481,11 @@ adjustment_service.py  M22 库存调整单服务层：制单/审核过账/取消
 inventory_transfer_service.py M24 库存转移单服务层：7 类统一为「源维度→目标维度」净零搬迁、双层分配占用/释放、变更文档、冲销
 stocktake_service.py  M22 盘点方案服务层：生效配置解析、范围条件组编译、动碰时间窗与交易类型、盘点行试算
 putaway_service.py    M20 简版上架推荐（零启用规则时的兜底）+ M25 分发器：有启用规则走规则引擎
-putaway_rules.py      M25 上架规则引擎：13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 评分 / 可解释输出 / 推荐日志 / 过账校验 / 配置 CRUD / 11 行种子
+putaway_rules.py      M25 上架规则引擎：13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 评分 / 可解释输出 / 推荐日志 / 过账校验 / 配置 CRUD / 11 行种子；M26 追加日志动作 / 统计 / 排序 / 字典 CRUD
+routes_putaway_rules.py M25 规则配置 Blueprint；M26 扩采纳驳回 / 排序 / 删包 / 字典 5 类端点
+web_app/putaway_rules.html M26 规则配置编辑器（13 维条件组 / fallback 链 / limits 三态 / 试算 / 字典 / 日志统计）
+tools/e2e_m26.py      M26 可复跑 Playwright 端到端回归（独立端口 + 临时库）
+tools/seed_module_demo.py M17–M26 模块演示数据幂等播种（走真实 API，不直接写业务表）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则；M23 销退外部批次号校验）
 reservation_rules.py  M23 规则层（纯函数）：指定客户出库校验规则表、先专属后通用建议、质量状态转换矩阵；不接路由

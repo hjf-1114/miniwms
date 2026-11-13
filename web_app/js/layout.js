@@ -2,7 +2,7 @@
    纯原生，零依赖。独立页面提供 <aside class="sidebar" id="sidebar"></aside> 即可；
    工作台 app.html 通过 window.MWS_NAV_TOOLS.mount() 复用同一份树与交互，只把叶子点击换成开标签。
 
-   结构：一级 3 / 二级 7 / 三级 23；渲染器递归，后续加到第 4 层无需改代码。
+   结构：一级 3 / 二级 7 / 三级 24；渲染器递归，后续加到第 4 层无需改代码。
    展示策略：默认只展开「当前页所在分支」，其余折叠；用户手动展开/收起的节点记在 localStorage。 */
 (function () {
   const NAV = [
@@ -27,6 +27,7 @@
         { href: "/asns.html", label: "收货", ico: "📥" },
         { href: "/asn_receive.html", label: "验收作业", ico: "✅" },
         { href: "/asn_putaway.html", label: "上架作业", ico: "🗳️" },
+        { href: "/putaway_rules.html", label: "上架规则配置", ico: "⚙️" },
       ]},
       { label: "出库单据", ico: "📤", children: [
         { href: "/dns.html", label: "出库", ico: "📤" },

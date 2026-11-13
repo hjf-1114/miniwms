@@ -37,6 +37,8 @@ PUBLIC_TABLES = (
     "transfer_line", "putaway_rule_set", "putaway_rule",
     # M25 推荐日志：与规则配置同属控制面统计，按 asn_id / action 过滤，不注入货主条件
     "putaway_recommendation",
+    # M26 外部单据类别字典：全局可配配置，不按货主隔离
+    "external_doc_type_dict",
 )
 
 # 下列路径不参与数据权限门禁（登录前 / 上下文自检）

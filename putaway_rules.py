@@ -867,3 +867,139 @@ def seed_rules(conn):
              "M25 种子规则；limits 检查项可在 M26 编辑器启用"),
         )
     return sid
+
+
+# ── M26 规则配置编辑器：推荐动作 / 统计 / 排序 / 外部单据字典 ────────────
+def set_recommendation_action(db, rid, action, chosen_location_id=None,
+                              override_reason="", operator=""):
+    """对一条 preview 日志登记采纳 / 驳回（改位），**不新增第二条日志**。
+
+    命中率 / 采纳率 / 驳回率都按日志行的最终 action 统计；重复点击只更新同一行，
+    因此不会把一次推荐算成多次动作。驳回必须带原因码（设计 §14 阶段 F）。
+    """
+    if action not in (C.PUTAWAY_ACTION_ADOPT, C.PUTAWAY_ACTION_REJECT):
+        raise RuleError(f"action 只能是 adopt / reject：{action}")
+    row = db.execute(
+        "SELECT * FROM putaway_recommendation WHERE id = ?", (rid,)).fetchone()
+    if row is None:
+        raise RuleError("推荐日志不存在", "NOT_FOUND")
+    reason = str(override_reason or "").strip()
+    if action == C.PUTAWAY_ACTION_ADOPT:
+        try:
+            chosen = int(chosen_location_id)
+        except (TypeError, ValueError):
+            raise RuleError("采纳推荐必须给出整数 chosen_location_id")
+    else:
+        chosen = row["chosen_location_id"]
+        if not reason:
+            raise RuleError("驳回推荐 / 人工改位必须填写 override_reason 原因码")
+    db.execute(
+        "UPDATE putaway_recommendation SET action=?, chosen_location_id=?, "
+        "operator=?, override_reason=? WHERE id=?",
+        (action, chosen, str(operator or ""), reason, rid),
+    )
+    return _dict(db.execute(
+        "SELECT * FROM putaway_recommendation WHERE id = ?", (rid,)).fetchone())
+
+
+def recommendation_rates(db, where="", params=()):
+    """命中率（有 rule_id）/ 采纳率 / 驳回率；where 与日志列表保持同一过滤口径。"""
+    tail = "FROM putaway_recommendation " + where
+    rows = db.execute(
+        "SELECT action, COUNT(*) AS n, "
+        "SUM(CASE WHEN rule_id IS NOT NULL AND rule_id > 0 THEN 1 ELSE 0 END) AS hit "
+        + tail + " GROUP BY action", params).fetchall()
+    counts = {r["action"]: r["n"] for r in rows}
+    total = sum(counts.values())
+    hit = sum(int(r["hit"] or 0) for r in rows)
+    adopt, reject = counts.get("adopt", 0), counts.get("reject", 0)
+    return {
+        "total": total, "hit": hit, "preview": counts.get("preview", 0),
+        "adopt": adopt, "reject": reject,
+        "hit_rate": round(hit / total, 4) if total else 0.0,
+        "adopt_rate": round(adopt / total, 4) if total else 0.0,
+        "reject_rate": round(reject / total, 4) if total else 0.0,
+    }
+
+
+def reorder_rules(db, items):
+    """按编辑器拖拽结果批量写 priority（数组顺序即命中顺序）。
+
+    ``UNIQUE(rule_set_id, rule_type, priority, name)`` 会让逐行 UPDATE 在中间态撞键，
+    故先把目标行统一挪到互不冲突的负区间，再写入目标值；整个过程在同一
+    ``BEGIN IMMEDIATE`` 事务内完成。
+    """
+    if not isinstance(items, list) or not items:
+        raise RuleError("reorder 需要非空数组 [{id, priority}]")
+    parsed = []
+    for it in items:
+        if not isinstance(it, dict):
+            raise RuleError("reorder 数组元素必须是对象")
+        try:
+            parsed.append((int(it["id"]), int(it["priority"])))
+        except (KeyError, TypeError, ValueError):
+            raise RuleError("reorder 每项需整数 id / priority")
+    ids = [p[0] for p in parsed]
+    marks = ",".join("?" * len(ids))
+    found = db.execute(
+        f"SELECT COUNT(*) AS n FROM putaway_rule WHERE id IN ({marks})", ids
+    ).fetchone()["n"]
+    if found != len(set(ids)):
+        raise RuleError("reorder 含不存在的规则行 id")
+    for rid, _ in parsed:
+        db.execute("UPDATE putaway_rule SET priority = ? WHERE id = ?",
+                   (-1000 - rid, rid))
+    for rid, priority in parsed:
+        db.execute("UPDATE putaway_rule SET priority = ? WHERE id = ?",
+                   (priority, rid))
+    return len(parsed)
+
+
+def delete_set(db, sid):
+    """默认策略包与含规则行的策略包不允许删除（删光规则行才会退回 legacy）。"""
+    row = db.execute(
+        "SELECT code FROM putaway_rule_set WHERE id = ?", (sid,)).fetchone()
+    if row is None:
+        raise RuleError("策略包不存在", "NOT_FOUND")
+    if row["code"] == C.RULE_SET_DEFAULT_CODE:
+        raise RuleError("系统默认策略包不可删除，可在其中停用 / 删除规则行")
+    n = db.execute(
+        "SELECT COUNT(*) AS n FROM putaway_rule WHERE rule_set_id = ?", (sid,)
+    ).fetchone()["n"]
+    if n:
+        raise RuleError(f"策略包下仍有 {n} 条规则行，请先删除规则行")
+    db.execute("DELETE FROM putaway_rule_set WHERE id = ?", (sid,))
+    return True
+
+
+def list_doc_types(db):
+    return _list(db.execute(
+        "SELECT * FROM external_doc_type_dict ORDER BY enabled DESC, code").fetchall())
+
+
+def save_doc_type(db, payload):
+    code = str(payload.get("code") or "").strip().upper()
+    name = str(payload.get("name") or "").strip()
+    if not code or not name:
+        raise RuleError("字典编码与名称必填")
+    if len(code) > C.EXTERNAL_DOC_TYPE_MAXLEN:
+        raise RuleError(f"字典编码最长 {C.EXTERNAL_DOC_TYPE_MAXLEN} 字符")
+    enabled = 1 if payload.get("enabled", 1) else 0
+    zone = payload.get("default_zone_id") or None
+    note = str(payload.get("note") or "")
+    if payload.get("id"):
+        db.execute(
+            "UPDATE external_doc_type_dict SET code=?, name=?, enabled=?, "
+            "default_zone_id=?, note=?, updated_at=datetime('now','localtime') "
+            "WHERE id=?", (code, name, enabled, zone, note, int(payload["id"])))
+        return int(payload["id"])
+    cur = db.execute(
+        "INSERT INTO external_doc_type_dict "
+        "(code, name, enabled, default_zone_id, note) VALUES (?, ?, ?, ?, ?)",
+        (code, name, enabled, zone, note))
+    return cur.lastrowid
+
+
+def delete_doc_type(db, tid):
+    db.execute("DELETE FROM external_doc_type_dict WHERE id = ?", (int(tid),))
+    return True
