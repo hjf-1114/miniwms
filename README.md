@@ -29,8 +29,19 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 
 ```bash
 python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货全链路
+python tools/seed_module_demo.py    # 再补 M17–M26 各模块可查数据（幂等、走真实 API，不覆盖现有数据）
 python main.py                      # 浏览器打开 http://localhost:5100 即可操作
 ```
+
+排查演示数据时用只读盘点，不会写库：
+
+```bash
+python tools/seed_module_demo.py --check   # 各模块表行数 + /api/stock/reconcile 与 batch-reconcile 一致性体检
+cp miniwms.db miniwms_backup_$(date +%Y%m%d).db   # 改动前先备份
+```
+
+> `miniwms.db` 及备份文件被 `.gitignore`（`*.db`）忽略，**不入库**；换机器或重建库后按上面两条命令即可复现同一套演示数据。
+> 2026-11-13 播种前的备份为 `miniwms_backup_20261113.db`（仅本地）。
 
 > 用户与角色管理（M9）已内置：默认管理员账号 **admin / admin123**（首次使用请到「系统管理 → 用户」修改密码）。
 > 受保护页面（角色/用户）需先访问 `http://localhost:5100/login.html` 登录，令牌存于浏览器 localStorage。
@@ -330,7 +341,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
   后端过账接口保持 M25 原样；简版引擎无日志 id 时只提示、不阻断作业。
 - **演示与回归**：`tools/seed_module_demo.py` 纳入版本管理并新增 M26 模块，通过真实 API 补字典项、
   示例规则行与 adopt/reject 日志；`tools/e2e_m26.py` 是可复跑的 Playwright 回归（独立端口 + 临时库）。
-- **验证**：全量 unittest **460 绿**（M26 新增 13 例）、E2E **23/23**；M25 八组基线无回归。
+- **验证**：全量 unittest **460 绿**（M26 新增 13 例，M25 447 例历史回归全绿）、真实 Chrome E2E
+  `tools/e2e_m26.py` **23/23**（端口 5118 / 5119 两次复跑）；历史里程碑 E2E 脚本未入库，本轮未复跑。
 - **边界**：推荐日志仍属控制面统计、未做货主隔离（如需按货主统计须补 `owner_id` 列并注入 `owner_where()`）；
   `abc_class` / R12 无数据源；`rule_type='outbound'` 仍只落配置、M35 才接入分配逻辑；
   字典不反写单据 `external_doc_type` 字段。
