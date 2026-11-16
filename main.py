@@ -1211,6 +1211,35 @@ def _migrate_m38(conn):
         conn.execute("ALTER TABLE dn ADD COLUMN origin_parent_id INTEGER NOT NULL DEFAULT 0")
 
 
+def _migrate_m41(conn):
+    """M41 打印模板配置：节点模板表 + 每节点默认模板（幂等）。
+
+    只存模板配置，不碰业务单据；每个节点可挂多模板、只有一个 is_active。
+    用户删光某节点模板后不再复活，渲染时由 print_service.default_layout() 兜底。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS print_template (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            node         TEXT    NOT NULL,
+            code         TEXT    NOT NULL UNIQUE,
+            name         TEXT    NOT NULL,
+            version      TEXT    NOT NULL DEFAULT '1.0',
+            is_active    INTEGER NOT NULL DEFAULT 0,
+            layout_json  TEXT    NOT NULL DEFAULT '{}',
+            field_map    TEXT    NOT NULL DEFAULT '{}',
+            note         TEXT    NOT NULL DEFAULT '',
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_printt_node   ON print_template(node);
+        CREATE INDEX IF NOT EXISTS idx_printt_active ON print_template(node, is_active);
+        """
+    )
+    from print_service import seed_templates
+    seed_templates(conn)
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1938,6 +1967,7 @@ def init_db(path=None):
         _migrate_m36(conn)
         _migrate_m37(conn)
         _migrate_m38(conn)
+        _migrate_m41(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -1987,6 +2017,7 @@ else:
     from routes_dn_order import dn_order_bp  # noqa: E402
     from routes_gsp import gsp_bp  # noqa: E402  M39 GSP 合规报表（纯只读）
     from routes_workload import workload_bp  # noqa: E402  M40 工作量统计（纯只读）
+    from routes_print import print_bp  # noqa: E402  M41 打印模板 + PDF/预览
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2018,3 +2049,4 @@ else:
     app.register_blueprint(dn_order_bp)
     app.register_blueprint(gsp_bp)
     app.register_blueprint(workload_bp)
+    app.register_blueprint(print_bp)

@@ -151,6 +151,7 @@ async function load() {
         <td class="muted">${esc(d.created_at)}</td>
         <td>
           <button class="btn secondary sm" onclick="openDnDetail(${d.id})">明细</button>
+          <button class="btn secondary sm" onclick="openWorkTab('打印发货单','/print_preview.html?node=ship&source=dn&doc_id=${d.id}')">打印</button>
           ${d.status === "open" ? `<button class="btn danger sm" onclick="cancelDn(${d.id})">取消</button>` : ""}
         </td>
       </tr>`).join("");

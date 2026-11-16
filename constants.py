@@ -648,3 +648,73 @@ WORKLOAD_PAGE_SIZE_MAX = 200
 # 权限码：沿用 M24–M39 口径，只落常量不挂装饰器（Q08 统一处置）
 WL_PERM_VIEW = "workload:view"
 WL_PERMISSIONS = (WL_PERM_VIEW,)
+
+# ── M41 打印模板配置 + PDF 预览与内容编辑（方案 v2）──────────────────────
+# 细节未拍板项登记 OPEN_QUESTIONS Q38–Q40，按下列默认实现，答复后以答复为准。
+# 零安装：系统 Chrome headless 出 PDF；预览页临时改字段只作用于本次打印件，不回写业务单据。
+PRINT_NODE_RECEIVE = "receive"      # 收货单
+PRINT_NODE_PUTAWAY = "putaway"      # 上架作业
+PRINT_NODE_PICK = "pick"            # 拣货作业
+PRINT_NODE_CHECK = "check"          # 出库复核
+PRINT_NODE_SHIP = "ship"            # 发货出库
+PRINT_NODE_LABEL = "label"          # 批次标签
+PRINT_NODES = (PRINT_NODE_RECEIVE, PRINT_NODE_PUTAWAY, PRINT_NODE_PICK,
+               PRINT_NODE_CHECK, PRINT_NODE_SHIP, PRINT_NODE_LABEL)
+PRINT_NODE_LABELS = {
+    PRINT_NODE_RECEIVE: "收货单", PRINT_NODE_PUTAWAY: "上架单",
+    PRINT_NODE_PICK: "拣货单", PRINT_NODE_CHECK: "复核单",
+    PRINT_NODE_SHIP: "发货单", PRINT_NODE_LABEL: "批次标签",
+}
+
+PRINT_SOURCE_ASN = "asn"
+PRINT_SOURCE_DN = "dn"
+PRINT_SOURCE_REVIEW = "dn_review"
+PRINT_SOURCES = (PRINT_SOURCE_ASN, PRINT_SOURCE_DN, PRINT_SOURCE_REVIEW)
+PRINT_SOURCE_LABELS = {
+    PRINT_SOURCE_ASN: "收货单 ASN", PRINT_SOURCE_DN: "出库单 DN",
+    PRINT_SOURCE_REVIEW: "出库复核单",
+}
+
+PRINT_BLOCK_HEADER = "header"
+PRINT_BLOCK_TABLE = "table"
+PRINT_BLOCK_TOTAL = "total"
+PRINT_BLOCK_SIGNATURE = "signature"
+PRINT_BLOCK_TEXT = "text"
+PRINT_BLOCK_TYPES = (PRINT_BLOCK_HEADER, PRINT_BLOCK_TABLE, PRINT_BLOCK_TOTAL,
+                     PRINT_BLOCK_SIGNATURE, PRINT_BLOCK_TEXT)
+PRINT_BLOCK_LABELS = {
+    PRINT_BLOCK_HEADER: "单据信息", PRINT_BLOCK_TABLE: "明细表",
+    PRINT_BLOCK_TOTAL: "合计", PRINT_BLOCK_SIGNATURE: "签核栏",
+    PRINT_BLOCK_TEXT: "自由文本",
+}
+
+# 字段目录：scope=header/line；editable=预览页可临时微调（不回写业务单据）
+PRINT_FIELD_DEFS = {
+    "code": {"label": "单号", "scope": "header"},
+    "owner_name": {"label": "货主", "scope": "header"},
+    "customer_name": {"label": "客户/供应商", "scope": "header"},
+    "doc_type": {"label": "单据类型", "scope": "header"},
+    "created_at": {"label": "制单时间", "scope": "header"},
+    "total_qty": {"label": "总数量", "scope": "header"},
+    "note": {"label": "备注", "scope": "header", "editable": True},
+    "receiver": {"label": "收货人", "scope": "header", "editable": True},
+    "operator": {"label": "操作人", "scope": "header"},
+    "line_no": {"label": "行号", "scope": "line"},
+    "product_code": {"label": "物料编码", "scope": "line"},
+    "product_name": {"label": "物料名称", "scope": "line"},
+    "qty": {"label": "数量", "scope": "line", "editable": True},
+    "batch_no": {"label": "批号", "scope": "line"},
+    "location_code": {"label": "库位", "scope": "line"},
+    "line_note": {"label": "行备注", "scope": "line", "editable": True},
+}
+PRINT_EDITABLE_FIELDS = ("note", "receiver", "qty", "line_note")
+PRINT_DEFAULT_TEMPLATE_PREFIX = "DEFAULT-"
+PRINT_TEMPLATE_VERSION_DEFAULT = "1.0"
+PRINT_TEMPLATE_CODE_MAXLEN = 48
+PRINT_PDF_TIMEOUT_SECONDS = 30
+
+# 权限码：只落常量不挂装饰器（Q08 口径延续）
+PRINT_PERM_CONFIG = "print:template_config"
+PRINT_PERM_VIEW = "print:view"
+PRINT_PERM_PDF = "print:pdf"
+PRINT_PERMISSIONS = (PRINT_PERM_CONFIG, PRINT_PERM_VIEW, PRINT_PERM_PDF)

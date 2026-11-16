@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>打印预览 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#666); margin:0 0 10px; }
+.dim { font-size:12px; color:#64748b; }
+.grid2 { display:grid; grid-template-columns:340px 1fr; gap:16px; align-items:start; }
+.formrow { display:flex; flex-direction:column; gap:3px; margin-bottom:8px; }
+.formrow label { font-size:12px; color:#475569; }
+.formrow input, .formrow select { padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:13px; }
+.filters { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:flex-end; }
+.filters label { font-size:12px; color:#475569; display:flex; flex-direction:column; gap:3px; }
+.filters select, .filters input { padding:5px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:13px; }
+.lineedit { display:grid; grid-template-columns:1fr 70px 1fr; gap:5px; align-items:center;
+  font-size:12px; margin:5px 0; }
+.lineedit input { width:100%; padding:4px 6px; border:1px solid #cbd5e1; border-radius:5px; }
+#iframeWrap { border:1px solid #cbd5e1; border-radius:8px; background:#e2e8f0; overflow:hidden; }
+iframe { width:100%; height:660px; border:0; display:block; background:white; }
+.warn { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; padding:7px 10px;
+  border-radius:6px; font-size:12px; margin-bottom:10px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>打印预览</h1><div class="crumb">MiniWMS / 打印中心 / 打印配置 / 打印预览</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <div class="card">
+        <div class="card-head"><h2>选择单据</h2>
+          <a class="btn secondary sm" href="/print_templates.html">模板配置</a></div>
+        <div class="filters">
+          <label>打印节点<select id="selNode"></select></label>
+          <label>单据来源<select id="selSource"></select></label>
+          <label>单据 ID<input id="docId" type="number" min="1" placeholder="如 12"></label>
+          <button class="btn sm" id="btnLoad" onclick="loadPreview()">加载单据</button>
+        </div>
+      </div>
+
+      <p class="warn">
+        <b>临时编辑只作用于本次打印件</b>：右侧 PDF 重新生成，左侧修改<b>不会写回业务单据</b>，
+        库存、单据状态与数量均不变。PDF 由系统 Chrome headless 生成，无需安装任何组件。
+      </p>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-head"><h2>可编辑内容</h2><span id="previewMeta" class="dim"></span></div>
+          <div id="editFields"></div>
+          <h3 style="font-size:13px;margin:12px 0 6px">明细行</h3>
+          <div id="editLines"></div>
+          <div class="toolbar" style="margin-top:12px">
+            <button class="btn" id="btnRefresh" onclick="refreshPdf()">刷新 PDF</button>
+            <button class="btn secondary" id="btnPrint" onclick="doPrint()">打印</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>PDF 预览</h2><span class="dim">Chrome headless · A4 · 人工确认出纸</span></div>
+          <div id="iframeWrap"><iframe id="pdfFrame" title="PDF 预览"></iframe></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+let D = {}, doc = null, timer = null;
+const qs = new URLSearchParams(location.search);
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+async function GET(path) {
+  const d = await api("GET", path);
+  if (!d || d.ok === false) throw new Error(d && d.error || "请求失败");
+  return d;
+}
+function fill(id, items) {
+  document.getElementById(id).innerHTML = items.map(x =>
+    `<option value="${esc(x.code)}">${esc(x.label)}</option>`).join("");
+}
+function apiPath(extra) {
+  const q = new URLSearchParams({
+    node: document.getElementById("selNode").value,
+    source: document.getElementById("selSource").value,
+    doc_id: document.getElementById("docId").value || "0",
+  });
+  const tid = qs.get("template_id");
+  if (tid) q.set("template_id", tid);
+  const ov = extra || collectOverrides();
+  q.set("overrides", JSON.stringify(ov));
+  return q.toString();
+}
+function renderEdit() {
+  const editable = new Set(D.editable_fields || []);
+  const headerKeys = Object.keys(doc.fields).filter(k => (doc.fields_scope || {})[k] !== "line" &&
+    editable.has(k));
+  // 单据字段目录里 scope=header 的可编辑项（note / receiver）
+  const header = (D.fields || []).filter(f => f.scope === "header" && f.editable &&
+    Object.prototype.hasOwnProperty.call(doc.fields, f.code));
+  document.getElementById("editFields").innerHTML = header.map(f =>
+    `<div class="formrow"><label>${esc(f.label)}（${esc(f.code)}）</label>
+      <input id="ef-${esc(f.code)}" value="${esc(doc.fields[f.code])}"></div>`).join("") ||
+    `<p class="dim">无表头可编辑字段</p>`;
+  document.getElementById("editLines").innerHTML = doc.lines.map((l, i) =>
+    `<div class="lineedit"><span>#${i + 1} ${esc(l.product_name)}</span>
+      <input id="el-qty-${i}" type="number" step="any" value="${esc(l.qty)}" title="数量">
+      <input id="el-note-${i}" value="${esc(l.line_note || "")}" title="行备注"></div>`).join("") ||
+    `<p class="dim">无明细行</p>`;
+  document.getElementById("previewMeta").textContent =
+    `${doc.code} · ${doc.lines.length} 行 · ${document.getElementById("selNode").selectedOptions[0].text}`;
+}
+function collectOverrides() {
+  if (!doc) return {fields:{}, lines:[]};
+  const fields = {};
+  (D.fields || []).filter(f => f.scope === "header" && f.editable &&
+    Object.prototype.hasOwnProperty.call(doc.fields, f.code)).forEach(f => {
+    const el = document.getElementById("ef-" + f.code);
+    if (el) fields[f.code] = el.value;
+  });
+  const lines = doc.lines.map((_, i) => {
+    const q = document.getElementById("el-qty-" + i);
+    const n = document.getElementById("el-note-" + i);
+    return {qty: q ? Number(q.value || 0) : 0, line_note: n ? n.value : ""};
+  });
+  return {fields, lines};
+}
+function refreshPdf() {
+  if (!doc) return;
+  const url = "/api/print/pdf?" + apiPath();
+  document.getElementById("pdfFrame").src = url;
+}
+function scheduleRefresh() {
+  clearTimeout(timer);
+  timer = setTimeout(refreshPdf, 400);
+}
+async function loadPreview() {
+  try {
+    const q = new URLSearchParams({
+      node: document.getElementById("selNode").value,
+      source: document.getElementById("selSource").value,
+      doc_id: document.getElementById("docId").value || "0",
+    });
+    const tid = qs.get("template_id");
+    if (tid) q.set("template_id", tid);
+    const d = await GET("/api/print/preview?" + q.toString());
+    doc = d.document;
+    renderEdit();
+    refreshPdf();
+    msg("单据已加载，可临时微调后打印");
+  } catch (e) { msg("加载失败：" + e.message, "error"); }
+}
+function doPrint() {
+  const f = document.getElementById("pdfFrame");
+  try { f.contentWindow.focus(); f.contentWindow.print(); }
+  catch (e) { window.open(f.src, "_blank"); msg("请在打开的 PDF 标签中打印", "error"); }
+}
+
+(async function init() {
+  if (window.MWS_NAV_TOOLS) window.MWS_NAV_TOOLS.mount();
+  try {
+    D = await GET("/api/print/dict");
+    fill("selNode", D.nodes); fill("selSource", D.sources);
+    document.getElementById("selNode").value = qs.get("node") || D.nodes[0].code;
+    document.getElementById("selSource").value = qs.get("source") || D.sources[0].code;
+    document.getElementById("docId").value = qs.get("doc_id") || "";
+    document.getElementById("editFields").addEventListener("input", scheduleRefresh);
+    document.getElementById("editLines").addEventListener("input", scheduleRefresh);
+    if (qs.get("doc_id")) await loadPreview();
+  } catch (e) { msg("初始化失败：" + e.message, "error"); }
+})();
+</script>
+</body>
+</html>
