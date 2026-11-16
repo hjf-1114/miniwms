@@ -1187,6 +1187,25 @@ M20 剩余可独立收尾，不必等 `stock_batch`。
 - 章节 14 编号表不回收、不改写；M35 的实现事实以 `DEVELOPMENT.md` M35 章与
   `docs/PRD_SOURCES.md` §8 为准。
 
+**§15.2 M36 出库复核补注（2026-11-16，实现事实与本文 v3.3 原文的差异）**
+
+本章 v3.3 原文只定义出库分配边界、未定义复核，保留用于追溯；M36 已按用户
+2026-11-10 **4B** 定稿落地独立出库复核，**以下是当前默认实现、不是定稿**，
+逐条对应新增待确认项，统一登记在 `docs/OPEN_QUESTIONS.md` Q17–Q20，用户答复后以答复为准：
+
+| 原议题 | M36 当前默认 |
+|---|---|
+| Q17 复核粒度 | 按 `dn_pick` 行逐条复核，复核行快照完整 8 维批次 + `wave_no` / `rule_id`，差异直接定位批次 + 库位 |
+| Q18 与发货关系 | 复核单**不接** `dn.ship()` 状态机，发货无需等复核；E2E 验证复核前后 DN 状态一致 |
+| Q19 原因码 | 常量 6 类（少货/多货/批号不符/效期不符/质量状态不符/其他），登记差异必选；不做字典表 |
+| Q20 货主隔离 | 复核单与差异日志按 `owner_id` 隔离（比 M25/M26/M35 控制面日志更严），复核行继承父单 |
+
+- **差异只留痕**：`review_service.record()` 只写 `dn_review_diff_log`，
+  **不调 `adjust_stock()`、不生成 `stock_adjustment`、不写 `stock_movement`**；数量纠偏仍走 M22。
+- 三表 `dn_review` / `dn_review_line` / `dn_review_diff_log` 全为 `CREATE TABLE IF NOT EXISTS`，
+  老库反复 `init_db()` 幂等（不踩 M35 的 ALTER 函数型默认值坑）。
+- 实现事实以 `DEVELOPMENT.md` M36 章与 `docs/PRD_SOURCES.md` §9 为准。
+
 ---
 
 ## 16. 待确认口径

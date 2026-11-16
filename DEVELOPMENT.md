@@ -1784,3 +1784,51 @@ M20 原有字段（`recommendations / rejected / candidate_count / bound_locatio
 
 ---
 
+## M36 出库复核（2026-11-16）✅
+
+按 v4 实施顺序接 M35 之后的下一棒；用户 2026-11-10 **4B** 定稿:
+独立复核单 + 独立作业页 + 「登记差异」只留痕,**不生成调整单、不改库存**。
+Q17（按 `dn_pick` 行逐条复核）/ Q18（复核独立于发货）/ Q19（原因码常量）/
+Q20（复核单与日志按货主隔离）四个新分歧登记在 `docs/OPEN_QUESTIONS.md`,按「当前默认」落地、不打断用户。
+
+### 交付内容
+
+| 类别 | 内容 |
+|---|---|
+| 表结构 | `main.py::_migrate_m36()` 三表:`dn_review`(复核单头 + 进度计数)、`dn_review_line`(复核行快照 8 维批次 + 应拣/实拣/判定 + UNIQUE(review_id,pick_id))、`dn_review_diff_log`(差异留痕);老库反复 `init_db()` 幂等 |
+| 服务层 | `review_service.py`:`create_review()` 快照 `dn_pick`、`record()` 逐行复核、`complete()` / `cancel()`、差异只写日志;重复复核只留最新一条不重复计数,改判为通过另写 `diff_cleared` 留痕 |
+| 路由 | `routes_dn_review.py` 8 端点:`/dict`、`POST /`(建单)、`GET /`(列表+状态统计)、`GET /<id>`、`POST /<id>/check`、`POST /<id>/complete`、`POST /<id>/cancel`、`GET /logs`;写操作统一 `BEGIN IMMEDIATE` |
+| 前端 | `web_app/dn_review.html`(三级导航 25→26):生成复核单 / 逐行实拣+判定+原因码 / 进度统计 / 差异留痕 / 查询;`dns.html` 加入口 |
+| 隔离 | `scope.py` 把 `dn_review` / `dn_review_diff_log` 列入 `OWNER_SCOPED_TABLES`(Q20 比控制面日志更严);`dn_review_line` 通过 `review_id` 继承父单隔离 |
+| 演示 | `tools/seed_module_demo.py` 新增 M36 模块,本地库 2 张复核单(1 完成含差异 / 1 待复核)+ 1 条差异留痕 |
+
+### 关键决策与踩坑
+
+- **Q17 粒度**:按 `dn_pick` 行逐条复核(最细粒度),复核行快照完整 8 维 + `wave_no` + `rule_id`,
+  差异日志直接定位到批次 + 库位;DN/行号同时保留便于汇总查询。
+- **Q18 独立性**:复核单**不接** `dn.ship()` 状态机,发货无需等复核;E2E 验证复核前后 DN 状态一致。
+- **差异只留痕**:`record()` 只 UPDATE 复核行 + INSERT `dn_review_diff_log`,
+  绝不调 `adjust_stock()`、不生成 `stock_adjustment`、不写 `stock_movement`;
+  数量纠偏仍走 M22 库存调整单。E2E 逐项验证「库存/调整单/库存流水/DN 状态」四不变。
+- **重复复核不重复计数**:同一复核行再次登记差异时先 DELETE 旧日志再 INSERT 最新,
+  `dn_review_diff_log` 按 pick_id 只保留一条当前差异;改判为通过则清掉差异日志另写一条 `diff_cleared` 审计轨迹。
+- **冒烟暴露的字段错误**:建单 SQL 最初误从 `dn_line` 取 `dl.line_id`,实际 `dn_pick` 自带 `line_id`,已修正。
+- **老库迁移**:三表都是全新 `CREATE TABLE IF NOT EXISTS`(无 ALTER),函数型默认值只在 CREATE 中,不踩 M35 的 ALTER 坑。
+
+### 验证
+
+- M36 单测 **17/17**(`tests/test_m36_dn_review.py`,含批次快照 / 状态机 / 差异只留痕 / 库存不变 / 老库迁移幂等 / 货主隔离)。
+- 真实 Chrome E2E `tools/e2e_m36.py` **26/26**(独立端口 + 临时库,复跑 5126/5127)。
+- 全量 unittest 全绿,I1 / I2 / I3 一致;演示库一致性体检 OK。
+
+### 已知边界 / 下一棒
+
+- 复核单与差异日志按货主隔离(Q20,与 M25/M26/M35 控制面日志口径不同,待用户统一答复);
+  权限码只落常量未挂装饰器;原因码是常量非字典表(Q19);匿名模式 `operator` 留空串(Q14)。
+- 复核差异**只留痕**,不自动生成调整单、不回填库存;「部分发货」仍需人工补拣(M35 Q06)。
+- `docs/OPEN_QUESTIONS.md` Q01–Q20 待用户统一答复;答复后以答复为准调整服务层/常量,
+  不改 `stock` 主账粒度、不改 I1/I2/I3 硬校验、不回收里程碑编号。
+- **下一棒 M37 养护 / M38 拆单合单**(蓝图第 2 层剩余作业),M31–M34 基础资料新域仍后移。
+
+---
+
