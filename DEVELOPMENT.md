@@ -1872,3 +1872,45 @@ Q20（复核单与日志按货主隔离）四个新分歧登记在 `docs/OPEN_QU
 
 ---
 
+## M38 拆单合单（2026-11-16）✅
+
+继续全托管无人值守推进：按 Roadmap 第 2 层最后一项作业实现「出库单据层拆单 / 合单」。
+蓝图只写「拆单合单（可选）」未定业务细节，按 `docs/OPEN_QUESTIONS.md`
+**Q26–Q29 当前默认**落地、编号登记，**全程未打断用户**。
+
+### 交付内容
+
+| 类别 | 内容 |
+|---|---|
+| 表结构 | `main.py::_migrate_m38()` 新增 `dn_order_log`(拆合留痕:动作/货主/客户/源单/目标单/逐行明细 JSON/操作人/备注) + 3 索引;`dn` 补 `origin_action` / `origin_parent_id` 两溯源列(常量默认值,避开 M35 函数默认值坑),老库反复 `init_db()` 幂等 |
+| 服务层 | `dn_order_service.py`:`split_order`(按 parts 拆成多子单,源单扣减、拆空行删除、全拆空源单取消)、`merge_orders`(多单按物料汇总、总量守恒、源单作废保留追溯)、`_assert_splittable`(仅 open 且未拣货且无 dn_pick);数量容差 1e-9,与 I1/I2/I3 一致 |
+| 路由 | `routes_dn_order.py` 6 端点:`/api/dn-order/{dict,candidates,split,merge,log,<id>/lineage}`;写操作统一 `BEGIN IMMEDIATE`,按 ID 资源 owner 守门,错误码分 400/404/409 |
+| 边界 | 只改 dn / dn_line 数量与状态,**不动库存、不写 stock_movement、不生成调整单、不改 DN 拣货状态**(Q27);拆单可跨多次、同一物料累计拆出量受源单量约束;合单强制同货主 + 同客户(Q28) |
+| 前端 | `web_app/dn_order.html`(三级导航 27→28 页):候选单列表(可拆合标识 + 多选)、拆单面板(源单/模式/动态明细行/数量)、合单面板、留痕查询(动作/单号过滤)+ 血缘 |
+| 隔离 | `scope.py` 把 `dn_order_log` 列入 `OWNER_SCOPED_TABLES`,留痕查询注入 `owner_where()`;源单写路径 `assert_owner_allowed()`,子单继承货主 |
+| 演示 | `tools/seed_module_demo.py` 新增 M38 模块:2 张 open DN → 拆 2 子单 → 合 1 单,本地库 2 条留痕 / 3 张溯源单;`--check` 可只读盘点,重复跑幂等 |
+
+### 关键决策与踩坑
+
+- **状态范围**:仅 `open` 且所有行 `picked_qty=0` 且 `dn_pick` 无记录可拆合(Q26),已发货 / 已取消 / 已分配一律拒绝(`STATUS_NOT_ALLOWED` / `ALREADY_PICKED` / `ALREADY_ALLOCATED`),避免破坏 M35 批次级拣货分配与 M36 复核快照。
+- **守恒口径**:拆单 Σ 拆出 = 源单被拆行拆前量;合单 Σ 源单量 = 目标单量,容差 1e-9;全链路零库存流水(E2E 验证 stock / stock_movement / stock_adjustment / stock_batch 四表不变 + I1/I2/I3)。
+- **溯源**:dn 加 `origin_action` + `origin_parent_id`,子单 note 写明「由 XXX 拆出 / 合并 XXX 生成」;源单合单后 `cancelled` 但**不删除**,留痕可查血缘(`/lineage` 以逗号边界精确匹配源单/目标单 ID)。
+- **真实调试修正 4 处**:① `_clone_dn` INSERT 占位符多写 3 个(溯源字段在调用处单独 UPDATE),改对齐参数数量;② `_clone_dn` 漏写 `code` 列导致 `NOT NULL constraint failed`,补入 code 占位符;③ 单测 `_post` 默认期望 201,而拆合动作返回 200,按路径前缀区分;④ 演示脚本按 `DEMO-` 前缀找物料/客户,但演示库前缀是 `OW-TMALL`/`SKU-001`,改为按目标货主直接 SQL 查同货主主数据。
+- **前端**:明细行按物料 id 动态生成输入框(`qty_<pid>`),E2E 首屏默认选中列表第一行(1 行明细),断言改为「选中 d1 后 2 行」而非首屏 2 行——业务正确,断言位置问题。
+
+### 验证
+
+- M38 单测 **19/19**(`tests/test_m38_dn_order.py`:字典 / 按量拆守恒 / 部分拆 / 全拆关单 / 越量拒绝 / 未知物料 / 重复物料 / 空 parts / 源单不存在 / 合单守恒 / 至少两单 / 跨货主 / 跨客户 / 已分配拒拆 / 已发货拒拆 / 留痕血缘 / 候选过滤 / 货主隔离 / 迁移幂等)。
+- 真实 Chrome E2E `tools/e2e_m38.py` **29/29**(独立端口 5133 + 临时库,含跨货主/跨客户/越量 API 边界与库存四不变)。
+- 全量 unittest **528/528 全绿**;历史 E2E 复跑 M37 **30/30**、M36 **26/26**、M35 **27/27**;I1/I2/I3 一致,演示库一致性体检 OK。
+
+### 已知边界 / 下一棒
+
+- Q26–Q29 待统一答复(拆合是否仅限未拣货 / 是否动库存 / 合单同货主同客户 / 子单是否独立波次),答复后以答复为准;不改 `stock` 主账粒度与 I1/I2/I3 硬校验。
+- 拆单后子单是全新 open 单,**不自动继承**源单的分配/波次/复核状态(本就不允许已分配单拆合);合单后源单作废,不会自动合并历史出库流水(因未发货前拆合,本就无流水)。
+- 权限码只落常量未挂装饰器;匿名模式 `operator` 留空串;拆合原因存储留痕 note,非字典表。
+- `docs/OPEN_QUESTIONS.md` Q01–Q29 待统一答复;PRD 回溯 #3–#21 共 19 页仍另起独立提交。
+- **下一棒 M39 GSP 合规报表**(第 4 层,批次追溯 / 效期 / 养护 / 验收复核留痕),M31–M34 基础资料新域仍后移。
+
+---
+

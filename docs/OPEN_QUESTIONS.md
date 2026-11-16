@@ -45,6 +45,10 @@
 | Q23 | 温湿度项目是否必须记录实测值？实测越界时能否人工判定为正常？ | M37 GSP 执行 | `TEMP_HUMIDITY` 项目实测温度 / 湿度必填；越界时**拒绝判正常**（`THRESHOLD_EXCEEDED`），必须登记异常并选原因码；其他项目温湿度选填 | 待答复（M37 已按默认落地） |
 | Q24 | 养护异常是否要自动生成调整单 / 冻结库存 / 拦截出库？ | M37 与库存边界 | **只写 `care_log` 留痕**，不改库存、不生成调整单、不写库存流水、不改单据状态；处置只补说明与 handler（延续 M36 4B 精神） | 待答复（M37 已按默认落地） |
 | Q25 | 温湿度阈值来源：养护计划单独配置，还是继承库位 / 储区温区主数据？ | M37 数据模型 | 阈值在 `care_plan` 上配置并快照到 `care_task`；未接 `location.temperature_zone` / `zone` 温区，避免把规划写成现状 | 待答复（M37 已按默认落地） |
+| Q26 | 拆单合单允许操作哪些状态的出库单？已拣货 / 已分配 / 已发货单能否拆合？ | M38 状态边界 | 只允许 **open 且所有行 `picked_qty=0` 且无 `dn_pick`** 的单据；已分配 / 已拣货 / 已发货 / 已取消一律拒绝（`ALREADY_ALLOCATED` / `ALREADY_PICKED` / `STATUS_NOT_ALLOWED`），避免破坏 M35 批次级拣货与 M36 复核快照 | 待答复（M38 已按默认落地） |
+| Q27 | 拆单 / 合单是否要生成库存流水、冻结库存或生成调整单？ | M38 与库存边界 | **只改 dn / dn_line 的数量与状态**，不动库存、不写 `stock_movement`、不生成调整单、不改 DN 拣货状态；数量守恒（容差 1e-9），只写 `dn_order_log` 留痕（延续 M24/M36 净零精神） | 待答复（M38 已按默认落地） |
+| Q28 | 合单是否要求同货主同客户？跨客户合并如何处置？ | M38 合单约束 | 强制**同货主 + 同客户**（`OWNER_MISMATCH` / `CUSTOMER_MISMATCH` 400），≥2 张不同单；按 product_id 汇总 ordered_qty，源单作废但保留追溯 | 待答复（M38 已按默认落地） |
+| Q29 | 拆出的子单是否继承源单的分配 / 波次 / 复核状态，是否自动进同一波次？ | M38 子单语义 | 子单是全新 open 单，**不继承**分配 / 波次 / 复核状态（源单本就要求未拣货、无分配）；若用户希望子单自动重进波次，答复后接 M35 分配接口 | 待答复（M38 已按默认落地） |
 
 ## 三、M35 落地复核（2026-11-13）
 
@@ -80,6 +84,18 @@
 | Q23 温湿度规则 | `care_service.execute_task()` / `_threshold_breaks()` | 温湿度项目必填 + 越界 `THRESHOLD_EXCEEDED`，E2E 验证 25℃ 被拒 |
 | Q24 异常边界 | `care_service.execute_task()` / `handle_task()` | 只写 `care_log`，E2E 验证 stock / stock_movement / adjustment / stock_batch 四不变 |
 | Q25 阈值来源 | `main.py::_migrate_m37()` | 阈值在 `care_plan` 配置并快照到 `care_task`，未接温区主数据 |
+
+## 三·续 M38 落地复核（2026-11-16）
+
+> 按「不明确的先登记、明确的一直做」，M38 已按上表 Q26–Q29「当前默认实现」全部落地，
+> **没有中途打断用户**。以下是实现与登记的对照，便于统一答复时逐条比对。
+
+| 登记项 | 落地位置 | 实测 |
+|---|---|---|
+| Q26 状态边界 | `dn_order_service._assert_splittable()` | 仅 open + picked_qty=0 + 无 dn_pick；E2E 验证已分配/已发货被拒 |
+| Q27 库存边界 | `dn_order_service.split_order()/merge_orders()` | 只改 dn/dn_line；E2E 验证 stock/movement/adjustment/stock_batch 四不变 + I1/I2/I3 |
+| Q28 合单约束 | `dn_order_service.merge_orders()` | 同货主 + 同客户校验；E2E 验证 `OWNER_MISMATCH`/`CUSTOMER_MISMATCH` |
+| Q29 子单语义 | `dn_order_service._clone_dn()` | 子单全新 open、origin_action 溯源、不继承波次/分配/复核 |
 
 ## 四、登记约定
 

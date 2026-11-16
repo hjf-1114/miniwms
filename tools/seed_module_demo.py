@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M35 / M36 / M37 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M35–M38 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -626,6 +626,62 @@ def m37_care():
             f"任务 {count('care_task')} 条，留痕 {count('care_log')} 条 {stats}")
 
 
+def m38_dn_order():
+    """让「拆单合单」页打开即有可查数据（幂等、走真实 API、不动库存）。
+
+    用 DEMO- 前缀建两张 open 未拣货 DN → 拆一张（留痕）→ 把子单与另一张合并（留痕）。
+    哨兵用 note 前缀匹配：重跑时若已有演示留痕则跳过，避免重复单据。
+    """
+    H = admin_headers()
+    # 按货主直接查同货主的物料/客户（演示库主数据前缀不固定，不依赖 DEMO- 假设）
+    owner_rows = raw("SELECT id FROM owner ORDER BY id LIMIT 1")
+    if not owner_rows:
+        return "跳过（缺货主，请先运行 seed_demo.py）"
+    owner_id = owner_rows[0]["id"]
+    prod_rows = raw("SELECT id FROM product WHERE owner_id=? ORDER BY id LIMIT 2", (owner_id,))
+    cust_rows = raw("SELECT id FROM customer WHERE owner_id=? ORDER BY id LIMIT 1", (owner_id,))
+    if len(prod_rows) < 2 or not cust_rows:
+        return "跳过（该货主物料不足 2 个或缺客户）"
+    prod_ids = [r["id"] for r in prod_rows]
+    customer_id = cust_rows[0]["id"]
+
+    made = []
+    existing = raw("SELECT id FROM dn_order_log WHERE note LIKE ? LIMIT 1",
+                   (PREFIX + "M38%",))
+    if existing:
+        return (f"跳过（演示留痕已存在）；拆合留痕 {count('dn_order_log')} 条")
+
+    def mkdn(code, lines, note):
+        body = post("/api/dns", {
+            "code": code, "owner_id": owner_id, "customer_id": customer_id,
+            "lines": [{"product_id": p, "ordered_qty": q} for p, q in lines],
+            "note": note}, headers=H)
+        return body["dn"]["id"]
+
+    today = datetime.date.today().strftime("%Y%m%d")
+    src = mkdn(f"DEMO-M38-SRC-{today}", [(prod_ids[0], 12), (prod_ids[1], 6)],
+               PREFIX + "M38 演示源单（拆单用）")
+    other = mkdn(f"DEMO-M38-OTH-{today}", [(prod_ids[0], 4)],
+                 PREFIX + "M38 演示单据（合单用）")
+    made.append("两张 open 演示 DN")
+
+    sp = post("/api/dn-order/split", {
+        "source_id": src,
+        "parts": [{"lines": [{"product_id": prod_ids[0], "qty": 5}]},
+                  {"lines": [{"product_id": prod_ids[1], "qty": 6}]}],
+        "note": PREFIX + "M38 演示：源单拆出两子单，数量守恒"}, headers=H)
+    made.append(f"拆单生成 {len(sp['targets'])} 张子单")
+    child_id = sp["targets"][0]["id"]
+    mg = post("/api/dn-order/merge", {
+        "source_ids": [other, child_id],
+        "note": PREFIX + "M38 演示：子单与另一张合并，源单作废"}, headers=H)
+    made.append(f"合单 {mg['target']['code']} 共 {mg['total_qty']}")
+
+    traced = len(raw("SELECT id FROM dn WHERE origin_action<>''"))
+    return (f"新增 {'；'.join(made)}；拆合留痕 {count('dn_order_log')} 条，"
+            f"溯源子单 {traced} 张")
+
+
 def consistency():
     """顺带体检：I1 / I2 / I3 与推荐引擎可用性。"""
     out = []
@@ -661,6 +717,7 @@ def main_cli():
         ("care_plan 养护计划(M37)", "care_plan"),
         ("care_task 养护任务(M37)", "care_task"),
         ("care_log 养护留痕(M37)", "care_log"),
+        ("dn_order_log 拆合留痕(M38)", "dn_order_log"),
         ("customer_reservation_log 风险放行(M23)", "customer_reservation_log"),
         ("batch_location 批次实物分布(M21)", "batch_location"),
         ("stocktake 盘点单", "stocktake"),
@@ -689,6 +746,7 @@ def main_cli():
     module("M35 波次分配演示数据", m35_outbound_allocation)
     module("M36 出库复核演示数据", m36_dn_review)
     module("M37 养护管理演示数据", m37_care)
+    module("M38 拆单合单演示数据", m38_dn_order)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:
