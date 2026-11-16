@@ -1986,6 +1986,7 @@ else:
     from routes_care import care_bp  # noqa: E402
     from routes_dn_order import dn_order_bp  # noqa: E402
     from routes_gsp import gsp_bp  # noqa: E402  M39 GSP 合规报表（纯只读）
+    from routes_workload import workload_bp  # noqa: E402  M40 工作量统计（纯只读）
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2016,3 +2017,4 @@ else:
     app.register_blueprint(care_bp)
     app.register_blueprint(dn_order_bp)
     app.register_blueprint(gsp_bp)
+    app.register_blueprint(workload_bp)

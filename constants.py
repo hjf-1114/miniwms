@@ -597,3 +597,54 @@ GSP_TRACE_STAGE_LABELS = {
 GSP_PERM_VIEW = "gsp:view"
 GSP_PERM_EXPORT = "gsp:export"
 GSP_PERMISSIONS = (GSP_PERM_VIEW, GSP_PERM_EXPORT)
+
+# ── M40 工作量统计（只读聚合：按人 / 按节点 / 按时间段）──────────────────
+# 细节未拍板项登记 OPEN_QUESTIONS Q34–Q37，按下列默认实现，答复后以答复为准。
+# 不新建表、不改业务数据：从现有操作留痕抽事件，统一口径后再分组。
+WL_NODE_RECEIVE = "receive"          # 收货验收（stock_movement.asn_receive）
+WL_NODE_PUTAWAY = "putaway"          # 上架作业（asn_putaway_out / in）
+WL_NODE_PICK = "pick"                # 拣货分配（dn_pick）
+WL_NODE_SHIP = "ship"                # 发货出库（dn_ship）
+WL_NODE_MOVE = "move"                # 移库（move_out / in）
+WL_NODE_ADJUST = "adjust"            # 库存调整（adjustment）
+WL_NODE_IT = "it"                    # 库存转移（it_allocate/unallocate/transfer）
+WL_NODE_OTHER = "other_movement"     # 其他库存流水（未映射 ref_type）
+WL_NODE_CARE = "care"                # 养护执行留痕（care_log）
+WL_NODE_CARE_HANDLE = "care_handle"  # 养护异常 / 处置留痕
+WL_NODE_REVIEW = "review"            # 出库复核行（dn_review_line）
+WL_NODE_REVIEW_DIFF = "review_diff"  # 复核差异登记（dn_review_diff_log）
+WL_NODE_DN_ORDER = "dn_order"        # 拆单 / 合单（dn_order_log）
+WL_NODE_PUTAWAY_REC = "putaway_rec"  # 上架推荐决策（putaway_recommendation）
+WL_NODE_OUTBOUND = "outbound_alloc"  # 波次分配留痕（outbound_allocation_log）
+WL_NODE_IT_CHANGE = "it_change"      # 库存转移字段变更文档（inventory_change_log）
+WORKLOAD_NODES = (
+    WL_NODE_RECEIVE, WL_NODE_PUTAWAY, WL_NODE_PICK, WL_NODE_SHIP,
+    WL_NODE_MOVE, WL_NODE_ADJUST, WL_NODE_IT, WL_NODE_OTHER,
+    WL_NODE_CARE, WL_NODE_CARE_HANDLE, WL_NODE_REVIEW, WL_NODE_REVIEW_DIFF,
+    WL_NODE_DN_ORDER, WL_NODE_PUTAWAY_REC, WL_NODE_OUTBOUND, WL_NODE_IT_CHANGE,
+)
+WORKLOAD_NODE_LABELS = {
+    WL_NODE_RECEIVE: "收货验收", WL_NODE_PUTAWAY: "上架作业",
+    WL_NODE_PICK: "拣货分配", WL_NODE_SHIP: "发货出库",
+    WL_NODE_MOVE: "移库作业", WL_NODE_ADJUST: "库存调整",
+    WL_NODE_IT: "库存转移", WL_NODE_OTHER: "其他库存流水",
+    WL_NODE_CARE: "养护执行", WL_NODE_CARE_HANDLE: "养护异常处置",
+    WL_NODE_REVIEW: "出库复核", WL_NODE_REVIEW_DIFF: "复核差异登记",
+    WL_NODE_DN_ORDER: "拆单合单", WL_NODE_PUTAWAY_REC: "上架推荐决策",
+    WL_NODE_OUTBOUND: "波次分配", WL_NODE_IT_CHANGE: "转移变更文档",
+}
+
+WL_PERIOD_DAY = "day"
+WL_PERIOD_WEEK = "week"
+WL_PERIOD_MONTH = "month"
+WORKLOAD_PERIODS = (WL_PERIOD_DAY, WL_PERIOD_WEEK, WL_PERIOD_MONTH)
+WORKLOAD_PERIOD_LABELS = {
+    WL_PERIOD_DAY: "按日", WL_PERIOD_WEEK: "按周（ISO 周一起）", WL_PERIOD_MONTH: "按月",
+}
+WORKLOAD_UNKNOWN_OPERATOR = "未记录"  # 匿名演示 / 老数据 operator 为空时的归并标签
+WORKLOAD_PAGE_SIZE_DEFAULT = 20
+WORKLOAD_PAGE_SIZE_MAX = 200
+
+# 权限码：沿用 M24–M39 口径，只落常量不挂装饰器（Q08 统一处置）
+WL_PERM_VIEW = "workload:view"
+WL_PERMISSIONS = (WL_PERM_VIEW,)

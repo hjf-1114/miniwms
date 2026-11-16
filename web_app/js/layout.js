@@ -2,7 +2,7 @@
    纯原生，零依赖。独立页面提供 <aside class="sidebar" id="sidebar"></aside> 即可；
    工作台 app.html 通过 window.MWS_NAV_TOOLS.mount() 复用同一份树与交互，只把叶子点击换成开标签。
 
-   结构：一级 4 / 二级 8 / 三级 29；渲染器递归，后续加到第 4 层无需改代码。
+   结构：一级 4 / 二级 9 / 三级 30；渲染器递归，后续加到第 4 层无需改代码。
    展示策略：默认只展开「当前页所在分支」，其余折叠；用户手动展开/收起的节点记在 localStorage。 */
 (function () {
   const NAV = [
@@ -50,6 +50,9 @@
     { label: "统计报表", ico: "📈", children: [
       { label: "合规与追溯", ico: "🛡️", children: [
         { href: "/gsp.html", label: "GSP 合规报表", ico: "📋" },
+      ]},
+      { label: "运营分析", ico: "📊", children: [
+        { href: "/workload.html", label: "工作量统计", ico: "🧮" },
       ]},
     ]},
     { label: "系统管理", ico: "⚙️", children: [
