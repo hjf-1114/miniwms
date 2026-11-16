@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M35 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M35 / M36 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -497,6 +497,67 @@ def m35_outbound_allocation():
             f"{stats}，波次 {len(waves)} 个")
 
 
+# ── 11. M36 出库复核：复核单 / 逐行复核 / 差异只留痕 ──────────────────────
+def m36_dn_review():
+    """让「出库复核」页打开即有可查数据（幂等、全部走真实 API）。
+
+    挑一张已分配、带批次维度的 DN 生成复核单，逐行登记一条差异（只留痕），
+    再生成一张复核单做「通过」演示；差异绝不改库存、不改 DN 状态。
+    """
+    made = []
+    H = admin_headers()
+
+    # 找带拣货明细的 DN（优先 M35 分配过的，带完整批次维度）
+    picks_dns = raw("""SELECT d.id, d.code, COUNT(dp.id) AS n
+                       FROM dn d JOIN dn_pick dp ON dp.dn_id = d.id
+                       WHERE d.status <> 'cancelled'
+                       GROUP BY d.id ORDER BY (dp.batch_no <> '') DESC, d.id""")
+    if not picks_dns:
+        return "跳过（无带拣货明细的 DN，请先运行 M35 播种或 seed_demo.py）"
+
+    def ensure_review(dn_id, code_hint):
+        # 幂等：该 DN 已有任意状态的复核单就复用
+        exists = raw("SELECT id FROM dn_review WHERE dn_id=? ORDER BY id LIMIT 1", (dn_id,))
+        if exists:
+            return exists[0]["id"], False
+        body = post("/api/dn-reviews", {"dn_id": dn_id,
+                                        "note": PREFIX + f"M36 复核演示（{code_hint}）"}, headers=H)
+        return body["id"], True
+
+    # 第一张：登记差异（少货）+ 完成
+    dn1 = picks_dns[0]
+    rv1, made1 = ensure_review(dn1["id"], dn1["code"])
+    if made1:
+        made.append(f"{dn1['code']} 复核单")
+    detail = get(f"/api/dn-reviews/{rv1}")
+    for line in detail["lines"]:
+        if line["result"]:
+            continue  # 已复核过，跳过（幂等）
+        expected = line["expected_qty"]
+        actual = max(0, round(expected - 1, 6))  # 少 1 件
+        post(f"/api/dn-reviews/{rv1}/check", {
+            "line_id": line["id"], "actual_qty": actual,
+            "result": "diff", "reason_code": "SHORT",
+            "note": PREFIX + "M36 演示：现场少 1 件，只留痕不纠偏",
+        }, headers=H)
+        made.append("差异留痕")
+    if detail["status"] in ("draft", "reviewing"):
+        post(f"/api/dn-reviews/{rv1}/complete", {}, headers=H)
+        made.append("完成复核")
+
+    # 第二张：通过演示（若有第二张带拣货明细的 DN）
+    if len(picks_dns) >= 2:
+        dn2 = picks_dns[1]
+        rv2, made2 = ensure_review(dn2["id"], dn2["code"])
+        if made2:
+            made.append(f"{dn2['code']} 复核单（待复核）")
+
+    stats = {r["action"]: r["n"] for r in raw(
+        "SELECT action, COUNT(*) AS n FROM dn_review_diff_log GROUP BY action")}
+    return (f"新增 {made or '无（数据已存在）'}；复核单 {count('dn_review')} 张，"
+            f"差异留痕 {count('dn_review_diff_log')} 条 {stats}")
+
+
 def consistency():
     """顺带体检：I1 / I2 / I3 与推荐引擎可用性。"""
     out = []
@@ -527,6 +588,8 @@ def main_cli():
         ("external_doc_type_dict 字典(M26)", "external_doc_type_dict"),
         ("putaway_rule 规则行(M25/M26/M35)", "putaway_rule"),
         ("outbound_allocation_log 分配留痕(M35)", "outbound_allocation_log"),
+        ("dn_review 复核单(M36)", "dn_review"),
+        ("dn_review_diff_log 差异留痕(M36)", "dn_review_diff_log"),
         ("customer_reservation_log 风险放行(M23)", "customer_reservation_log"),
         ("batch_location 批次实物分布(M21)", "batch_location"),
         ("stocktake 盘点单", "stocktake"),
@@ -553,6 +616,7 @@ def main_cli():
     module("M23 风险放行 + M21 批次分布", reservation_risk)
     module("M26 规则配置演示数据", m26_rule_editor_data)
     module("M35 波次分配演示数据", m35_outbound_allocation)
+    module("M36 出库复核演示数据", m36_dn_review)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:
