@@ -29,6 +29,9 @@ OWNER_SCOPED_TABLES = (
     "inventory_transfer_line",   # M24 转移单明细；单据头按 EXISTS 注入同一条件
     "dn_review",                 # M36 复核单头（带 owner_id，列表/详情查询已注入）
     "dn_review_diff_log",        # M36 差异留痕（带 owner_id，日志查询已注入）
+    "care_plan",                 # M37 养护计划（列表 / 详情 / 写路径均按货主隔离）
+    "care_task",                 # M37 养护任务（计划快照 + owner_id 双保险）
+    "care_log",                  # M37 养护留痕（业务留痕，非控制面 PUBLIC）
     # dn_review_line 不带 owner_id，通过 review_id 关联父单继承隔离
 )
 # 公共表：不按货主隔离（仓库靠选库隔离，布局/权限表属于控制面）

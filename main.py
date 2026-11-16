@@ -43,6 +43,8 @@ RESOURCE_OWNER_TABLES = {
     "dns": ("dn", "owner_id", False),
     "transfers": ("transfer", "owner_id", False),
     "stocktakes": ("stocktake", "owner_id", False),
+    "care-plans": ("care_plan", "owner_id", False),   # M37 养护计划
+    "care-tasks": ("care_task", "owner_id", False),   # M37 养护任务
 }
 # /api/batch/<子资源>/<id> 的二级路径映射
 BATCH_RESOURCE_TABLES = {
@@ -1075,6 +1077,102 @@ def _migrate_m36(conn):
     )
 
 
+def _migrate_m37(conn):
+    """M37 养护管理：计划 / 任务 / 留痕三表。
+
+    计划定义养护项目（温湿度 / 外观 / 包装 / 效期 / 堆码）、周期与阈值；
+    任务由到期计划生成并快照阈值；执行只写 ``care_log`` 留痕，
+    **不改库存、不生成调整单、不写 stock_movement**（延续 M36 4B 精神）。
+    三表均带 owner_id，按货主隔离；库位为 0 表示仓内全库位（非 NULL 简化查询）。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS care_plan (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code            TEXT    NOT NULL UNIQUE,
+            owner_id        INTEGER NOT NULL REFERENCES owner(id),
+            warehouse_id    INTEGER NOT NULL DEFAULT 0,
+            location_id     INTEGER NOT NULL DEFAULT 0,
+            location_code   TEXT    NOT NULL DEFAULT '',
+            project         TEXT    NOT NULL,
+            cycle           TEXT    NOT NULL DEFAULT 'weekly',
+            cycle_days      INTEGER NOT NULL DEFAULT 7,
+            temp_min        REAL,
+            temp_max        REAL,
+            hum_min         REAL,
+            hum_max         REAL,
+            next_due_date   TEXT    NOT NULL,
+            status          TEXT    NOT NULL DEFAULT 'active',
+            note            TEXT    NOT NULL DEFAULT '',
+            operator        TEXT    NOT NULL DEFAULT '',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_carep_owner ON care_plan(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_carep_due   ON care_plan(next_due_date);
+        CREATE INDEX IF NOT EXISTS idx_carep_stat  ON care_plan(status);
+
+        CREATE TABLE IF NOT EXISTS care_task (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code            TEXT    NOT NULL UNIQUE,
+            plan_id         INTEGER NOT NULL REFERENCES care_plan(id),
+            plan_code       TEXT    NOT NULL DEFAULT '',
+            owner_id        INTEGER NOT NULL REFERENCES owner(id),
+            warehouse_id    INTEGER NOT NULL DEFAULT 0,
+            location_id     INTEGER NOT NULL DEFAULT 0,
+            location_code   TEXT    NOT NULL DEFAULT '',
+            project         TEXT    NOT NULL,
+            due_date        TEXT    NOT NULL,
+            temp_min        REAL,
+            temp_max        REAL,
+            hum_min         REAL,
+            hum_max         REAL,
+            status          TEXT    NOT NULL DEFAULT 'pending',
+            result          TEXT,
+            temperature     REAL,
+            humidity        REAL,
+            reason_code     TEXT    NOT NULL DEFAULT '',
+            note            TEXT    NOT NULL DEFAULT '',
+            operator        TEXT    NOT NULL DEFAULT '',
+            executed_at     TEXT,
+            handled_note    TEXT    NOT NULL DEFAULT '',
+            handler         TEXT    NOT NULL DEFAULT '',
+            handled_at      TEXT,
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(plan_id, due_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_caret_owner  ON care_task(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_caret_stat   ON care_task(status);
+        CREATE INDEX IF NOT EXISTS idx_caret_due    ON care_task(due_date);
+        CREATE INDEX IF NOT EXISTS idx_caret_plan   ON care_task(plan_id);
+
+        CREATE TABLE IF NOT EXISTS care_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id         INTEGER NOT NULL REFERENCES care_task(id),
+            task_code       TEXT    NOT NULL DEFAULT '',
+            plan_id         INTEGER NOT NULL,
+            plan_code       TEXT    NOT NULL DEFAULT '',
+            owner_id        INTEGER NOT NULL,
+            project         TEXT    NOT NULL DEFAULT '',
+            due_date        TEXT    NOT NULL DEFAULT '',
+            action          TEXT    NOT NULL,
+            result          TEXT    NOT NULL DEFAULT '',
+            temperature     REAL,
+            humidity        REAL,
+            reason_code     TEXT    NOT NULL DEFAULT '',
+            reason_label    TEXT    NOT NULL DEFAULT '',
+            note            TEXT    NOT NULL DEFAULT '',
+            operator        TEXT    NOT NULL DEFAULT '',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_carel_owner  ON care_log(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_carel_task   ON care_log(task_id);
+        CREATE INDEX IF NOT EXISTS idx_carel_action ON care_log(action);
+        """
+    )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1800,6 +1898,7 @@ def init_db(path=None):
         _migrate_m26(conn)
         _migrate_m35(conn)
         _migrate_m36(conn)
+        _migrate_m37(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -1845,6 +1944,7 @@ else:
     from routes_putaway_rules import pr_bp  # noqa: E402
     from routes_outbound_allocation import oa_bp  # noqa: E402
     from routes_dn_review import rv_bp  # noqa: E402
+    from routes_care import care_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1872,3 +1972,4 @@ else:
     app.register_blueprint(pr_bp)
     app.register_blueprint(oa_bp)
     app.register_blueprint(rv_bp)
+    app.register_blueprint(care_bp)

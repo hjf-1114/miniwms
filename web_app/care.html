@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>养护管理 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#666); margin:0 0 12px; }
+.dim { font-size:12px; color:#64748b; }
+.stat { display:inline-block; min-width:112px; padding:8px 12px; margin:0 8px 8px 0;
+  border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; font-size:12px; color:#475569; }
+.stat b { display:block; font-size:18px; color:#0f172a; margin-top:3px; }
+.tag.ok { background:#e6f6ec; color:#1d7a4d; }
+.tag.warn { background:#fff7ed; color:#9a3412; }
+.tag.info { background:#e0f2fe; color:#075985; }
+.tag.off { background:#f1f5f9; color:#64748b; }
+.tag.danger { background:#fee2e2; color:#991b1b; }
+.sub h3 { font-size:14px; font-weight:500; margin:16px 0 8px; }
+.form-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px 14px; }
+.form-grid label { font-size:12px; color:#475569; display:block; }
+.form-grid select, .form-grid input { width:100%; box-sizing:border-box; }
+.task-row { cursor:pointer; }
+.task-row:hover { background:#f8fafc; }
+.exec-box { padding:10px 12px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; margin:8px 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>养护管理</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯 / 养护管理</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <div id="overview"></div>
+
+      <div class="card">
+        <div class="card-head"><h2>养护计划 <span id="planCount" class="dim"></span></h2>
+          <button class="btn secondary sm" onclick="loadPlans(1)">刷新</button></div>
+        <p class="hint">
+          计划定义<b>养护项目 / 周期 / 温湿度阈值</b>，到期自动生成任务（同一计划同一天只生成一次）。
+          执行异常<b>只写 GSP 留痕</b>：不改库存、不生成调整单；温度或湿度越界时不允许判定为正常。
+        </p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>计划编号</th><th>货主</th><th>范围</th><th>项目</th><th>周期</th>
+            <th>温湿度阈值</th><th>下次到期</th><th>状态</th><th style="width:150px">操作</th></tr></thead>
+          <tbody id="planBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn secondary sm" onclick="loadPlans(planPage-1)">上一页</button>
+          <span id="planPageInfo" class="dim"></span>
+          <button class="btn secondary sm" onclick="loadPlans(planPage+1)">下一页</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2 id="planFormTitle">新建养护计划</h2>
+          <button class="btn secondary sm" onclick="resetPlanForm()">清空表单</button></div>
+        <div class="form-grid">
+          <label>货主<select id="planOwner"></select></label>
+          <label>仓库（0 = 不限）<select id="planWarehouse"></select></label>
+          <label>库位（0 = 全库位）<select id="planLocation"></select></label>
+          <label>养护项目<select id="planProject"></select></label>
+          <label>周期<select id="planCycle"></select></label>
+          <label>自定义天数<input id="planDays" type="number" min="1" value="7"></label>
+          <label>温度下限<input id="tempMin" type="number" step="0.1" placeholder="如 2"></label>
+          <label>温度上限<input id="tempMax" type="number" step="0.1" placeholder="如 8"></label>
+          <label>湿度下限<input id="humMin" type="number" step="0.1" placeholder="如 30"></label>
+          <label>湿度上限<input id="humMax" type="number" step="0.1" placeholder="如 70"></label>
+          <label>下次到期日<input id="planDue" type="date"></label>
+          <label>备注<input id="planNote" placeholder="选填"></label>
+        </div>
+        <div class="toolbar" style="margin-top:10px">
+          <button class="btn" id="planSubmit" onclick="savePlan()">创建计划</button>
+          <span class="dim">温湿度阈值只对「温湿度」项目有意义；留空表示不设阈值。</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>养护任务 <span id="taskCount" class="dim"></span></h2>
+          <div class="toolbar" style="margin:0">
+            <select id="taskStatus" style="min-width:130px"><option value="">全部状态</option></select>
+            <input id="taskKeyword" placeholder="任务 / 计划编号" style="min-width:160px">
+            <button class="btn secondary sm" onclick="loadTasks(1)">查询</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <label class="muted text-sm">按计划生成</label><select id="genPlan" style="min-width:200px"></select>
+          <label class="muted text-sm">到期日</label><input id="genDue" type="date">
+          <button class="btn" id="btnGenerate" onclick="generateTasks()">生成到期任务</button>
+          <span class="dim">留空计划 = 扫描全部启用且到期的计划。</span>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>任务编号</th><th>计划</th><th>货主</th><th>库位</th><th>项目</th>
+            <th>到期日</th><th>阈值快照</th><th>状态</th><th>结果</th><th>实测</th></tr></thead>
+          <tbody id="taskBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn secondary sm" onclick="loadTasks(taskPage-1)">上一页</button>
+          <span id="taskPageInfo" class="dim"></span>
+          <button class="btn secondary sm" onclick="loadTasks(taskPage+1)">下一页</button>
+        </div>
+      </div>
+
+      <div class="card sub" id="detailCard" style="display:none">
+        <div class="card-head"><h2>养护执行 <span id="detailCode" class="dim"></span></h2>
+          <span id="detailStatus" class="dim"></span></div>
+        <div id="execInfo" class="exec-box"></div>
+        <div class="toolbar">
+          <label class="muted text-sm">实测温度</label><input id="execTemp" type="number" step="0.1" style="width:100px">
+          <label class="muted text-sm">实测湿度</label><input id="execHum" type="number" step="0.1" style="width:100px">
+          <label class="muted text-sm">结果</label><select id="execResult"></select>
+          <label class="muted text-sm">异常原因</label><select id="execReason"></select>
+          <input id="execNote" placeholder="养护备注" style="min-width:180px">
+          <button class="btn" id="btnExecute" onclick="executeTask()">提交养护结果</button>
+          <button class="btn secondary sm" id="btnCancel" onclick="cancelTask()">取消任务</button>
+        </div>
+        <div id="handleCard" style="display:none">
+          <h3>异常处置（只留痕，不纠偏库存）</h3>
+          <div class="toolbar">
+            <input id="handleNote" placeholder="处置说明（必填）" style="min-width:300px">
+            <button class="btn" id="btnHandle" onclick="handleTask()">登记处置</button>
+          </div>
+        </div>
+        <h3>留痕</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>时间</th><th>动作</th><th>结果</th><th>实测</th><th>原因</th><th>说明</th><th>操作人</th></tr></thead>
+          <tbody id="detailLogs"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>养护留痕查询 <span id="logStats" class="dim"></span></h2>
+          <button class="btn secondary sm" id="btnLogs" onclick="loadLogs(1)">查询</button></div>
+        <div class="toolbar">
+          <label class="muted text-sm">动作</label><select id="logAction"></select>
+          <input id="logKeyword" placeholder="任务 / 计划编号 / 说明" style="min-width:200px">
+          <button class="btn secondary sm" onclick="clearLogFilter()">清空条件</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>时间</th><th>任务</th><th>计划</th><th>项目</th><th>到期日</th>
+            <th>动作</th><th>结果</th><th>实测</th><th>原因</th><th>说明</th><th>操作人</th></tr></thead>
+          <tbody id="logBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn secondary sm" onclick="loadLogs(logPage-1)">上一页</button>
+          <span id="logPageInfo" class="dim"></span>
+          <button class="btn secondary sm" onclick="loadLogs(logPage+1)">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+let D = { project_labels:{}, cycle_labels:{}, reason_labels:{}, result_labels:{} };
+let planPage = 1, taskPage = 1, logPage = 1, editingPlan = null, currentTask = null;
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+function emptyRow(id, colspan, text) {
+  document.getElementById(id).innerHTML = `<tr><td colspan="${colspan}" class="muted">${esc(text)}</td></tr>`;
+}
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function tag(text, cls) { return `<span class="tag ${cls||"off"}">${esc(text)}</span>`; }
+function planStatus(s) {
+  return tag(s === "active" ? "启用" : "停用", s === "active" ? "ok" : "off");
+}
+function taskStatus(s) {
+  const m = { pending:["待执行","warn"], done:["已完成","ok"], abnormal:["异常待处置","danger"],
+              handled:["已处置","info"], cancelled:["已取消","off"] };
+  const v = m[s] || [s, "off"];
+  return tag(v[0], v[1]);
+}
+function threshold(t) {
+  const parts = [];
+  if (t.temp_min != null || t.temp_max != null) parts.push(`${t.temp_min ?? "—"}~${t.temp_max ?? "—"}℃`);
+  if (t.hum_min != null || t.hum_max != null) parts.push(`${t.hum_min ?? "—"}~${t.hum_max ?? "—"}%`);
+  return esc(parts.join(" / ") || "未设置");
+}
+function actionLabel(a) {
+  return { generated:"生成任务", checked:"养护正常", abnormal:"登记异常",
+           handled:"异常处置", cancelled:"任务取消" }[a] || a;
+}
+
+async function loadDict() {
+  D = await api("GET", "/api/care/dict");
+  document.getElementById("planProject").innerHTML = D.projects
+    .map((x) => `<option value="${esc(x)}">${esc(D.project_labels[x])}</option>`).join("");
+  document.getElementById("planCycle").innerHTML = D.cycles
+    .map((x) => `<option value="${esc(x)}">${esc(D.cycle_labels[x])}</option>`).join("");
+  document.getElementById("execResult").innerHTML = D.results
+    .map((x) => `<option value="${esc(x)}">${esc(D.result_labels[x])}</option>`).join("");
+  document.getElementById("execReason").innerHTML = `<option value="">请选择原因码</option>` +
+    D.reasons.map((x) => `<option value="${esc(x)}">${esc(D.reason_labels[x])}</option>`).join("");
+  document.getElementById("logAction").innerHTML = `<option value="">全部动作</option>` +
+    D.actions.map((x) => `<option value="${esc(x)}">${esc(actionLabel(x))}</option>`).join("");
+  document.getElementById("taskStatus").innerHTML = `<option value="">全部状态</option>` +
+    D.task_statuses.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+}
+
+async function loadOptions() {
+  const [owners, warehouses, locations, plans] = await Promise.all([
+    api("GET", "/api/owners?page_size=200"),
+    api("GET", "/api/warehouses?page_size=200"),
+    api("GET", "/api/locations?page_size=200"),
+    api("GET", "/api/care-plans?page_size=200"),
+  ]);
+  document.getElementById("planOwner").innerHTML = (owners.owners || [])
+    .map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}</option>`).join("");
+  document.getElementById("planWarehouse").innerHTML = `<option value="0">不限仓库</option>` +
+    (warehouses.warehouses || []).map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}</option>`).join("");
+  document.getElementById("planLocation").innerHTML = `<option value="0">全库位</option>` +
+    (locations.locations || []).map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.name)}</option>`).join("");
+  const old = document.getElementById("genPlan").value;
+  document.getElementById("genPlan").innerHTML = `<option value="">全部到期计划</option>` +
+    (plans.plans || []).filter((x) => x.status === "active")
+      .map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(D.project_labels[x.project] || x.project)}</option>`).join("");
+  if (old) document.getElementById("genPlan").value = old;
+}
+
+async function loadOverview() {
+  const o = await api("GET", "/api/care/overview");
+  document.getElementById("overview").innerHTML =
+    `<div class="stat">启用计划<b>${o.plans.active || 0}</b></div>` +
+    `<div class="stat">待执行任务<b>${o.tasks.pending || 0}</b></div>` +
+    `<div class="stat">今日到期<b>${o.due_today}</b></div>` +
+    `<div class="stat">异常待处置<b>${o.abnormal_open}</b></div>` +
+    `<div class="stat">已完成 / 已处置<b>${(o.tasks.done || 0) + (o.tasks.handled || 0)}</b></div>`;
+}
+
+async function loadPlans(page) {
+  planPage = Math.max(1, page || 1);
+  const d = await api("GET", `/api/care-plans?page=${planPage}&page_size=20`);
+  document.getElementById("planCount").textContent = `共 ${d.total} 条`;
+  document.getElementById("planPageInfo").textContent = `第 ${d.page} / ${Math.max(1, Math.ceil(d.total / d.page_size))} 页`;
+  const body = document.getElementById("planBody");
+  if (!d.plans.length) { emptyRow("planBody", 9, "暂无养护计划，请在下方创建"); return; }
+  body.innerHTML = d.plans.map((p) => {
+    const scope = p.location_code ? esc(p.location_code) : (p.warehouse_code ? esc(p.warehouse_code) : "不限");
+    return `<tr><td>${esc(p.code)}</td><td>${esc(p.owner_name || p.owner_code || p.owner_id)}</td>` +
+      `<td>${scope}</td><td>${esc(p.project_label)}</td>` +
+      `<td>${esc(D.cycle_labels[p.cycle] || p.cycle)}${p.cycle === "custom" ? ` (${p.cycle_days}天)` : ""}</td>` +
+      `<td>${threshold(p)}</td><td>${esc(p.next_due_date)}</td><td>${planStatus(p.status)}</td>` +
+      `<td><button class="btn secondary sm" onclick="editPlan(${p.id})">编辑</button> ` +
+      `<button class="btn secondary sm" onclick="togglePlan(${p.id},'${p.status}')">${p.status === "active" ? "停用" : "启用"}</button></td></tr>`;
+  }).join("");
+}
+
+async function editPlan(id) {
+  const p = await api("GET", `/api/care-plans/${id}`);
+  editingPlan = id;
+  document.getElementById("planFormTitle").textContent = `编辑养护计划 · ${p.code}`;
+  document.getElementById("planSubmit").textContent = "保存修改";
+  document.getElementById("planOwner").value = String(p.owner_id);
+  document.getElementById("planWarehouse").value = String(p.warehouse_id);
+  document.getElementById("planLocation").value = String(p.location_id);
+  document.getElementById("planProject").value = p.project;
+  document.getElementById("planCycle").value = p.cycle;
+  document.getElementById("planDays").value = p.cycle_days;
+  for (const [k, v] of [["tempMin","temp_min"],["tempMax","temp_max"],["humMin","hum_min"],["humMax","hum_max"]]) {
+    document.getElementById(k).value = p[v] == null ? "" : p[v];
+  }
+  document.getElementById("planDue").value = p.next_due_date;
+  document.getElementById("planNote").value = p.note || "";
+}
+
+function resetPlanForm() {
+  editingPlan = null;
+  document.getElementById("planFormTitle").textContent = "新建养护计划";
+  document.getElementById("planSubmit").textContent = "创建计划";
+  document.getElementById("planDue").value = today();
+  for (const id of ["planDays","tempMin","tempMax","humMin","humMax","planNote"]) {
+    document.getElementById(id).value = id === "planDays" ? "7" : "";
+  }
+}
+
+function planPayload() {
+  return {
+    owner_id: Number(document.getElementById("planOwner").value),
+    warehouse_id: Number(document.getElementById("planWarehouse").value),
+    location_id: Number(document.getElementById("planLocation").value),
+    project: document.getElementById("planProject").value,
+    cycle: document.getElementById("planCycle").value,
+    cycle_days: Number(document.getElementById("planDays").value || 7),
+    temp_min: document.getElementById("tempMin").value,
+    temp_max: document.getElementById("tempMax").value,
+    hum_min: document.getElementById("humMin").value,
+    hum_max: document.getElementById("humMax").value,
+    next_due_date: document.getElementById("planDue").value,
+    note: document.getElementById("planNote").value,
+  };
+}
+
+async function savePlan() {
+  try {
+    const p = planPayload();
+    if (editingPlan) {
+      await api("POST", `/api/care-plans/${editingPlan}/update`, p);
+      msg("养护计划已更新");
+    } else {
+      await api("POST", "/api/care-plans", p);
+      msg("养护计划已创建");
+    }
+    resetPlanForm();
+    await Promise.all([loadPlans(planPage), loadOptions(), loadOverview()]);
+  } catch (e) { msg("保存失败：" + e.message, "error"); }
+}
+
+async function togglePlan(id, status) {
+  try {
+    await api("POST", `/api/care-plans/${id}/toggle`, { status: status === "active" ? "disabled" : "active" });
+    msg("计划状态已切换");
+    await Promise.all([loadPlans(planPage), loadOptions(), loadOverview()]);
+  } catch (e) { msg("切换失败：" + e.message, "error"); }
+}
+
+async function generateTasks() {
+  try {
+    const plan = document.getElementById("genPlan").value;
+    const due = document.getElementById("genDue").value;
+    const body = {};
+    if (plan) body.plan_id = Number(plan);
+    if (due) body.due_date = due;
+    const r = await api("POST", "/api/care-tasks/generate", body);
+    msg(`生成 ${r.generated} 条任务（跳过 ${r.skipped} 条）`);
+    await Promise.all([loadTasks(1), loadPlans(planPage), loadOverview(), loadLogs(1)]);
+  } catch (e) { msg("生成失败：" + e.message, "error"); }
+}
+
+async function loadTasks(page) {
+  taskPage = Math.max(1, page || 1);
+  const qs = new URLSearchParams({ page: taskPage, page_size: 20 });
+  const st = document.getElementById("taskStatus").value;
+  const kw = document.getElementById("taskKeyword").value.trim();
+  if (st) qs.set("status", st);
+  if (kw) qs.set("keyword", kw);
+  const d = await api("GET", "/api/care-tasks?" + qs.toString());
+  document.getElementById("taskCount").textContent = `共 ${d.total} 条`;
+  document.getElementById("taskPageInfo").textContent = `第 ${d.page} / ${Math.max(1, Math.ceil(d.total / d.page_size))} 页`;
+  const body = document.getElementById("taskBody");
+  if (!d.tasks.length) { emptyRow("taskBody", 10, "暂无养护任务，点击「生成到期任务」"); return; }
+  body.innerHTML = d.tasks.map((t) =>
+    `<tr class="task-row" onclick="openTask(${t.id})"><td>${esc(t.code)}</td>` +
+    `<td>${esc(t.plan_code)}</td><td>${esc(t.owner_code || t.owner_id)}</td>` +
+    `<td>${esc(t.location_code || "全库位")}</td><td>${esc(t.project_label)}</td>` +
+    `<td>${esc(t.due_date)}</td><td>${threshold(t)}</td><td>${taskStatus(t.status)}</td>` +
+    `<td>${esc(t.result ? (D.result_labels[t.result] || t.result) : "—")}</td>` +
+    `<td>${esc(t.temperature != null ? `${t.temperature}℃` : "—")} ${esc(t.humidity != null ? `${t.humidity}%` : "")}</td></tr>`
+  ).join("");
+}
+
+async function openTask(id) {
+  const t = await api("GET", `/api/care-tasks/${id}`);
+  currentTask = t;
+  document.getElementById("detailCard").style.display = "block";
+  document.getElementById("detailCode").textContent = t.code;
+  document.getElementById("detailStatus").innerHTML = taskStatus(t.status);
+  document.getElementById("execInfo").innerHTML =
+    `计划 <b>${esc(t.plan_code)}</b> · 项目 <b>${esc(t.project_label)}</b> · 到期 <b>${esc(t.due_date)}</b>` +
+    ` · 阈值 <b>${threshold(t)}</b> · 范围 <b>${esc(t.location_code || "全库位")}</b>` +
+    (t.handled_note ? `<br>处置说明：${esc(t.handled_note)}（${esc(t.handler || "—")}）` : "");
+  document.getElementById("execTemp").value = t.temperature == null ? "" : t.temperature;
+  document.getElementById("execHum").value = t.humidity == null ? "" : t.humidity;
+  document.getElementById("execNote").value = t.note || "";
+  document.getElementById("execResult").value = t.result || "normal";
+  document.getElementById("execReason").value = t.reason_code || "";
+  const closed = t.status !== "pending";
+  document.getElementById("btnExecute").disabled = closed;
+  document.getElementById("btnCancel").disabled = closed;
+  document.getElementById("handleCard").style.display = t.status === "abnormal" ? "block" : "none";
+  document.getElementById("detailLogs").innerHTML = (t.logs || []).map((l) =>
+    `<tr><td>${esc(l.created_at)}</td><td>${esc(actionLabel(l.action))}</td>` +
+    `<td>${esc(l.result ? (D.result_labels[l.result] || l.result) : "—")}</td>` +
+    `<td>${esc(l.temperature != null ? `${l.temperature}℃` : "—")} ${esc(l.humidity != null ? `${l.humidity}%` : "")}</td>` +
+    `<td>${esc(l.reason_label || "—")}</td><td>${esc(l.note)}</td><td>${esc(l.operator || "—")}</td></tr>`
+  ).join("");
+  document.getElementById("detailCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function executeTask() {
+  if (!currentTask) return;
+  try {
+    await api("POST", `/api/care-tasks/${currentTask.id}/execute`, {
+      temperature: document.getElementById("execTemp").value,
+      humidity: document.getElementById("execHum").value,
+      result: document.getElementById("execResult").value,
+      reason_code: document.getElementById("execReason").value,
+      note: document.getElementById("execNote").value,
+    });
+    msg("养护结果已提交");
+    await Promise.all([openTask(currentTask.id), loadTasks(taskPage), loadLogs(1), loadOverview()]);
+  } catch (e) { msg("提交失败：" + e.message, "error"); }
+}
+
+async function handleTask() {
+  if (!currentTask) return;
+  try {
+    await api("POST", `/api/care-tasks/${currentTask.id}/handle`, {
+      handled_note: document.getElementById("handleNote").value,
+    });
+    msg("异常处置已留痕（库存未改动）");
+    document.getElementById("handleNote").value = "";
+    await Promise.all([openTask(currentTask.id), loadTasks(taskPage), loadLogs(1), loadOverview()]);
+  } catch (e) { msg("处置失败：" + e.message, "error"); }
+}
+
+async function cancelTask() {
+  if (!currentTask) return;
+  try {
+    await api("POST", `/api/care-tasks/${currentTask.id}/cancel`, {});
+    msg("任务已取消");
+    await Promise.all([openTask(currentTask.id), loadTasks(taskPage), loadLogs(1), loadOverview()]);
+  } catch (e) { msg("取消失败：" + e.message, "error"); }
+}
+
+async function loadLogs(page) {
+  logPage = Math.max(1, page || 1);
+  const qs = new URLSearchParams({ page: logPage, page_size: 20 });
+  const a = document.getElementById("logAction").value;
+  const kw = document.getElementById("logKeyword").value.trim();
+  if (a) qs.set("action", a);
+  if (kw) qs.set("keyword", kw);
+  const d = await api("GET", "/api/care/logs?" + qs.toString());
+  document.getElementById("logStats").textContent = `共 ${d.total} 条 · ` +
+    D.actions.map((x) => `${actionLabel(x)} ${d.stats[x] || 0}`).join(" / ");
+  document.getElementById("logPageInfo").textContent = `第 ${d.page} / ${Math.max(1, Math.ceil(d.total / d.page_size))} 页`;
+  const body = document.getElementById("logBody");
+  if (!d.logs.length) { emptyRow("logBody", 11, "暂无养护留痕"); return; }
+  body.innerHTML = d.logs.map((l) =>
+    `<tr><td>${esc(l.created_at)}</td><td>${esc(l.task_code)}</td><td>${esc(l.plan_code)}</td>` +
+    `<td>${esc(D.project_labels[l.project] || l.project)}</td><td>${esc(l.due_date)}</td>` +
+    `<td>${esc(actionLabel(l.action))}</td><td>${esc(l.result ? (D.result_labels[l.result] || l.result) : "—")}</td>` +
+    `<td>${esc(l.temperature != null ? `${l.temperature}℃` : "—")} ${esc(l.humidity != null ? `${l.humidity}%` : "")}</td>` +
+    `<td>${esc(l.reason_label || "—")}</td><td>${esc(l.note)}</td><td>${esc(l.operator || "—")}</td></tr>`
+  ).join("");
+}
+
+function clearLogFilter() {
+  document.getElementById("logAction").value = "";
+  document.getElementById("logKeyword").value = "";
+  loadLogs(1);
+}
+
+(async function init() {
+  if (window.MWS_NAV_TOOLS) window.MWS_NAV_TOOLS.mount();
+  try {
+    await loadDict();
+    document.getElementById("planDue").value = today();
+    document.getElementById("genDue").value = today();
+    await loadOptions();
+    await Promise.all([loadOverview(), loadPlans(1), loadTasks(1), loadLogs(1)]);
+  } catch (e) { msg("页面初始化失败：" + e.message, "error"); }
+})();
+</script>
+</body>
+</html>

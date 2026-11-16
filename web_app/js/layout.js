@@ -2,7 +2,7 @@
    纯原生，零依赖。独立页面提供 <aside class="sidebar" id="sidebar"></aside> 即可；
    工作台 app.html 通过 window.MWS_NAV_TOOLS.mount() 复用同一份树与交互，只把叶子点击换成开标签。
 
-   结构：一级 3 / 二级 7 / 三级 26；渲染器递归，后续加到第 4 层无需改代码。
+   结构：一级 3 / 二级 7 / 三级 27；渲染器递归，后续加到第 4 层无需改代码。
    展示策略：默认只展开「当前页所在分支」，其余折叠；用户手动展开/收起的节点记在 localStorage。 */
 (function () {
   const NAV = [
@@ -43,6 +43,7 @@
         { href: "/stocktake_plans.html", label: "盘点方案", ico: "🗂️" },
         { href: "/stock_adjustments.html", label: "库存调整", ico: "⚖️" },
         { href: "/inventory_transfers.html", label: "库存转移", ico: "🔀" },
+        { href: "/care.html", label: "养护管理", ico: "🌡️" },
       ]},
     ]},
     { label: "系统管理", ico: "⚙️", children: [
