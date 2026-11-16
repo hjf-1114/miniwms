@@ -39,6 +39,8 @@ PUBLIC_TABLES = (
     "putaway_recommendation",
     # M26 外部单据类别字典：全局可配配置，不按货主隔离
     "external_doc_type_dict",
+    # M35 出库分配留痕：与 M25/M26 推荐日志同属控制面统计，按 dn_id / wave_no 过滤（Q09）
+    "outbound_allocation_log",
 )
 
 # 下列路径不参与数据权限门禁（登录前 / 上下文自检）

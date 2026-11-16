@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>出库波次分配 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#666); margin:0 0 12px; }
+.dim { font-size:12px; color:#64748b; }
+.stat { display:inline-block; min-width:118px; padding:8px 12px; margin:0 8px 8px 0;
+  border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; font-size:12px; color:#475569; }
+.stat b { display:block; font-size:18px; color:#0f172a; margin-top:3px; }
+.tag.ok { background:#e6f6ec; color:#1d7a4d; }
+.tag.warn { background:#fff7ed; color:#9a3412; }
+.tag.off { background:#f1f5f9; color:#64748b; }
+.sub h3 { font-size:14px; font-weight:500; margin:16px 0 8px; }
+.toolbar input[type=date] { padding:5px 7px; border:1px solid #d5dbe4; border-radius:6px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>出库波次分配</h1><div class="crumb">MiniWMS / 仓储作业 / 出库单据 / 波次分配</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>分配参数</h2>
+          <button class="btn secondary sm" onclick="loadDns()">刷新出库单</button>
+        </div>
+        <p class="hint">
+          自动把待拣数量按 <b>先专属后通用 + 组内 FEFO</b> 分摊到批次明细，真实占用
+          <code>allocated_qty</code>（不改在手量），并把批号 / 效期 / 专属客户写进拣货明细。
+          <b>不合格、质检 / 冻结、停用库位、他客户专属</b>的批次自动跳过并留痕；允许拆批与不足量分配。
+          试算只读，不写任何表；执行分配才生成波次号并占用库存。发货严格按分配记录扣减。
+        </p>
+        <div class="toolbar">
+          <label class="muted text-sm">分配策略</label>
+          <select id="strategySel" style="min-width:230px"></select>
+          <label class="muted text-sm">波次号（选填）</label>
+          <input id="waveNo" placeholder="留空自动生成 WV-YYYYMMDD-NNN" style="min-width:250px">
+          <button class="btn secondary" onclick="doPlan()">只读试算</button>
+          <button class="btn" onclick="doAllocate()">执行分配（占用库存）</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>待分配出库单 <span id="dnCount" class="dim"></span></h2>
+          <button class="btn secondary sm" onclick="toggleAll(true)">全选</button>
+          <button class="btn secondary sm" onclick="toggleAll(false)">清空</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th style="width:38px"></th><th>ID</th><th>单号</th><th>货主</th><th>客户</th>
+              <th>总数量</th><th>状态</th><th>波次</th><th style="width:120px">操作</th>
+            </tr></thead>
+            <tbody id="dnBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card sub" id="resultCard" style="display:none">
+        <div class="card-head">
+          <h2>分配结果 <span id="resultFlag" class="dim"></span></h2>
+          <span id="resultWave" class="dim"></span>
+        </div>
+        <div id="resultStats"></div>
+        <h3>分配明细（按 FEFO 顺序）</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>出库单</th><th>SKU</th><th>库位</th><th>批号</th><th>效期</th>
+            <th>专属客户</th><th>数量</th><th>引擎 / 规则</th></tr></thead>
+          <tbody id="allocBody"></tbody>
+        </table></div>
+        <h3>跳批留痕 <span class="dim">（不合格 / 冻结 / 专属不匹配 / 库位停用）</span></h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>出库单</th><th>库位</th><th>批号</th><th>效期</th>
+            <th>可用</th><th>原因码</th><th>说明</th></tr></thead>
+          <tbody id="skipBody"></tbody>
+        </table></div>
+        <h3>短拣（库存不足）</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>出库单</th><th>SKU</th><th>缺量</th><th>说明</th></tr></thead>
+          <tbody id="shortBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>波次汇总</h2>
+          <button class="btn secondary sm" onclick="loadWaves()">刷新</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>波次号</th><th>单据数</th><th>分配数量</th><th>日志条数</th><th>创建时间</th><th>操作</th></tr></thead>
+          <tbody id="waveBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>分配留痕查询 <span id="logStats" class="dim"></span></h2>
+          <button class="btn secondary sm" onclick="loadLogs(1)">查询</button>
+        </div>
+        <div class="toolbar">
+          <label class="muted text-sm">波次</label><input id="logWave" placeholder="WV-…">
+          <label class="muted text-sm">出库单 ID</label><input id="logDn" style="width:90px" placeholder="ID">
+          <label class="muted text-sm">动作</label><select id="logAction"></select>
+          <label class="muted text-sm">起</label><input type="date" id="logFrom">
+          <label class="muted text-sm">止</label><input type="date" id="logTo">
+          <button class="btn secondary sm" onclick="clearLogFilter()">清空条件</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>时间</th><th>波次</th><th>出库单</th><th>动作</th><th>原因码</th>
+            <th>批号</th><th>库位</th><th>数量</th><th>引擎 / 规则</th><th>操作人</th></tr></thead>
+          <tbody id="logBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn secondary sm" onclick="loadLogs(logPage - 1)">上一页</button>
+          <span id="logPageInfo" class="dim"></span>
+          <button class="btn secondary sm" onclick="loadLogs(logPage + 1)">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script>
+let dictData = { strategies: [], actions: [], skip_reasons: [] };
+let dnRows = [];
+let logPage = 1;
+let lastResult = null;
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function emptyRow(bodyId, colspan, text) {
+  document.getElementById(bodyId).innerHTML =
+    `<tr><td colspan="${colspan}" class="muted">${esc(text)}</td></tr>`;
+}
+function tagOf(text, cls) { return `<span class="tag ${cls || "off"}">${esc(text)}</span>`; }
+function reasonLabel(code) {
+  const hit = dictData.skip_reasons.find((x) => x.value === code);
+  return hit ? hit.label : (code || "");
+}
+function actionLabel(code) {
+  const hit = dictData.actions.find((x) => x.value === code);
+  return hit ? hit.label : (code || "");
+}
+
+async function loadDict() {
+  try {
+    dictData = await api("GET", "/api/outbound/dict");
+    document.getElementById("strategySel").innerHTML = dictData.strategies
+      .map((x) => `<option value="${esc(x.value)}">${esc(x.label)}</option>`).join("");
+    document.getElementById("logAction").innerHTML =
+      `<option value="">全部动作</option>` + dictData.actions
+        .map((x) => `<option value="${esc(x.value)}">${esc(x.label)}</option>`).join("");
+  } catch (e) { msg("字典加载失败：" + e.message, "error"); }
+}
+
+async function loadDns() {
+  try {
+    const d = await api("GET", "/api/dns?page_size=100");
+    dnRows = (d.dns || []).filter((x) => x.status === "open" || x.status === "picking");
+    document.getElementById("dnCount").textContent = `（${dnRows.length} 张可分配）`;
+    const body = document.getElementById("dnBody");
+    if (!dnRows.length) { emptyRow("dnBody", 9, "暂无待拣货 / 拣货中的出库单"); return; }
+    body.innerHTML = dnRows.map((x) => `<tr>
+      <td><input type="checkbox" class="dnChk" value="${x.id}"></td>
+      <td>${x.id}</td><td>${esc(x.code)}</td>
+      <td>${esc(x.owner_code || "")} · ${esc(x.owner_name || "")}</td>
+      <td>${esc(x.customer_code || "-")}</td>
+      <td>${x.total_qty ?? 0}</td>
+      <td>${tagOf(x.status === "picking" ? "拣货中" : "待拣货", x.status === "picking" ? "warn" : "off")}</td>
+      <td class="dim">${esc(x.wave_no || "—")}</td>
+      <td><button class="btn secondary sm" onclick="unallocate(${x.id})">取消分配</button></td>
+    </tr>`).join("");
+  } catch (e) { msg("出库单加载失败：" + e.message, "error"); }
+}
+
+function toggleAll(on) {
+  document.querySelectorAll(".dnChk").forEach((c) => { c.checked = !!on; });
+}
+
+function selectedDnIds() {
+  return [...document.querySelectorAll(".dnChk:checked")].map((c) => Number(c.value));
+}
+function payload() {
+  const wave = document.getElementById("waveNo").value.trim();
+  const p = { dn_ids: selectedDnIds(), strategy: document.getElementById("strategySel").value };
+  if (wave) p.wave_no = wave;
+  return p;
+}
+
+async function doPlan() {
+  const ids = selectedDnIds();
+  if (!ids.length) { msg("请先勾选至少一张出库单", "error"); return; }
+  try {
+    const d = await api("POST", "/api/outbound/plan", payload());
+    renderResult(d, true);
+    msg(`试算完成：预计分配 ${d.totals.allocated_qty}，跳批 ${d.totals.skipped_batches}，短拣 ${d.totals.shortages}（未写库）`);
+  } catch (e) { msg("试算失败：" + e.message, "error"); }
+}
+
+async function doAllocate() {
+  const ids = selectedDnIds();
+  if (!ids.length) { msg("请先勾选至少一张出库单", "error"); return; }
+  if (!confirm(`确认对 ${ids.length} 张出库单执行分配？\n将真实占用 allocated_qty、写拣货明细与分配日志，可用「取消分配」回滚。`)) return;
+  try {
+    const d = await api("POST", "/api/outbound/allocate", payload());
+    renderResult(d, false);
+    msg(`分配完成：波次 ${d.wave_no || "—"}，分配 ${d.totals.allocated_qty}，跳批 ${d.totals.skipped_batches}，短拣 ${d.totals.shortages}`);
+    await loadDns();
+    await loadWaves();
+    await loadLogs(1);
+  } catch (e) { msg("分配失败：" + e.message, "error"); }
+}
+
+function renderResult(d, dry) {
+  lastResult = d;
+  document.getElementById("resultCard").style.display = "";
+  document.getElementById("resultFlag").textContent =
+    dry ? "只读试算（未写库）" : "已写库（真实占用）";
+  document.getElementById("resultWave").textContent = d.wave_no ? "波次 " + d.wave_no : "";
+  const t = d.totals;
+  document.getElementById("resultStats").innerHTML = [
+    ["出库单数", t.dn_count], ["分配行数", t.allocated_lines], ["分配数量", t.allocated_qty],
+    ["跳批批次", t.skipped_batches], ["短拣行数", t.shortages],
+  ].map(([k, v]) => `<span class="stat">${esc(k)}<b>${esc(v)}</b></span>`).join("");
+
+  const ab = document.getElementById("allocBody");
+  ab.innerHTML = d.allocations.length ? d.allocations.map((a) => `<tr>
+    <td>${esc(a.dn_code || ("#" + a.dn_id))}</td><td>${esc(a.sku)}</td>
+    <td>${esc(a.location_code || ("#" + a.location_id))}</td>
+    <td>${esc(a.batch_no)}</td><td>${esc(a.expiry_date || "—")}</td>
+    <td>${a.designated_customer_id ? "#" + a.designated_customer_id : tagOf("通用", "off")}</td>
+    <td><b>${esc(a.qty)}</b></td>
+    <td class="dim">${esc(a.engine)} / ${a.rule_id ? "规则 #" + a.rule_id + " · P" + esc(a.rule_priority) : "默认策略"}</td>
+  </tr>`).join("") : `<tr><td colspan="8" class="muted">无可分配批次</td></tr>`;
+
+  const sb = document.getElementById("skipBody");
+  sb.innerHTML = d.skipped.length ? d.skipped.map((s) => `<tr>
+    <td>#${s.dn_id}</td><td>${esc(s.location_code || ("#" + s.location_id))}</td>
+    <td>${esc(s.batch_no)}</td><td>${esc(s.expiry_date || "—")}</td>
+    <td>${esc(s.available)}</td><td>${tagOf(s.reason_code, "warn")}</td>
+    <td class="dim">${esc(reasonLabel(s.reason_code) || s.reason)}</td>
+  </tr>`).join("") : `<tr><td colspan="7" class="muted">无跳批</td></tr>`;
+
+  const hb = document.getElementById("shortBody");
+  hb.innerHTML = d.shortages.length ? d.shortages.map((s) => `<tr>
+    <td>${esc(s.dn_code || ("#" + s.dn_id))}</td><td>${esc(s.sku)}</td>
+    <td><b>${esc(s.short_qty)}</b></td><td class="dim">${esc(s.reason)}</td>
+  </tr>`).join("") : `<tr><td colspan="4" class="muted">无短拣</td></tr>`;
+}
+
+async function unallocate(dnId) {
+  if (!confirm(`确认取消出库单 #${dnId} 的全部分配？\n将对称释放 allocated_qty、删除拣货明细、回退已拣数量。`)) return;
+  try {
+    const d = await api("POST", "/api/outbound/unallocate", { dn_id: dnId });
+    msg(`已取消分配：释放 ${d.released_qty}，状态回到 ${d.status}`);
+    await loadDns(); await loadLogs(1);
+  } catch (e) { msg("取消分配失败：" + e.message, "error"); }
+}
+
+async function loadWaves() {
+  try {
+    const d = await api("GET", "/api/outbound/waves?limit=20");
+    const body = document.getElementById("waveBody");
+    body.innerHTML = d.waves.length ? d.waves.map((w) => `<tr>
+      <td><b>${esc(w.wave_no)}</b></td><td>${esc(w.dn_count)}</td>
+      <td>${esc(w.allocated_qty ?? 0)}</td><td>${esc(w.log_count)}</td>
+      <td class="dim">${esc(w.created_at || "—")}</td>
+      <td><button class="btn secondary sm" onclick="viewWave('${esc(w.wave_no)}')">查看留痕</button></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="muted">暂无波次（执行一次分配后生成）</td></tr>`;
+  } catch (e) { msg("波次加载失败：" + e.message, "error"); }
+}
+
+function viewWave(no) {
+  document.getElementById("logWave").value = no;
+  document.getElementById("logAction").value = "";
+  document.getElementById("logDn").value = "";
+  loadLogs(1);
+}
+
+function clearLogFilter() {
+  ["logWave", "logDn", "logFrom", "logTo"].forEach((id) => { document.getElementById(id).value = ""; });
+  document.getElementById("logAction").value = "";
+  loadLogs(1);
+}
+
+async function loadLogs(page) {
+  logPage = Math.max(1, page || 1);
+  const qs = new URLSearchParams({ page: logPage, page_size: 20 });
+  const wave = document.getElementById("logWave").value.trim();
+  const dn = document.getElementById("logDn").value.trim();
+  const act = document.getElementById("logAction").value;
+  const from = document.getElementById("logFrom").value;
+  const to = document.getElementById("logTo").value;
+  if (wave) qs.set("wave_no", wave);
+  if (dn) qs.set("dn_id", dn);
+  if (act) qs.set("action", act);
+  if (from) qs.set("date_from", from);
+  if (to) qs.set("date_to", to);
+  try {
+    const d = await api("GET", "/api/outbound/logs?" + qs);
+    const stats = Object.entries(d.stats || {}).map(([k, v]) => `${actionLabel(k)} ${v}`).join(" · ");
+    document.getElementById("logStats").textContent = stats ? `（${stats}）` : "";
+    document.getElementById("logPageInfo").textContent =
+      `第 ${d.page} 页 / 共 ${d.total} 条`;
+    const body = document.getElementById("logBody");
+    body.innerHTML = d.logs.length ? d.logs.map((x) => `<tr>
+      <td class="dim">${esc(x.created_at || "—")}</td><td>${esc(x.wave_no || "—")}</td>
+      <td>#${x.dn_id}</td><td>${tagOf(actionLabel(x.action), x.action === "allocated" ? "ok" : (x.action === "skipped" || x.action === "short" ? "warn" : "off"))}</td>
+      <td class="dim">${esc(reasonLabel(x.reason_code) || x.reason_code || "—")}</td>
+      <td>${esc(x.batch_no || "—")}</td><td>${x.location_id ? "#" + x.location_id : "—"}</td>
+      <td>${esc(x.qty)}</td>
+      <td class="dim">${esc(x.engine || "—")} / ${x.rule_id ? "P" + esc(x.rule_priority) : "默认"}</td>
+      <td>${esc(x.operator || "—")}</td>
+    </tr>`).join("") : `<tr><td colspan="10" class="muted">暂无留痕</td></tr>`;
+  } catch (e) { msg("留痕加载失败：" + e.message, "error"); }
+}
+
+(async function init() {
+  await loadDict();
+  await loadDns();
+  await loadWaves();
+  await loadLogs(1);
+})();
+</script>
+</body>
+</html>

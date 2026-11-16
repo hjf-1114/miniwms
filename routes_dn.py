@@ -17,7 +17,7 @@ import scope as S
 from flask import Blueprint, jsonify, request
 
 import constants as C
-from inventory_service import StockError, adjust_stock
+from inventory_service import BATCH_DIMS, StockError, adjust_stock
 from main import get_db, gen_doc_no, request_payload
 import reservation_audit as RA
 
@@ -377,9 +377,16 @@ def ship(dn_id):
         risks = inspection["risks"] if inspection else []
         logged = RA.record_risk(db, dn_id, risks, operator, acknowledged)
         for p in picks:
+            # M35：新分配行带完整批次维度，发货严格按分配记录扣减（强管控批次维度）；
+            # 历史 dn_pick 行无批号，回退 M21 的 FEFO 自动推断，老单据不破（Q07）。
+            batches = None
+            if str(p["batch_no"] or "").strip():
+                dim = {k: p[k] for k in BATCH_DIMS}
+                dim["production_date"] = p["production_date"] or ""
+                batches = [dict(dim, qty=-p["qty"], allocated=-p["qty"])]
             adjust_stock(db, dn["owner_id"], p["product_id"],
                          p["location_id"], -p["qty"], C.MOVEMENT_DN_SHIP, dn_id,
-                         allocated_delta=-p["qty"],
+                         allocated_delta=-p["qty"], batches=batches,
                          note=f"DN {dn['code']} 发货出库")
         db.execute(
             "UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",

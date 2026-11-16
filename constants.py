@@ -328,3 +328,56 @@ EXTERNAL_DOC_TYPE_DICT_SEED = (
     ("PO", "采购订单"), ("SO", "销售订单"), ("EDI", "EDI 推送单"),
     ("RET", "销退回仓"), ("TR", "调拨入仓"), ("OTH", "其他外部单据"),
 )
+
+# ── M35 出库波次分配 + FEFO（用户 2026-11-10 3A 定稿）──────────────────
+# 与 M25/M26 共用 putaway_rule 表，rule_type='outbound'；不另建规则体系。
+WAVE_PREFIX = "WV"                       # WV-YYYYMMDD-NNN，轻波次不建主表
+WAVE_NO_MAXLEN = 32
+
+# 排序策略：先专属后通用（默认）/ 严格 FEFO（忽略专属分组）
+OUTBOUND_STRATEGY_OWN_FIRST = "own_first"
+OUTBOUND_STRATEGY_STRICT_FEFO = "strict_fefo"
+OUTBOUND_STRATEGIES = (OUTBOUND_STRATEGY_OWN_FIRST, OUTBOUND_STRATEGY_STRICT_FEFO)
+OUTBOUND_STRATEGY_LABELS = {
+    OUTBOUND_STRATEGY_OWN_FIRST: "先专属后通用（组内 FEFO）",
+    OUTBOUND_STRATEGY_STRICT_FEFO: "严格 FEFO（忽略专属分组）",
+}
+OUTBOUND_ENGINE_RULES = "rules"           # 命中 outbound 规则行
+OUTBOUND_ENGINE_LEGACY = "legacy"         # 零启用 outbound 规则，按安全默认分配
+
+# 分配日志 action（allocated / skipped / short / unallocated / preview）
+OUTBOUND_ALLOC_ACTIONS = ("allocated", "skipped", "short", "unallocated", "preview")
+OUTBOUND_ACTION_LABELS = {
+    "allocated": "已分配", "skipped": "跳批", "short": "短拣",
+    "unallocated": "取消分配", "preview": "试算",
+}
+
+# 跳批原因码：不合格 / 冻结 / 停用库位 / 专属冲突 / 无可用量
+OUTBOUND_SKIP_QUALITY = "QUALITY_NOT_ALLOCATABLE"
+OUTBOUND_SKIP_STATUS = "STOCK_STATUS_BLOCKED"
+OUTBOUND_SKIP_LOCATION = "LOCATION_DISABLED"
+OUTBOUND_SKIP_RESERVED = "CUSTOMER_RESERVED_FORBIDDEN"
+OUTBOUND_SKIP_CODES = (OUTBOUND_SKIP_QUALITY, OUTBOUND_SKIP_STATUS,
+                       OUTBOUND_SKIP_LOCATION, OUTBOUND_SKIP_RESERVED)
+OUTBOUND_SKIP_LABELS = {
+    OUTBOUND_SKIP_QUALITY: "不合格批次不可分配",
+    OUTBOUND_SKIP_STATUS: "质检 / 冻结库存不可分配",
+    OUTBOUND_SKIP_LOCATION: "库位停用或类型不符",
+    OUTBOUND_SKIP_RESERVED: "专属客户不匹配（自动分配跳过）",
+    "SHORTAGE": "可用量不足，已部分分配",
+}
+
+# 质量红线：goods_property / stock_status 的可分配取值（3A「不合格冻结不可分配」）
+OUTBOUND_ALLOCATABLE_GOODS = ("", "合格")
+OUTBOUND_BLOCKED_STATUSES = ("质检", "冻结")
+
+# 6 个权限码：沿用 M24 口径，只落常量不挂装饰器（见 docs/OPEN_QUESTIONS.md Q08）
+OUTBOUND_PERM_PLAN = "outbound_allocation:plan"
+OUTBOUND_PERM_ALLOCATE = "outbound_allocation:allocate"
+OUTBOUND_PERM_UNALLOCATE = "outbound_allocation:unallocate"
+OUTBOUND_PERM_WAVE = "outbound_allocation:wave"
+OUTBOUND_PERM_LOG = "outbound_allocation:log"
+OUTBOUND_PERM_CONFIG = "outbound_allocation:config"
+OUTBOUND_PERMISSIONS = (OUTBOUND_PERM_PLAN, OUTBOUND_PERM_ALLOCATE,
+                        OUTBOUND_PERM_UNALLOCATE, OUTBOUND_PERM_WAVE,
+                        OUTBOUND_PERM_LOG, OUTBOUND_PERM_CONFIG)

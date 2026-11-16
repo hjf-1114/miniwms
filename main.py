@@ -906,6 +906,70 @@ def _migrate_m26(conn):
         )
 
 
+def _migrate_m35(conn):
+    """M35 出库波次分配：``dn_pick`` 扩批次维度 / 波次号，新增分配留痕日志。
+
+    老库逐列 ALTER：历史 ``dn_pick`` 行的批次列全部为空字符串，``ship()`` 会据此
+    回退到 M21 的 FEFO 自动推断，保证老单据不破；新分配行带完整 8 维批次信息，
+    发货严格按分配记录扣减。``dn.wave_no`` 只作展示，不参与状态机。
+    """
+    pick_cols = {
+        "batch_no": "TEXT NOT NULL DEFAULT ''",
+        "batch_key": "TEXT NOT NULL DEFAULT ''",
+        "internal_batch_no": "TEXT NOT NULL DEFAULT ''",
+        "designated_customer_id": "INTEGER",
+        "goods_property": "TEXT NOT NULL DEFAULT ''",
+        "stock_status": "TEXT NOT NULL DEFAULT ''",
+        "expiry_date": "TEXT NOT NULL DEFAULT ''",
+        "production_date": "TEXT NOT NULL DEFAULT ''",
+        "wave_no": "TEXT NOT NULL DEFAULT ''",
+        "rule_id": "INTEGER",
+    }
+    # 注意：SQLite 的 ALTER TABLE ADD COLUMN 不允许函数型默认值
+    # （DEFAULT (datetime(...)) 会报 "Cannot add a column with non-constant default"）。
+    # M35 不依赖 dn_pick.created_at，留痕时间统一取 outbound_allocation_log.created_at，
+    # 因此老库不补这一列；新表 CREATE TABLE 里才允许函数默认值。
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(dn_pick)")}
+    for name, ddl in pick_cols.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE dn_pick ADD COLUMN {name} {ddl}")
+    dn_cols = {r["name"] for r in conn.execute("PRAGMA table_info(dn)")}
+    if "wave_no" not in dn_cols:
+        conn.execute("ALTER TABLE dn ADD COLUMN wave_no TEXT NOT NULL DEFAULT ''")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS outbound_allocation_log (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            wave_no                 TEXT    NOT NULL DEFAULT '',
+            dn_id                   INTEGER NOT NULL,
+            line_id                 INTEGER,
+            product_id              INTEGER,
+            location_id             INTEGER,
+            batch_no                TEXT    NOT NULL DEFAULT '',
+            batch_key               TEXT    NOT NULL DEFAULT '',
+            designated_customer_id  INTEGER,
+            goods_property          TEXT    NOT NULL DEFAULT '',
+            stock_status            TEXT    NOT NULL DEFAULT '',
+            expiry_date             TEXT    NOT NULL DEFAULT '',
+            qty                     REAL    NOT NULL DEFAULT 0,
+            action                  TEXT    NOT NULL,
+            reason_code             TEXT    NOT NULL DEFAULT '',
+            reason                  TEXT    NOT NULL DEFAULT '',
+            rule_id                 INTEGER,
+            rule_priority           INTEGER,
+            strategy                TEXT    NOT NULL DEFAULT '',
+            engine                  TEXT    NOT NULL DEFAULT '',
+            operator                TEXT    NOT NULL DEFAULT '',
+            created_at              TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_oal_wave   ON outbound_allocation_log(wave_no);
+        CREATE INDEX IF NOT EXISTS idx_oal_dn     ON outbound_allocation_log(dn_id);
+        CREATE INDEX IF NOT EXISTS idx_oal_action ON outbound_allocation_log(action);
+        CREATE INDEX IF NOT EXISTS idx_dnp_wave   ON dn_pick(wave_no);
+        """
+    )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1629,6 +1693,7 @@ def init_db(path=None):
         _migrate_m24(conn)
         _migrate_m25(conn)
         _migrate_m26(conn)
+        _migrate_m35(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -1672,6 +1737,7 @@ else:
     from routes_reservation_log import log_bp  # noqa: E402
     from routes_inventory_transfer import it_bp  # noqa: E402
     from routes_putaway_rules import pr_bp  # noqa: E402
+    from routes_outbound_allocation import oa_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1697,3 +1763,4 @@ else:
     app.register_blueprint(log_bp)
     app.register_blueprint(it_bp)
     app.register_blueprint(pr_bp)
+    app.register_blueprint(oa_bp)

@@ -70,7 +70,8 @@
       <tr><td>M26</td><td>规则配置与推荐交互：13 维条件组编辑器 / fallback 链拖拽排序 / 8 项 limits 三态 / 9 条评分权重 / 推荐采纳与驳回（改位必填原因码）/ 命中率·采纳率·驳回率统计 / 外部单据类别字典 / 可复跑 E2E</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>M27 / M29 / M30</td><td>预警 / 外部对接 / CSV（降级暂缓，编号保留）</td><td><span class="tag off">暂缓</span></td></tr>
       <tr><td>M31–M34</td><td>领域蓝图第 1 层：司机车辆 / 产品类型字典 / 序列号台账 / 货位组主数据</td><td><span class="tag off">规划中</span></td></tr>
-      <tr><td>M35–M38</td><td>领域蓝图第 2 层：波次与 FEFO 分配 / 复核 / 养护 / 拆单合单</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>M35</td><td>出库波次分配与 FEFO：轻波次 / 批次级分配 / 先专属后通用 / 拆批与短拣 / 跳批留痕 / 共表 outbound 规则 / 发货按记录批次扣减 / 独立作业页与可复跑 E2E</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M36–M38</td><td>领域蓝图第 2 层：复核 / 养护 / 拆单合单</td><td><span class="tag off">规划中</span></td></tr>
       <tr><td>M28 · M39–M42</td><td>领域蓝图第 4·5 层：经营报表（M28）/ GSP 报表 / 工作量统计 / 打印模板 PDF（字段映射+拖拽排版、预览可临时编辑）/ 自动打印（M42 后置）</td><td><span class="tag off">规划中</span></td></tr>
       <tr><td>架构增强（非里程碑）</td><td>仓库 / 货主双维数据隔离：按仓可选独立数据库 + 货主 MANDT 式 SQL 注入 + 账号可看全部/部分仓与货主 + 作业视角切仓 + 承运商归属货主预留；默认零配置共用主库</td><td><span class="tag ok">已完成</span></td></tr>
       <tr><td>架构增强 · 二次优化（非里程碑）</td><td>货主 × 仓库业务关系格子：多对多关系表 + 矩阵配置页，可见范围由「可见仓 × 可见货主」改为与业务关系取交集，列表 / 详情 / 写入三条路径同步收紧；零登记保持向下兼容。继续 SQLite 方案，多租户 PostgreSQL / RLS 记为未来路线</td><td><span class="tag ok">已完成</span></td></tr>

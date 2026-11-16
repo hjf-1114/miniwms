@@ -27,7 +27,10 @@
   <div class="card">
     <div class="card-head">
       <h2>出库单列表</h2>
-      <button class="btn" onclick="openCreate()">+ 新建出库单</button>
+      <div class="flex">
+        <button class="btn secondary" onclick="openWorkTab('波次分配','/outbound_allocation.html')">波次分配作业</button>
+        <button class="btn" onclick="openCreate()">+ 新建出库单</button>
+      </div>
     </div>
     <div class="toolbar">
       <input id="kw" placeholder="单号搜索">

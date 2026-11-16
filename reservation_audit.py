@@ -56,6 +56,7 @@ def inspect_dn(db, dn_id):
         return None
     picks = db.execute(
         """SELECT dp.location_id, dp.qty, dp.line_id, dl.product_id,
+                  dp.batch_no, dp.designated_customer_id,
                   l.code AS location_code, p.sku, p.name AS product_name
            FROM dn_pick dp
            JOIN dn_line dl ON dl.id = dp.line_id
@@ -67,6 +68,28 @@ def inspect_dn(db, dn_id):
     risks = []
     balances = {}
     for p in picks:
+        # M35：自动分配的 dn_pick 已记录批次归属，风险判定直接用记录值，
+        # 不再用 FEFO 重新推断（否则预检批次与实际扣减批次可能不一致）。
+        # 历史行无批号，继续走原来的 FEFO 快照模拟，保证 M23 行为不破。
+        if str(p["batch_no"] or "").strip():
+            verdict = check_customer_reservation(
+                p["designated_customer_id"], dn["customer_id"])
+            if not verdict["allowed"]:
+                risks.append({
+                    "dn_id": dn_id, "dn_code": dn["code"],
+                    "dn_customer_id": dn["customer_id"],
+                    "owner_id": dn["owner_id"],
+                    "product_id": p["product_id"],
+                    "product_name": p["product_name"], "sku": p["sku"],
+                    "line_id": p["line_id"],
+                    "location_id": p["location_id"],
+                    "location_code": p["location_code"],
+                    "batch_no": p["batch_no"],
+                    "designated_customer_id": p["designated_customer_id"],
+                    "qty": p["qty"], "code": verdict["code"],
+                    "reason": verdict["reason"],
+                })
+            continue
         key = (dn["owner_id"], p["product_id"], p["location_id"])
         if key not in balances:
             balances[key] = _local_balances(db, key)
