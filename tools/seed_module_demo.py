@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M35 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -41,7 +41,11 @@ def raw(sql, params=()):
 
 
 def count(table, where="", params=()):
-    return raw(f"SELECT COUNT(*) AS n FROM {table} {where}", params)[0]["n"]
+    try:
+        return raw(f"SELECT COUNT(*) AS n FROM {table} {where}", params)[0]["n"]
+    except sqlite3.OperationalError:
+        # --check 只读盘点时，新里程碑的表可能还没跑 init_db() 迁移
+        return -1
 
 
 def req(method, path, payload=None, expect=(200, 201), headers=None):
@@ -391,6 +395,108 @@ def m26_rule_editor_data():
             f"规则行 {count('putaway_rule')} 行 / 日志 {count('putaway_recommendation')} 条")
 
 
+# ── 10. M35 出库波次分配：规则 / 波次 / 四类留痕 / 批次拣货明细 ────────────
+def m35_outbound_allocation():
+    """让「波次分配」页打开即有可查数据（幂等、全部走真实 API）。
+
+    造三张演示 DN：① 专属客户不匹配的通用出库单（产生 skipped）、
+    ② 专属客户匹配（产生 allocated + 再取消产生 unallocated）、
+    ③ 无库存物料（产生 short）。另加一条**停用**的 outbound 示例规则行，
+    只作编辑器素材，不改变任何既有分配行为。分配量控制在个位数，不挤占演示库存。
+    """
+    made = []
+    rule_name = "DEMO M35 出库分配示例（停用）"
+    if not count("putaway_rule", "WHERE name=?", (rule_name,)):
+        sets = get("/api/putaway-rule-sets").get("rule_sets") or []
+        if not sets:
+            raise RuntimeError("缺少策略包，请先执行 init_db() 生成 M25 种子")
+        post("/api/putaway-rules", {
+            "rule_set_id": sets[0]["id"], "rule_type": "outbound", "priority": 780,
+            "name": rule_name, "enabled": 0,
+            "note": PREFIX + "M35 出库规则示例，默认停用、不参与命中",
+            "condition": {"doc_type": "销售"},
+            "steps": [{"type": "all_active"}],
+            "limits": {"quality_state": {"enabled": 1}},
+            "score": {"R11": 15, "strategy": "strict_fefo"},
+        })
+        made.append("停用 outbound 示例规则")
+
+    rows = raw("""SELECT sb.owner_id, sb.product_id,
+                         SUM(sb.qty - sb.allocated_qty) AS avail
+                  FROM stock_batch sb JOIN location l ON l.id = sb.location_id
+                  WHERE sb.qty - sb.allocated_qty > 3 AND l.status = 'active'
+                    AND l.loc_type IN ('storage', 'picking')
+                  GROUP BY sb.owner_id, sb.product_id ORDER BY avail DESC LIMIT 1""")
+    if not rows:
+        raise RuntimeError("没有可分配库存，请先运行 tools/seed_demo.py 造主数据")
+    owner_id, product_id = rows[0]["owner_id"], rows[0]["product_id"]
+    whs = raw("SELECT id FROM warehouse WHERE status='active' ORDER BY id LIMIT 1")
+    if not whs:
+        raise RuntimeError("没有启用的仓库")
+    wh_id = whs[0]["id"]
+    customers = raw("SELECT id FROM customer WHERE owner_id=? ORDER BY id", (owner_id,))
+    if len(customers) < 2:
+        raise RuntimeError("演示货主至少需要 2 个客户")
+    reserved = raw("""SELECT DISTINCT designated_customer_id FROM stock_batch
+                      WHERE owner_id=? AND product_id=? AND qty > 0
+                        AND designated_customer_id IS NOT NULL""",
+                   (owner_id, product_id))
+    own_cust = reserved[0]["designated_customer_id"] if reserved else customers[0]["id"]
+    other_cust = next(c["id"] for c in customers if c["id"] != own_cust)
+
+    no_stock_sku = "DEMO-M35-NOSTOCK"
+    if not count("product", "WHERE sku=?", (no_stock_sku,)):
+        post("/api/products", {"sku": no_stock_sku, "name": "演示·无库存物料",
+                               "owner_id": owner_id})
+        made.append("无库存演示物料")
+    no_stock_id = raw("SELECT id FROM product WHERE sku=?", (no_stock_sku,))[0]["id"]
+
+    H = admin_headers()
+
+    def ensure_dn(code, customer_id, lines):
+        exists = raw("SELECT id FROM dn WHERE code=?", (code,))
+        if exists:
+            return exists[0]["id"]
+        body = post("/api/dns", {
+            "code": code, "owner_id": owner_id, "customer_id": customer_id,
+            "source_warehouse": wh_id, "lines": lines,
+        })
+        return body["dn"]["id"]
+
+    specs = [
+        ("DEMO-M35-FEFO", other_cust,
+         [{"product_id": product_id, "ordered_qty": 2}]),
+        ("DEMO-M35-OWN", own_cust,
+         [{"product_id": product_id, "ordered_qty": 2}]),
+        ("DEMO-M35-SHORT", other_cust,
+         [{"product_id": no_stock_id, "ordered_qty": 3}]),
+    ]
+    dn_ids = {}
+    for code, cust_id, lines in specs:
+        dn_ids[code] = ensure_dn(code, cust_id, lines)
+
+    for code, _, _ in specs:
+        dn_id = dn_ids[code]
+        if count("outbound_allocation_log", "WHERE dn_id=? AND action='allocated'",
+                 (dn_id,)):
+            continue
+        out = post("/api/outbound/allocate", {"dn_ids": [dn_id]}, headers=H)
+        made.append(f"{code} 波次 {out.get('wave_no')}")
+
+    own_dn = dn_ids["DEMO-M35-OWN"]
+    if (count("outbound_allocation_log", "WHERE dn_id=? AND action='allocated'", (own_dn,))
+            and not count("outbound_allocation_log",
+                          "WHERE dn_id=? AND action='unallocated'", (own_dn,))):
+        post("/api/outbound/unallocate", {"dn_id": own_dn}, headers=H)
+        made.append("取消分配留痕")
+
+    stats = {r["action"]: r["n"] for r in raw(
+        "SELECT action, COUNT(*) AS n FROM outbound_allocation_log GROUP BY action")}
+    waves = raw("SELECT DISTINCT wave_no FROM outbound_allocation_log WHERE wave_no <> ''")
+    return (f"新增 {made or '无（数据已存在）'}；留痕 {count('outbound_allocation_log')} 条 "
+            f"{stats}，波次 {len(waves)} 个")
+
+
 def consistency():
     """顺带体检：I1 / I2 / I3 与推荐引擎可用性。"""
     out = []
@@ -419,7 +525,8 @@ def main_cli():
         ("inventory_change_log 变更文档", "inventory_change_log"),
         ("putaway_recommendation 推荐日志(M25/M26)", "putaway_recommendation"),
         ("external_doc_type_dict 字典(M26)", "external_doc_type_dict"),
-        ("putaway_rule 规则行(M25/M26)", "putaway_rule"),
+        ("putaway_rule 规则行(M25/M26/M35)", "putaway_rule"),
+        ("outbound_allocation_log 分配留痕(M35)", "outbound_allocation_log"),
         ("customer_reservation_log 风险放行(M23)", "customer_reservation_log"),
         ("batch_location 批次实物分布(M21)", "batch_location"),
         ("stocktake 盘点单", "stocktake"),
@@ -428,7 +535,8 @@ def main_cli():
     if args.check:
         print(f"库：{DB}\n")
         for label, t in tables:
-            print(f"  {label:<42} {count(t):>4} 行")
+            n = count(t)
+            print(f"  {label:<42} {(str(n) if n >= 0 else '未迁移'):>6} 行")
         print("\n一致性：" + consistency())
         return 0
 
@@ -444,6 +552,7 @@ def main_cli():
     module("M25 推荐日志", putaway_recommendations)
     module("M23 风险放行 + M21 批次分布", reservation_risk)
     module("M26 规则配置演示数据", m26_rule_editor_data)
+    module("M35 波次分配演示数据", m35_outbound_allocation)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:
