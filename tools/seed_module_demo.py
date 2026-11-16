@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M35–M39 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M35–M40 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -759,6 +759,19 @@ def m39_gsp():
             f"概览卡片 {len(ov['cards'])} 张，效期分级 {stats}")
 
 
+def m40_workload():
+    """M40 是纯只读统计：复用 M17–M39 已写入的留痕，不新增业务数据。
+
+    这里只通过真实 API 验证三个视角有数据可查，返回摘要供播种日志核对；
+    重跑零副作用，E2E 与单测另有独立临时库造数脚本。
+    """
+    d = get("/api/workload/dict")
+    ov = get("/api/workload/overview")
+    ev = get("/api/workload/events?page=1&page_size=1")
+    return (f"只读复用现有留痕：事件 {ev['total']} 条 / 节点 {len(d['nodes'])} 类 / "
+            f"操作人 {ov['cards'][1]['value']} 人 / 活跃 {ov['cards'][3]['value']} 天；不新增业务数据")
+
+
 def consistency():
     """顺带体检：I1 / I2 / I3 与推荐引擎可用性。"""
     out = []
@@ -806,6 +819,13 @@ def main_cli():
             n = count(t)
             print(f"  {label:<42} {(str(n) if n >= 0 else '未迁移'):>6} 行")
         print("\n一致性：" + consistency())
+        try:
+            w = get("/api/workload/overview")
+            print("工作量统计（只读）：" + str(w["cards"][0]["value"]) + " 条事件 / " +
+                  str(w["cards"][1]["value"]) + " 位操作人 / " +
+                  str(w["cards"][2]["value"]) + " 个节点")
+        except Exception as e:  # noqa: BLE001
+            print(f"工作量统计（只读）：ERR({e})")
         return 0
 
     main.init_db()
@@ -825,6 +845,7 @@ def main_cli():
     module("M37 养护管理演示数据", m37_care)
     module("M38 拆单合单演示数据", m38_dn_order)
     module("M39 GSP 合规报表演示数据", m39_gsp)
+    module("M40 工作量统计只读验证", m40_workload)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:
