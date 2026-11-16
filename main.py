@@ -1173,6 +1173,44 @@ def _migrate_m37(conn):
     )
 
 
+def _migrate_m38(conn):
+    """M38 出库单拆单/合单：留痕表 + dn 溯源列。
+
+    拆单/合单只在**未拣货的 open 出库单**上做单据层数量重分配，
+    **不动库存、不写 stock_movement、不生成调整单**；数量守恒（Σ 拆出 = 源单拆前量，
+    Σ 并入 = 各源单量之和，容差 1e-9）。dn_order_log 记录每次 split/merge 的
+    源单 → 目标单与逐行数量，带 owner_id 按货主隔离。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS dn_order_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            action           TEXT    NOT NULL,
+            owner_id         INTEGER NOT NULL,
+            customer_id      INTEGER,
+            source_dn_ids    TEXT    NOT NULL DEFAULT '',
+            source_codes     TEXT    NOT NULL DEFAULT '',
+            target_dn_ids    TEXT    NOT NULL DEFAULT '',
+            target_codes     TEXT    NOT NULL DEFAULT '',
+            detail           TEXT    NOT NULL DEFAULT '',
+            operator         TEXT    NOT NULL DEFAULT '',
+            note             TEXT    NOT NULL DEFAULT '',
+            created_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dnorder_owner  ON dn_order_log(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_dnorder_action ON dn_order_log(action);
+        CREATE INDEX IF NOT EXISTS idx_dnorder_time   ON dn_order_log(created_at);
+        """
+    )
+    # 老库补列：dn 记录来源（split/merge）与父单，便于列表辨识与追溯。
+    # 只加常量默认值的列，避免 M35 踩过的「ALTER 默认值用函数」坑。
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(dn)").fetchall()}
+    if "origin_action" not in cols:
+        conn.execute("ALTER TABLE dn ADD COLUMN origin_action TEXT NOT NULL DEFAULT ''")
+    if "origin_parent_id" not in cols:
+        conn.execute("ALTER TABLE dn ADD COLUMN origin_parent_id INTEGER NOT NULL DEFAULT 0")
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1899,6 +1937,7 @@ def init_db(path=None):
         _migrate_m35(conn)
         _migrate_m36(conn)
         _migrate_m37(conn)
+        _migrate_m38(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -1945,6 +1984,7 @@ else:
     from routes_outbound_allocation import oa_bp  # noqa: E402
     from routes_dn_review import rv_bp  # noqa: E402
     from routes_care import care_bp  # noqa: E402
+    from routes_dn_order import dn_order_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1973,3 +2013,4 @@ else:
     app.register_blueprint(oa_bp)
     app.register_blueprint(rv_bp)
     app.register_blueprint(care_bp)
+    app.register_blueprint(dn_order_bp)

@@ -527,3 +527,27 @@ CARE_PERM_LOG = "care:log"
 CARE_PERM_CONFIG = "care:config"
 CARE_PERMISSIONS = (CARE_PERM_PLAN, CARE_PERM_GENERATE, CARE_PERM_EXECUTE,
                     CARE_PERM_HANDLE, CARE_PERM_LOG, CARE_PERM_CONFIG)
+
+# ── M38 出库单拆单 / 合单 ──────────────────────────────────────────────────
+# 只操作未拣货（picked_qty=0 且无 dn_pick）的 open 出库单：不动库存、不写流水，
+# 只做单据层数量重分配，全程 dn_order_log 留痕（延续 M24/M36「净零 / 只留痕」精神）。
+SPLIT_ACTION_SPLIT = "split"
+SPLIT_ACTION_MERGE = "merge"
+SPLIT_ACTIONS = (SPLIT_ACTION_SPLIT, SPLIT_ACTION_MERGE)
+SPLIT_ACTION_LABELS = {SPLIT_ACTION_SPLIT: "拆单", SPLIT_ACTION_MERGE: "合单"}
+
+SPLIT_MODE_BY_QTY = "by_qty"        # 拆单：按指定数量拆出若干份
+SPLIT_MODE_BY_LINE = "by_line"      # 拆单：按整行拆出
+SPLIT_MODES = (SPLIT_MODE_BY_QTY, SPLIT_MODE_BY_LINE)
+SPLIT_MODE_LABELS = {SPLIT_MODE_BY_QTY: "按数量拆分", SPLIT_MODE_BY_LINE: "按整行拆分"}
+
+# 拆单/合单只允许的源单状态（未拣货）
+SPLIT_ALLOWED_STATUS = (DN_OPEN,)
+SPLIT_CODE_PREFIX = "DN"
+SPLIT_CODE_MAXLEN = 32
+SPLIT_QTY_EPS = 1e-9                # 数量守恒容差，与 M21 I1/I2/I3 一致
+
+# 权限码：沿用 M24/M35/M36/M37 口径，只落常量不挂装饰器（Q08 统一处置）
+SPLIT_PERM_EXECUTE = "dn:split_merge"
+SPLIT_PERM_LOG = "dn:split_merge_log"
+SPLIT_PERMISSIONS = (SPLIT_PERM_EXECUTE, SPLIT_PERM_LOG)
