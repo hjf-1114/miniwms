@@ -49,6 +49,10 @@
 | Q27 | 拆单 / 合单是否要生成库存流水、冻结库存或生成调整单？ | M38 与库存边界 | **只改 dn / dn_line 的数量与状态**，不动库存、不写 `stock_movement`、不生成调整单、不改 DN 拣货状态；数量守恒（容差 1e-9），只写 `dn_order_log` 留痕（延续 M24/M36 净零精神） | 待答复（M38 已按默认落地） |
 | Q28 | 合单是否要求同货主同客户？跨客户合并如何处置？ | M38 合单约束 | 强制**同货主 + 同客户**（`OWNER_MISMATCH` / `CUSTOMER_MISMATCH` 400），≥2 张不同单；按 product_id 汇总 ordered_qty，源单作废但保留追溯 | 待答复（M38 已按默认落地） |
 | Q29 | 拆出的子单是否继承源单的分配 / 波次 / 复核状态，是否自动进同一波次？ | M38 子单语义 | 子单是全新 open 单，**不继承**分配 / 波次 / 复核状态（源单本就要求未拣货、无分配）；若用户希望子单自动重进波次，答复后接 M35 分配接口 | 待答复（M38 已按默认落地） |
+| Q30 | GSP 报表清单范围：只做蓝图列的四类（追溯 / 效期 / 养护 / 验收复核），还是要加温湿度曲线、不合格品台账、退货追溯等？ | M39 报表范围 | 先落蓝图四类 + 追溯/效期/养护/验收/复核 5 页 tab + 概览；不做温湿度曲线 / 不合格品台账 / 退货专项，答复后再加独立 tab（不回收编号） | 待答复（M39 已按默认落地） |
+| Q31 | 近效期天数阈值默认值与来源：固定 30 天还是可配？ | M39 效期口径 | 默认 **30 天**、查询参数 `days` 可 0–365 覆盖；效期分级只按 `stock_batch.expiry_date` 与当天日期，未接产品 `shelf_life_days` 或 GSP 温区 | 待答复（M39 已按默认落地） |
+| Q32 | GSP 报表是否只读、要不要做跨仓合规汇总 / 导出？ | M39 边界 | **纯只读**：不写任何业务表、不做跨仓汇总（延续 A 作业视角）、无导出端点（CSV/Excel 归 M30 暂缓）；报表全部从当前业务库读并按货主隔离 | 待答复（M39 已按默认落地） |
+| Q33 | 批次追溯链深度与粒度：追到收货/库存/流水够不够，要不要追到 ASN 头、发货 DN、客户？ | M39 追溯粒度 | 三段链（收货验收 batch_receipt / 在库批次 stock_batch / 库存流水 stock_movement）按 `batch_key` 聚合，各自注入货主条件；支持按 batch_no 精确过滤，未追到 ASN 头/下游 DN | 待答复（M39 已按默认落地） |
 
 ## 三、M35 落地复核（2026-11-13）
 
@@ -96,6 +100,18 @@
 | Q27 库存边界 | `dn_order_service.split_order()/merge_orders()` | 只改 dn/dn_line；E2E 验证 stock/movement/adjustment/stock_batch 四不变 + I1/I2/I3 |
 | Q28 合单约束 | `dn_order_service.merge_orders()` | 同货主 + 同客户校验；E2E 验证 `OWNER_MISMATCH`/`CUSTOMER_MISMATCH` |
 | Q29 子单语义 | `dn_order_service._clone_dn()` | 子单全新 open、origin_action 溯源、不继承波次/分配/复核 |
+
+## 三·续 M39 落地复核（2026-11-16）
+
+> 按「不明确的先登记、明确的一直做」，M39 已按上表 Q30–Q33「当前默认实现」全部落地，
+> **没有中途打断用户**。以下是实现与登记的对照，便于统一答复时逐条比对。
+
+| 登记项 | 落地位置 | 实测 |
+|---|---|---|
+| Q30 报表范围 | `routes_gsp.py` 7 端点 / `gsp.html` 五 tab | 追溯 / 效期 / 养护 / 验收 / 复核 + 概览 + 字典；E2E 验证五 tab |
+| Q31 效期阈值 | `gsp_service.expiry_report()` / `_expiry_level()` | 默认 30 天、days 可覆盖、四级分级；E2E 验证 days=5 使 near→normal |
+| Q32 只读边界 | `gsp_service.py`（全 SELECT）/ `routes_gsp.py`（无写端点） | E2E 验证 stock/movement/adjustment/stock_batch 四不变 + I1/I2/I3 |
+| Q33 追溯粒度 | `gsp_service.trace_report()` | 三段链按 batch_key 聚合、可 batch_no 精确过滤；E2E 验证三段齐全 |
 
 ## 四、登记约定
 

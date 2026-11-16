@@ -1914,3 +1914,60 @@ Q20（复核单与日志按货主隔离）四个新分歧登记在 `docs/OPEN_QU
 
 ---
 
+## M39 GSP 合规报表（2026-11-16）✅
+
+用户指令「继续完善」，全托管模式按 Roadmap 第 4 层推进 M39。蓝图只定框架
+（批次追溯 / 效期 / 养护 / 验收复核留痕），细节未拍板项按 `docs/OPEN_QUESTIONS.md`
+**Q30–Q33 当前默认**落地、编号登记，**全程未打断用户**。
+
+### 交付内容
+
+- **纯只读、零新表**：复用现有 `batch` / `batch_receipt` / `stock_batch` /
+  `stock_movement` / `care_log` / `dn_review_diff_log`，不改库存、不写流水、不建调整单。
+- **服务层** `gsp_service.py`：7 个只读查询函数 + 字典：
+  - `expiry_report()` 效期四级分级（`expired` / `soon` / `normal` / `none`），
+    近效期阈值 `days` 默认 30、可 0–365 覆盖；只统计 qty>0 在库批次，
+    四级统计 + 剩余天数 + 货主隔离。
+  - `trace_report()` 批次追溯：按 batch_no / batch_key / product_id 定位批次档案，
+    三段链路（收货验收 / 在库批次 / 库存流水）各自独立注入货主条件。
+  - `care_report()` / `receipt_report()` / `review_report()` 三类留痕（过滤 + 分页 +
+    统计），`receipt` 含 M23 缺外部批号告警统计、`review` 含少货/多货统计。
+  - `overview()` 概览四张卡 + 效期分级 + 养护异常 + 验收告警。
+- **7 个端点**（`routes_gsp.py`）：字典 / 概览 / 追溯 / 效期 / 养护 / 验收 / 复核，
+  统一 `GspError → 400`，全部走 `S.scoped_where()` 注入货主条件。
+- **作业页** `web_app/gsp.html`（导航 28→29 页，新增一级「统计报表 / 合规与追溯」）：
+  概览卡 + 五个 tab + 效期分级可视化 + 追溯三段链表 + 三类留痕过滤分页。
+- **演示数据**：`tools/seed_module_demo.py` 新增 M39 模块，独立货主下写一组**做平**
+  的批次 + 同维度流水 + 主账（效期四级 + 追溯链），I1/I2/I3 不破；本地库
+  `stock_batch` 20 行、`--check` 两核对 OK、重跑幂等。
+- **验证**：M39 单测 **15/15**、真实 Chrome E2E `tools/e2e_m39.py` **34/34**、
+  全量 unittest **543/543**、历史 E2E M38 29/29 + M37 30/30 + M36 26/26 + M35 27/27
+  复跑通过；I1/I2/I3 一致、报表零库存副作用。
+
+### 关键决策与踩坑
+
+- **只读边界**：GSP 报表不写任何业务表（Q32），也不做跨仓汇总（延续 A 作业视角），
+  全部从当前业务库的现有表读，按货主隔离；上下文缺失由 scope 403 统一拒绝。
+- **效期分级**：`expiry_date` 空串 / NULL / 非法日期一律归入 `none`（不误判过期）；
+  `days_left<0=expired`、`<=days=soon`、其余 `normal`；qty=0 的零行保留不进预警。
+- **追溯链按 batch_key 聚合**：`batch` 档案为主入口，三段明细各自独立查询并隔离；
+  可按 batch_no 精确过滤（避免同 batch_key 下其他批号混入收货明细）。
+- **E2E 做平账**：最初手工造数缺主账/流水导致 I1/I2/I3 FAIL（非报表问题），
+  改为每条 `stock_batch` 配同维度 `stock_movement` + 补 `stock` 主账 = 批次累加后全过。
+- **前端 tab 定位**：Playwright `button:has-text('追溯')` 命中侧边栏分组和 tab 多元素，
+  改用 `get_by_role('button', name='追溯', exact=True)`。
+
+### 已知边界 / 下一棒
+
+- Q30–Q33 待统一答复（报表清单范围 / 近效期天数默认 / 追溯链深度 / 只读不改库存），
+  答复后以答复为准；不改 `stock` 主账粒度与 I1/I2/I3 硬校验。
+- 只汇总当前业务库（A 作业视角），不做跨仓合规汇总；效期分级基于 `stock_batch.expiry_date`
+  与当天日期，不接 GSP 温区或养护计划的联动判定。
+- 权限码 `GSP_PERM_VIEW` / `GSP_PERM_EXPORT` 只落常量未挂装饰器（Q08 统一处置）；
+  无导出端点（CSV/Excel 仍归 M30 暂缓编号）。
+- `docs/OPEN_QUESTIONS.md` Q01–Q33 待统一答复;PRD 回溯 #3–#21 共 19 页仍另起独立提交。
+- **下一棒 M40 工作量统计**（第 4 层，按人 / 按节点 / 按时间段，依赖 M36 复核），
+  M31–M34 基础资料新域仍后移；M28 经营报表编号保留可插入。
+
+---
+

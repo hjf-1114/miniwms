@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M35–M38 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M35–M39 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -682,6 +682,83 @@ def m38_dn_order():
             f"溯源子单 {traced} 张")
 
 
+def m39_gsp():
+    """让「GSP 合规报表」页打开即有四级效期 + 追溯链可查（幂等、走真实 API）。
+
+    M39 是只读报表，不造业务单据；只为演示在独立货主下写一组**做平**的
+    批次明细 + 同维度流水 + 主账（I1/I2/I3 不破），覆盖已过期 / 近效期 /
+    正常 / 无有效期四级，并挂一条收货验收与追溯链。重跑按货主 code 哨兵跳过。
+    """
+    H = admin_headers()
+    sentinel = raw("SELECT id FROM owner WHERE code = ?", ("DEMO-M39-OW",))
+    if sentinel:
+        e = {s["level"]: s["n"] for s in raw(
+            "SELECT CASE WHEN expiry_date IS NULL OR expiry_date='' THEN 'none' "
+            "WHEN expiry_date < date('now') THEN 'expired' "
+            "WHEN expiry_date <= date('now','+30 day') THEN 'soon' ELSE 'normal' END AS level, "
+            "COUNT(*) AS n FROM stock_batch WHERE owner_id = ? AND qty > 0 GROUP BY level",
+            (sentinel[0]["id"],))}
+        return (f"跳过（演示批次已存在）；效期分级 {e}，各报表端点只读可查")
+
+    ow = post("/api/owners", {"code": "DEMO-M39-OW", "name": PREFIX + "M39 演示货主"},
+              headers=H)["owner"]["id"]
+    pid = post("/api/products", {"sku": "DEMO-M39-P", "name": PREFIX + "M39 演示物料",
+                                 "owner_id": ow}, headers=H)["product"]["id"]
+    lid = post("/api/locations", {"code": "DEMO-M39-L", "name": PREFIX + "M39 演示库位",
+                                  "owner_id": ow}, headers=H)["location"]["id"]
+    today = datetime.date.today()
+    batches = [
+        ("DEMO-M39-BATCH", "", "DEMO-M39-KEY", 0),  # 追溯链专用，不进效期统计
+        ("DEMO-M39-EXP", (today - datetime.timedelta(days=5)).isoformat(), "M39-KEY0", 8),
+        ("DEMO-M39-SOON", (today + datetime.timedelta(days=10)).isoformat(), "M39-KEY1", 12),
+        ("DEMO-M39-NORM", (today + datetime.timedelta(days=100)).isoformat(), "M39-KEY2", 6),
+        ("DEMO-M39-NONE", "", "M39-KEY3", 4),
+    ]
+    total = 0
+    conn = sqlite3.connect(DB)
+    try:
+        conn.row_factory = sqlite3.Row
+        # 批次档案 + 收货验收（追溯链）
+        cur = conn.execute(
+            "INSERT INTO batch (code, batch_key, owner_id, product_id, key_info, info, "
+            "receipt_count, created_at, updated_at) VALUES (?,?,?,?,?,?,?,datetime('now'),datetime('now'))",
+            ("DEMO-M39-BATCH", "DEMO-M39-KEY", ow, pid, "M39 演示批次", "GSP 追溯演示", 1))
+        bid = cur.lastrowid
+        conn.execute(
+            "INSERT INTO batch_receipt (batch_no, batch_id, internal_batch_no, internal_source, "
+            "owner_id, product_id, location_id, asn_id, asn_line_id, qty, doc_type, goods_property, "
+            "info, created_at, external_batch_no, warning) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?,?)",
+            ("DEMO-M39-BATCH", bid, "IN-M39", "manual-seed", ow, pid, lid, 0, 0, 10,
+             "采购", "合格", PREFIX + "M39 追溯演示", "EXT-M39", ""))
+        for bno, ed, key, qty in batches:
+            total += qty
+            conn.execute(
+                "INSERT INTO stock_batch (owner_id, product_id, location_id, batch_no, batch_key, "
+                "expiry_date, qty, allocated_qty, goods_property, stock_status) "
+                "VALUES (?,?,?,?,?,?,?,0,'合格','非限制')",
+                (ow, pid, lid, bno, key, ed, qty))
+            conn.execute(
+                "INSERT INTO stock_movement (owner_id, product_id, location_id, qty_delta, ref_type, "
+                "ref_id, note, batch_no, batch_key, internal_batch_no, goods_property, stock_status, "
+                "expiry_date, allocated_delta, operator, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))",
+                (ow, pid, lid, qty, "manual-seed", 0, PREFIX + "M39 做平账", bno, key,
+                 "IN-M39", "合格", "非限制", ed, 0, "seed"))
+        conn.execute(
+            "INSERT INTO stock (owner_id, product_id, location_id, qty, allocated_qty, updated_at) "
+            "VALUES (?,?,?,?,0,datetime('now'))", (ow, pid, lid, total))
+        conn.commit()
+    finally:
+        conn.close()
+    # 报表端点只读验证（不写任何数据）
+    ov = get("/api/gsp/overview")
+    exp = get("/api/gsp/expiry")
+    stats = {s["level"]: s["count"] for s in exp["stats"]}
+    return (f"新增独立货主 + {len(batches)} 批次（追溯链 + 效期四级）+ 做平主账 {total} 件；"
+            f"概览卡片 {len(ov['cards'])} 张，效期分级 {stats}")
+
+
 def consistency():
     """顺带体检：I1 / I2 / I3 与推荐引擎可用性。"""
     out = []
@@ -747,6 +824,7 @@ def main_cli():
     module("M36 出库复核演示数据", m36_dn_review)
     module("M37 养护管理演示数据", m37_care)
     module("M38 拆单合单演示数据", m38_dn_order)
+    module("M39 GSP 合规报表演示数据", m39_gsp)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:

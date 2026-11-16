@@ -29,7 +29,7 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 
 ```bash
 python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货全链路
-python tools/seed_module_demo.py    # 再补 M17–M38 各模块可查数据（幂等、走真实 API，不覆盖现有数据）
+python tools/seed_module_demo.py    # 再补 M17–M39 各模块可查数据（幂等、走真实 API，不覆盖现有数据）
 python main.py                      # 浏览器打开 http://localhost:5100 即可操作
 ```
 
@@ -441,12 +441,35 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **边界**：已发货 / 已取消 / 已分配单不可拆合；合单强制同货主同客户；子单不继承分配 / 波次 /
   复核状态；权限码只落常量、拆合原因存留痕 note 非字典表；留痕按货主隔离。
 
+### M39 GSP 合规报表（2026-11-16 里程碑 ✅）
+
+> 全托管模式继续推进第 4 层；蓝图只定框架，细节分歧按
+> `docs/OPEN_QUESTIONS.md` Q30–Q33「当前默认」落地、编号登记、不打断用户。
+
+- **纯只读、零新表**：`gsp_service.py` 复用现有 batch / batch_receipt / stock_batch /
+  stock_movement / care_log / dn_review_diff_log，**不改库存、不写流水、不建调整单**。
+- **五类报表 + 概览 + 字典**：批次追溯（收货验收 → 在库批次 → 库存流水三段链）、效期预警
+  （四级分级 expired/soon/normal/none，`days` 0–365 可覆盖，qty=0 零行不进预警）、养护留痕、
+  验收留痕（含 M23 缺外部批号告警）、复核差异（含少货/多货统计）。
+- **7 个端点**（`routes_gsp.py`）：字典 / 概览 / 追溯 / 效期 / 养护 / 验收 / 复核；
+  统一 `GspError → 400`，全部走 `S.scoped_where()` 按货主隔离，上下文缺失由 scope 403 拒绝。
+- **作业页** `web_app/gsp.html`（三级导航 28 → 29 页，新增一级「统计报表 / 合规与追溯」）：
+  概览卡 + 五个 tab + 效期分级可视化 + 追溯三段链表 + 三类留痕过滤分页。
+- **演示数据**：`tools/seed_module_demo.py` 新增 M39 模块，独立货主下写一组做平账数据
+  （效期四级 + 追溯链），本地库 `stock_batch` 20 行；`--check` 两核对 OK、重跑幂等。
+- **验证**：M39 单测 **15/15**、真实 Chrome E2E `tools/e2e_m39.py` **34/34**、全量 unittest
+  **543/543**、历史 E2E M38 29/29 + M37 30/30 + M36 26/26 + M35 27/27 复跑通过；
+  I1/I2/I3 一致、报表零库存副作用。
+- **边界**：只读当前业务库、不做跨仓汇总；效期基于 `stock_batch.expiry_date` 与当天日期，
+  不接温区联动；权限码只落常量、无导出端点（CSV/Excel 归 M30 暂缓）。
+
 ### 规划中（见 DEVELOPMENT.md）
 
 - M25 上架推荐规则引擎 ✅ **已交付 2026-11-10**；M26 规则配置与推荐交互 ✅ **已交付 2026-11-13**；
   M35 出库波次分配与 FEFO ✅ **已交付 2026-11-13**；M36 出库复核 ✅ **已交付 2026-11-16**；
-  M37 养护管理 ✅ **已交付 2026-11-16**；M38 拆单合单 ✅ **已交付 2026-11-16**（见上方六章）
-- **主流程下一棒**：M39 GSP 合规报表（蓝图第 4 层，批次追溯 / 效期 / 养护 / 验收复核留痕）；
+  M37 养护管理 ✅ **已交付 2026-11-16**；M38 拆单合单 ✅ **已交付 2026-11-16**；
+  M39 GSP 合规报表 ✅ **已交付 2026-11-16**（见上方七章）
+- **主流程下一棒**：M40 工作量统计（蓝图第 4 层，按人 / 按节点 / 按时间段，依赖 M36）；
   M31–M34 基础资料新域按用户要求**后移**
 - 报表统计（M28，归入蓝图第 4 层经营报表）
 - **降级暂缓**（编号保留、不排期）：补货预警（M27）、外部对接 API（M29）、CSV 导入导出（M30）
@@ -457,7 +480,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 > 完整设计与口径见 `docs/PUTAWAY_RECOMMENDATION.md`（v3.3，2026-11-05 定稿）。
 > **5 层领域蓝图、现状对照、实施顺序、硬约束配置化与打印方案定稿**见 `docs/DOMAIN_BLUEPRINT.md`（v3，2026-11-05）。
-> 实施顺序（2026-11-10 用户 1A 修订，编号一个不动）：M1–M26 + M35 + M36 + M37 + M38 已交付 → **M39**
+> 实施顺序（2026-11-10 用户 1A 修订，编号一个不动）：M1–M26 + M35 + M36 + M37 + M38 + M39 已交付 → **M40**
 > 先把出入库 / 库存主流程跑完，M31–M34 基础资料新域后移。
 > **硬约束全部配置化**：混放 / 冷链 / 危险由 M25/M26 的多条上架规则（优先级 + 单号 / 产品信息条件组）决定，
 > 不写死、不保留系统级 hardcoded 红线；M20→M25 过渡期 `putaway()` 不拦截、只靠推荐页提示，
@@ -616,7 +639,11 @@ dn_order_service.py   M38 拆合服务层（按 parts 拆单 / 多单汇总合�
 routes_dn_order.py    M38 拆合 Blueprint（6 端点，写操作统一 BEGIN IMMEDIATE + owner 守门）
 web_app/dn_order.html M38 拆单合单作业页（候选 / 拆单 / 合单 / 留痕 / 血缘）
 tools/e2e_m38.py      M38 可复跑 Playwright 端到端回归（独立端口 + 临时库）
-tools/seed_module_demo.py M17–M38 模块演示数据幂等播种（走真实 API，不直接写业务表）
+gsp_service.py        M39 GSP 只读报表服务层（效期四级 / 批次追溯三段链 / 三类留痕 / 概览）
+routes_gsp.py         M39 GSP Blueprint（7 只读端点，全部 scoped_where 货主隔离）
+web_app/gsp.html      M39 GSP 合规报表页（概览 + 五 tab + 效期分级 + 追溯链）
+tools/e2e_m39.py      M39 可复跑 Playwright 端到端回归（独立端口 + 临时库）
+tools/seed_module_demo.py M17–M39 模块演示数据幂等播种（走真实 API，不直接写业务表）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则；M23 销退外部批次号校验）
 reservation_rules.py  M23 规则层（纯函数）：指定客户出库校验规则表、先专属后通用建议、质量状态转换矩阵；不接路由
