@@ -1670,3 +1670,117 @@ M20 原有字段（`recommendations / rejected / candidate_count / bound_locatio
 
 ---
 
+## M35 出库波次分配与 FEFO（2026-11-13）✅
+
+> 用户 2026-11-10 **3A** 定稿：出库分配规则与上架规则**共用 `putaway_rule` 表**，
+> `rule_type` 分 `putaway` / `outbound`；M35 范围＝轻波次 / FEFO / 先专属后通用 /
+> 强管控批次维度 / 允许拆批与部分发货 / 跳批留痕 / 不合格冻结不可分配。
+> 用户 2026-11-13 指令「依次功能做下去，不明确的先登记，明确的一直做」——
+> 存疑项统一登记在 `docs/OPEN_QUESTIONS.md`，不中途打断、不回收编号。
+> 本里程碑是 `M26 → M35 → M36` 顺序的第三棒；**下一棒 M36（独立复核单 + 作业页）**。
+
+### 交付清单
+
+| 类别 | 文件 | 内容 |
+|---|---|---|
+| 服务层 | `outbound_allocation.py`（新） | 候选批次快照、`outbound` 规则命中、四类红线、排序策略、拆批、跳批留痕、试算 / 实分配 / 取消分配、日志与波次查询 |
+| 路由 | `routes_outbound_allocation.py`（新） | 6 个端点，`allocate` / `unallocate` 统一 `BEGIN IMMEDIATE`，`plan` 只读不开写事务 |
+| 常量 | `constants.py` | `WAVE_PREFIX` / `OUTBOUND_STRATEGIES` / 4 类跳批原因码 / 动作与引擎标签 / 6 个权限码（只落常量、不挂装饰器，沿用 M24 口径） |
+| 迁移 | `main.py::_migrate_m35()` | `dn_pick` 扩 10 列批次维度 + 波次号 + 规则 id、`dn.wave_no`、新建 `outbound_allocation_log` + 4 个索引；老库逐列 ALTER |
+| 发货一致性 | `routes_dn.py` / `reservation_audit.py` | 新 `dn_pick` 带批次 → `ship()` 显式传 `batches=` 按记录扣减；老行（批号为空）回退 M21 FEFO 推断；风险预检直接用记录值，不再重算 |
+| 隔离 | `scope.py` | `outbound_allocation_log` 与 M25/M26 日志同属控制面 PUBLIC（Q09 待答复） |
+| 前端 | `web_app/outbound_allocation.html`（新） | 波次分配作业页；`dns.html` 加「波次分配作业」入口；`layout.js` 三级导航 24 → **25** 页 |
+| 测试 | `tests/test_m35_outbound_allocation.py`（14 例）、`tools/e2e_m35.py`（27 项） | 单测 + 可复跑真实 Chrome E2E |
+| 演示数据 | `tools/seed_module_demo.py` | 新增 `m35_outbound_allocation()`，幂等走真实 API 写本地 `miniwms.db` |
+| 登记 | `docs/OPEN_QUESTIONS.md`（新） | Q01–Q13 待确认口径 + M35 落地复核，用户统一答复后再调整 |
+
+### 服务层设计（三层不变式不动）
+
+- **候选**：`stock_batch` 明细行 JOIN `location`，只看 `qty - allocated_qty > EPS`；
+  `steps` 里的 `zone_by_code` / `fixed_location` 只解释候选库位范围，不寻址（Q02）。
+- **红线统一收口** `_skip_reason()`：`goods_property` 非合格、`stock_status` 质检/冻结、
+  库位停用或类型不符、`designated_customer_id` 与 DN 客户不匹配 → 4 类原因码，
+  **跳批留痕与剩余量解耦**：先全量扫描红线批次再按排序分配，避免需求被前面的批次满足后
+  `break` 导致后面的不合格批次静默消失。
+- **排序**：默认 `own_first`（专属分组优先、组内 FEFO、空效期最后、货位/id 稳定），
+  可切 `strict_fefo` 忽略专属分组；策略既可前端传参，也由命中规则行 `score.strategy` 覆盖。
+- **规则复用**：零启用 `outbound` 规则行 → `engine='legacy'`，仍按安全默认分配，
+  **不会因为没配规则就允许不合格库存出库**；命中则 `engine='rules'` 并写
+  `rule_id` / `rule_priority` / `strategy` / `engine` 到日志与响应，便于按规则排查。
+- **数量**：`qty_delta=0`，只改 `allocated_qty`；`stock.qty` 一次都不 UPDATE；
+  显式 `batches=` 精确落到目标明细行；`dn_pick` 写完整 8 维 + `wave_no` + `rule_id`；
+  `dn_line.picked_qty` 同步累加，DN 状态按「是否有已拣行」在 `open` / `picking` 间切换。
+  允许拆批与不足量分配，缺量写 `short` 日志；**不新增部分发货状态**（Q06）。
+- **取消分配**：对称释放 `allocated_qty`、删 `dn_pick`、回退 `picked_qty`，写 `unallocated` 日志；
+  已发货 / 已取消的单据拒绝。
+- **轻波次**：一次批量分配动作生成 `WV-YYYYMMDD-NNN`，**不建波次主表**（Q01），
+  只在 `dn_pick` / `dn` / `outbound_allocation_log` 上记 `wave_no`；支持一次传多张 DN，
+  试算时用本地快照按 `(owner, product)` 共享余额，实分配每行重新查库看最新占用。
+
+### 端点（`routes_outbound_allocation.py`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/outbound/dict` | 策略 / 动作 / 跳批原因码 / 引擎 / 可分配质量 / 规则字典 / 权限码 |
+| POST | `/api/outbound/plan` | 只读试算，与实分配同形结果，不写任何表 |
+| POST | `/api/outbound/allocate` | 生成波次并真实占用，201 |
+| POST | `/api/outbound/unallocate` | 按 `dn_id` 整单或 `pick_ids` 部分取消，对称释放 |
+| GET | `/api/outbound/logs` | 分页 + `wave_no` / `dn_id` / `action` / 日期区间过滤 + `stats` |
+| GET | `/api/outbound/waves` | 轻波次汇总（`dn_count` / `allocated_qty` / `log_count`） |
+
+### 前端作业页
+
+`web_app/outbound_allocation.html` 四块：① 分配参数（策略下拉、波次号选填、只读试算 / 执行分配），
+② 待分配出库单（勾选、波次列、逐单取消分配），③ 分配结果（5 张统计卡 + 分配明细 / 跳批留痕 /
+短拣三张表，展示批号、效期、专属客户、引擎与命中规则），④ 波次汇总 + 分配留痕查询
+（波次 / 出库单 / 动作 / 日期过滤、分页、动作统计）。执行分配与取消分配都有二次确认。
+`dns.html` 卡片头加「波次分配作业」按钮（`openWorkTab()`），工作台 iframe 与独立页都能打开。
+
+### 演示数据（用户「写到系统里方便排查」）
+
+`tools/seed_module_demo.py` 新增 `m35_outbound_allocation()`，通过真实 API 造：
+① 一条**停用**的 `outbound` 示例规则行（编辑器素材，不改变既有分配），
+② 一个「无库存演示物料」，③ 三张演示 DN —— `DEMO-M35-FEFO`（客户不匹配 → `skipped`）、
+`DEMO-M35-OWN`（专属优先 → `allocated` 后再 `unallocated`）、`DEMO-M35-SHORT`（无库存 → `short`）。
+本地 `miniwms.db` 现有 **6 条分配留痕**（allocated 2 / skipped 2 / short 1 / unallocated 1）、
+**3 个波次**、`putaway_rule` 13 行；播种前备份 `miniwms_backup_20261113_m35.db`（`*.db` 不入库）。
+`--check` 只读盘点各模块行数 + I1 / I2 / I3 一致性体检；表未迁移时显示「未迁移」而不是崩。
+
+### 验证
+
+- M35 单测 **14/14**（DDL / 参数 / 只读试算 / FEFO / 质量与状态 / 专属跳批 / 拆批短拣 /
+  批次维度与波次 / 规则命中可解释 / 发货按记录批次 / 取消分配 / 老链路回归 / 已发货拒绝 /
+  **老库迁移回归**）。
+- 真实 Chrome E2E `tools/e2e_m35.py` **27/27**（独立端口 5120 + 临时库）：页面渲染、字典、
+  DN 候选、试算不写库、跳批留痕、波次号、日志四类、批次维度、发货按记录扣减、
+  I1 / I2 / I3、取消分配、`dns.html` 入口、无 JS 错误与业务 4xx。
+- 全量 unittest、演示库一致性体检、`node --check`（新页面 / `dns.html` / `layout.js`）均通过。
+
+### 踩坑与修正（真实调试记录）
+
+1. **跳批静默消失**：`plan()` 原来在 `remaining <= EPS` 时 `break`，排在后面的专属批次
+   根本没走到 `_skip_reason()`，`test_06` 抓到「专属跳批未记录」。改为先把红线候选全量扫进
+   `skip_map` 并留痕，再按排序分配；诊断脚本确认 `check_customer_reservation()` 本身判定正确。
+2. **零行明细取证**：`test_08` 用 `SELECT ... FROM stock_batch` 取到上架后暂存位保留的
+   `qty=0` 零行，误判分配改了在手量；改为按 `location_id = 存储位 AND qty > 0` 过滤。
+3. **老库迁移崩溃（关键）**：`_migrate_m35()` 给 `dn_pick` 加
+   `created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))`，SQLite 的
+   `ALTER TABLE ADD COLUMN` **不允许函数型默认值**，新库空表侥幸通过、
+   有数据的 `miniwms.db` 直接报 `Cannot add a column with non-constant default`。
+   M35 不依赖 `dn_pick.created_at`（留痕时间统一取日志表），移除该列并补
+   `test_14_legacy_db_migration` 用「5 列 + 1 行」老结构锁住回归。
+
+### 已知边界 / 下一棒
+
+- 分配留痕仍属控制面统计、**未做货主隔离**（Q09）；`abc_class` 仍无数据源。
+- 权限码只落常量、未挂 `@require_permission`（Q08）；`outbound` 规则的 `limits` 只作可解释标记，
+  **不放松**质量/专属红线（Q02）。
+- 「部分发货」未新增状态机：`ship()` 仍要求所有行拣满，短拣需人工补拣或取消余量（Q06）。
+- M23 人工拣货/发货链路**仍不拦截**专属不匹配（只提示 + 风险放行日志），
+  自动分配才跳过（Q04 优先级最高的待确认项）。
+- `docs/OPEN_QUESTIONS.md` Q01–Q13 待用户统一答复；答复后以答复为准调整服务层/常量，
+  不改 `stock` 主账粒度、不改 I1/I2/I3 硬校验、不回收里程碑编号。
+- **下一棒 M36**：独立复核单 + 独立作业页 + 登记差异只留痕（不生成调整单、不改库存）。
+
+---
+

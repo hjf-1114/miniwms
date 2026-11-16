@@ -21,7 +21,7 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
 货主/物料/库位/收货/出库/移库/库存等多个管理页，创建、搜索、启停、删除与
 收货/上架/拣货/发货/移库/账目核对均直接调用后端 API。
-也可打开 `http://localhost:5100/app.html` 进入**工作台**：左侧为**多层内嵌导航**（3 个一级域 / 7 个二级分类 / 24 个页面；默认只展开当前页所在分支，其余折叠，手动展开状态记忆在 localStorage），菜单区可独立上下滚动，顶部「收起导航 / 展开导航」按钮可伸缩侧栏（状态同样记忆）+
+也可打开 `http://localhost:5100/app.html` 进入**工作台**：左侧为**多层内嵌导航**（3 个一级域 / 7 个二级分类 / 25 个页面；默认只展开当前页所在分支，其余折叠，手动展开状态记忆在 localStorage），菜单区可独立上下滚动，顶部「收起导航 / 展开导航」按钮可伸缩侧栏（状态同样记忆）+
 多标签页，多个页面在同一窗口并存（工作台自身不会被嵌套进标签）。验收、上架各有独立作业页，可同时打开多张收货单的标签。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
@@ -29,7 +29,7 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 
 ```bash
 python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货全链路
-python tools/seed_module_demo.py    # 再补 M17–M26 各模块可查数据（幂等、走真实 API，不覆盖现有数据）
+python tools/seed_module_demo.py    # 再补 M17–M35 各模块可查数据（幂等、走真实 API，不覆盖现有数据）
 python main.py                      # 浏览器打开 http://localhost:5100 即可操作
 ```
 
@@ -41,7 +41,8 @@ cp miniwms.db miniwms_backup_$(date +%Y%m%d).db   # 改动前先备份
 ```
 
 > `miniwms.db` 及备份文件被 `.gitignore`（`*.db`）忽略，**不入库**；换机器或重建库后按上面两条命令即可复现同一套演示数据。
-> 2026-11-13 播种前的备份为 `miniwms_backup_20261113.db`（仅本地）。
+> 2026-11-13 播种前的备份为 `miniwms_backup_20261113.db`，M35 播种前另有
+> `miniwms_backup_20261113_m35.db`（均仅本地，不入库）。
 
 > 用户与角色管理（M9）已内置：默认管理员账号 **admin / admin123**（首次使用请到「系统管理 → 用户」修改密码）。
 > 受保护页面（角色/用户）需先访问 `http://localhost:5100/login.html` 登录，令牌存于浏览器 localStorage。
@@ -347,10 +348,35 @@ python -m unittest discover -s tests -p "test_*.py" -v
   `abc_class` / R12 无数据源；`rule_type='outbound'` 仍只落配置、M35 才接入分配逻辑；
   字典不反写单据 `external_doc_type` 字段。
 
+### M35 出库波次分配与 FEFO（2026-11-13 里程碑 ✅）
+
+> 用户 2026-11-10 **3A** 定稿：共用 `putaway_rule.rule_type='outbound'`；轻波次 / FEFO /
+> 先专属后通用 / 强管控批次维度 / 拆批与部分分配 / 跳批留痕 / 不合格冻结不可分配。
+> 用户 2026-11-13「依次功能做下去，不明确的先登记」：存疑项见 `docs/OPEN_QUESTIONS.md`。
+
+- **服务层** `outbound_allocation.py`：候选批次快照 + 四类红线（不合格 / 质检冻结 / 库位停用 /
+  他客户专属）+ `own_first`（专属优先、组内 FEFO）或 `strict_fefo` + 拆批 / 短拣 +
+  可解释规则命中（`engine` / `rule_id` / `rule_priority`）；零启用 outbound 规则时 `engine='legacy'`，
+  **仍按安全默认分配**，不会因没配规则就允许不合格库存出库。分配 `qty_delta=0`，只占 `allocated_qty`。
+- **批次一致性**：`dn_pick` 扩 10 列批次维度与波次号，`ship()` 显式按分配记录扣减；
+  历史无批号的老拣货行回退 M21 FEFO 推断，老单据不破；风险预检直接用记录值，不再重算。
+- **6 个端点**（`routes_outbound_allocation.py`）：字典 / 只读试算 / 执行分配 / 取消分配 /
+  留痕查询 / 波次汇总；写操作统一 `BEGIN IMMEDIATE`。新增 `outbound_allocation_log` 记录
+  allocated / skipped / short / unallocated 四类动作与原因码，轻波次号 `WV-YYYYMMDD-NNN` 不建主表。
+- **作业页** `web_app/outbound_allocation.html`（三级导航 24 → 25 页）：勾选 DN → 试算 / 执行分配 →
+  分配明细、跳批留痕、短拣三张表 → 波次汇总与留痕查询；`dns.html` 加「波次分配作业」入口。
+- **演示数据**：`tools/seed_module_demo.py` 新增 M35 模块，本地 `miniwms.db` 现有 3 个波次、
+  6 条留痕（allocated 2 / skipped 2 / short 1 / unallocated 1）、13 行规则，`--check` 可只读盘点。
+- **验证**：M35 单测 **14/14**、真实 Chrome E2E `tools/e2e_m35.py` **27/27**、全量 unittest 全绿、
+  I1 / I2 / I3 一致；含一条**老库迁移回归**（SQLite ALTER 不允许函数型默认值，已移除该列）。
+- **边界**：分配日志未做货主隔离；权限码只落常量；「部分发货」未新增状态机（短拣需人工补拣）；
+  M23 人工拣货链路仍不拦截专属不匹配，仅自动分配跳过。
+
 ### 规划中（见 DEVELOPMENT.md）
 
-- M25 上架推荐规则引擎 ✅ **已交付 2026-11-10**；M26 规则配置与推荐交互 ✅ **已交付 2026-11-13**（见上方两章）
-- **主流程优先**：M35 出库波次分配 + FEFO → M36 独立复核单与作业页（用户 4B：登记差异只留痕，
+- M25 上架推荐规则引擎 ✅ **已交付 2026-11-10**；M26 规则配置与推荐交互 ✅ **已交付 2026-11-13**；
+  M35 出库波次分配与 FEFO ✅ **已交付 2026-11-13**（见上方三章）
+- **主流程下一棒**：M36 独立复核单与作业页（用户 4B：登记差异只留痕，
   不生成调整单、不改库存）；M31–M34 基础资料新域按用户要求**后移**
 - 报表统计（M28，归入蓝图第 4 层经营报表）
 - **降级暂缓**（编号保留、不排期）：补货预警（M27）、外部对接 API（M29）、CSV 导入导出（M30）
@@ -361,7 +387,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 > 完整设计与口径见 `docs/PUTAWAY_RECOMMENDATION.md`（v3.3，2026-11-05 定稿）。
 > **5 层领域蓝图、现状对照、实施顺序、硬约束配置化与打印方案定稿**见 `docs/DOMAIN_BLUEPRINT.md`（v3，2026-11-05）。
-> 实施顺序（2026-11-10 用户 1A 修订，编号一个不动）：M1–M26 已交付 → **M35 → M36**
+> 实施顺序（2026-11-10 用户 1A 修订，编号一个不动）：M1–M26 + M35 已交付 → **M36**
 > 先把出入库 / 库存主流程跑完，M31–M34 基础资料新域后移。
 > **硬约束全部配置化**：混放 / 冷链 / 危险由 M25/M26 的多条上架规则（优先级 + 单号 / 产品信息条件组）决定，
 > 不写死、不保留系统级 hardcoded 红线；M20→M25 过渡期 `putaway()` 不拦截、只靠推荐页提示，
@@ -462,6 +488,12 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | DELETE | `/api/putaway-rule-sets/<id>` | M26 删除空策略包（默认包 / 含规则行禁删） |
 | GET/POST | `/api/external-doc-types` | M26 外部单据类别字典列表（含改位原因码清单）/ 新建 |
 | PUT/DELETE | `/api/external-doc-types/<id>` | M26 字典修改 / 删除 |
+| GET | `/api/outbound/dict` | M35 分配字典：2 种策略 / 5 类动作 / 4 类跳批原因码 / 引擎与权限码 |
+| POST | `/api/outbound/plan` | M35 只读试算（不写任何表，返回与实分配同形结果） |
+| POST | `/api/outbound/allocate` | M35 生成波次并按 FEFO 真实占用 `allocated_qty`、写批次级 `dn_pick` 与留痕 |
+| POST | `/api/outbound/unallocate` | M35 取消分配（对称释放，可整单或按 `pick_ids`） |
+| GET | `/api/outbound/logs` | M35 分配 / 跳批 / 短拣 / 取消分配留痕（分页 + 过滤 + `stats`） |
+| GET | `/api/outbound/waves` | M35 轻波次汇总（单据数 / 分配量 / 日志数） |
 | GET | `/api/movements` | 库存动作流水，支持 `owner_id`/`product_id`/`location_id`/`ref_type`/`ref_id`/分页 |
 | POST | `/api/products` | 创建物料（SKU 必填唯一，可挂 `owner_id`、`default_zone_id` 推荐储区） |
 | GET | `/api/products` | 列表，支持 `keyword`/`category`/`status`/`owner_id`/分页（返回 `default_zone_name`） |
@@ -496,8 +528,13 @@ putaway_service.py    M20 简版上架推荐（零启用规则时的兜底）+ M
 putaway_rules.py      M25 上架规则引擎：13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 评分 / 可解释输出 / 推荐日志 / 过账校验 / 配置 CRUD / 11 行种子；M26 追加日志动作 / 统计 / 排序 / 字典 CRUD
 routes_putaway_rules.py M25 规则配置 Blueprint；M26 扩采纳驳回 / 排序 / 删包 / 字典 5 类端点
 web_app/putaway_rules.html M26 规则配置编辑器（13 维条件组 / fallback 链 / limits 三态 / 试算 / 字典 / 日志统计）
+outbound_allocation.py M35 出库波次分配服务层（FEFO / 专属 / 四类红线 / 拆批 / 跳批留痕 / 试算与取消）
+routes_outbound_allocation.py M35 分配 Blueprint（6 端点，写操作统一 BEGIN IMMEDIATE）
+web_app/outbound_allocation.html M35 波次分配作业页（试算 / 执行 / 波次汇总 / 留痕查询）
+docs/OPEN_QUESTIONS.md 待确认口径登记簿（先登记不阻塞开发，用户统一答复后再调整）
 tools/e2e_m26.py      M26 可复跑 Playwright 端到端回归（独立端口 + 临时库）
-tools/seed_module_demo.py M17–M26 模块演示数据幂等播种（走真实 API，不直接写业务表）
+tools/e2e_m35.py      M35 可复跑 Playwright 端到端回归（独立端口 + 临时库）
+tools/seed_module_demo.py M17–M35 模块演示数据幂等播种（走真实 API，不直接写业务表）
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则；M23 销退外部批次号校验）
 reservation_rules.py  M23 规则层（纯函数）：指定客户出库校验规则表、先专属后通用建议、质量状态转换矩阵；不接路由
