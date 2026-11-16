@@ -91,6 +91,7 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 | 24 | M22 追加页 | 库存调整 | `stock_adjustments.html` | M22 | **已记录** | [2.5](#25-库存调整stock_adjustmentshtml) |
 | 25 | M24 追加页 | 库存转移 | `inventory_transfers.html` | M24 | **已记录** | [2.8](#28-库存转移inventory_transfershtml) |
 | 26 | M26 追加页 | 上架规则配置 | `putaway_rules.html` | M26 | **已记录** | §7（文件末尾增量章） |
+| 27 | M35 追加页 | 出库波次分配 | `outbound_allocation.html` | M35 | **已记录** | §8（文件末尾增量章） |
 
 > **追加页计数说明（v0.6）**：#1–#21 是用户规格 2A 定义的「回溯 M1–M20」固定范围，
 > 分母恒为 21；M21 起新增页面按规格「随里程碑逐次追加」续编，**不计入回溯分母**。
@@ -107,6 +108,11 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 > `putaway_rules.html`，按规格续编 **#26**（M25 无新增页面、不占编号），因此当前逐页记录进度
 > 更新为 **2/21（回溯）+ 5/5（M21 / M22 / M24 / M26 追加页）**，回溯分母仍恒为 21。
 > §1 原有 21 行与 #22–#25 原行一律不改。
+>
+> **追加页计数说明（v1.2 增量，不覆盖上方 v0.6 / v0.9 / v1.1 原文）**：M35 新增独立页面
+> `outbound_allocation.html`，按规格续编 **#27**（M27–M34 暂缓或后移、不占追加页编号），
+> 因此当前逐页记录进度更新为 **2/21（回溯）+ 6/6（M21 / M22 / M24 / M26 / M35 追加页）**，
+> 回溯分母仍恒为 21。§1 原有 21 行与 #22–#26 原行一律不改。
 
 ---
 
@@ -1780,6 +1786,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | M24 | 库存转移单（同库位批次维度净零变更 / 制单→分配真实占用→审核生效终态 / 取消分配 / 空单关闭删除 / 字段级变更文档 / 冲销） | `inventory_transfers.html`（#25 追加页） | **已完成 2026-11-09** |
 | M25 | 上架推荐规则引擎（三张配置表 / 13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 11 行种子启用 7 行 / 规则配置 API / 可解释推荐与日志 / 上架过账按 limits 拦截） | `asn_putaway.html` / `asns.html` 页面代码零改动，**无新增页面**；增量记 §2.9 / §3.9 | **已完成 2026-11-10** |
 | M26 | 规则配置编辑器与推荐交互（13 维条件组 / fallback 链拖拽 / 8 项 limits 三态 / 9 条评分 / 采纳驳回与改位原因码 / 命中率统计 / 外部单据类别字典 / 可复跑 E2E） | `putaway_rules.html`（#26 追加页）+ `asn_putaway.html` 增强 | **已完成 2026-11-13** |
+| M35 | 出库波次分配与 FEFO（轻波次 / 批次级分配 / 先专属后通用 / 拆批与短拣 / 跳批留痕 / 共表 `outbound` 规则 / 发货按记录批次扣减 / 独立作业页） | `outbound_allocation.html`（#27 追加页）+ `dns.html` 入口增强 | **已完成 2026-11-13** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -1805,6 +1812,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | v0.9 | 2026-11-09 | **M24 库存转移单**：进度表续编 **#25**（`inventory_transfers.html` 追加页，不计入回溯 21 页分母）+ 追加 §2.8「库存转移」按模板逐项完整记录（12 个小节、三层标记）+ §3.8 端点／3 张表／常量／既有模块增量；§4 加 M24 行；§1 追加 v0.9 计数说明块，**v0.6 的 3/3 原文保留用于追溯**，当前进度更新为 **2/21（回溯）+ 4/4（M21／M22／M24 追加页）**。记录用户四条 A 口径（同库位 / 7 类统一搬迁 / 只做 IT 单 unallocate / 权限码与特采不落地）、数量净零与 `adjust_stock()` 零 qty 分支、双层分配占用、字段级变更文档、冲销往返、验收基线 415 例 + E2E 35/35 + 六组基线复跑。**按增量追加不重写原则，§1 原有 21 行与 #22–#24、§2.1–§2.7、§3.1–§3.7、§4 已有行、§5 v0.1–v0.8、§6 一律保留**。如实记录 6 条边界（不新建批次档案 / `location_move` 仅标签 / 单据头无 `owner_id` 导致受限账号看不到自建空单 / 冲销仍需分配审核 / M35 与 DN 分配取消未做 / PRD 回溯 19 页另起提交），**不把规划写成现状**。交叉审阅另按模板 §3 如实记录一处前端文案与后端不一致（业务发生时间占位「留空=系统时间」，后端实际落空串，不擅自改代码）；并发现、修正两处文档与代码不一致：`DEVELOPMENT.md` M24 动作表的「删除」前置状态补为 `draft` 或 `closed`（代码 `delete()` 同时允许两者）；`docs/DOMAIN_BLUEPRINT.md` 实施顺序的「下一棒 M24」改为**下一棒 M25**并补 M24 交付事实 | 取证自 `main.py::_migrate_m24()`、`constants.py`、`inventory_transfer_service.py`、`routes_inventory_transfer.py`、`inventory_service.py`、`scope.py`、`web_app/inventory_transfers.html`、`web_app/js/layout.js`、`tests/test_m24_inventory_transfer.py`、`DEVELOPMENT.md` M24 章、`README.md` M24 章；交叉审阅为独立只读核对，除上述两处文档一致性修正外未改代码 |
 | v1.0 | 2026-11-10 | **M25 上架推荐规则引擎**：M25 **不新增页面**（编辑器属 M26），进度表 21 行原行与 #22–#25 追加页**一律不改**，**回溯仍 2/21、追加页仍 4/4，分母不混算**；按「增量追加不重写」新增 §2.9（业务口径 / 执行模型 / 硬约束三态 / 既有页面增量如实记录「页面代码零改动」/ 配置能力 / 取证与边界）与 §3.9（10 个新端点 / 2 个既有端点增量 / 3 张表 DDL / 常量 / 既有模块增量 / 事务与隔离）；§4 加 M25 行。**§2.1–§2.8、§3.1–§3.8、§4 已有行、§5 v0.1–v0.9、§6 全部保留**。记录用户 1A / 2A / 3A / 4B 口径、M20→M25 过渡期结束、13 维条件组、按 `priority` 命中即停、fallback 链、8 项 limits 的 `enabled` / `recommend_only` 三态、11 行种子启用 7 行、删行即不拦截、零配置退回简版、`rule_type` 两类共用表（M35 复用）、验收基线 447 例 + E2E 34/34 + 七组基线复跑；如实记录 6 条边界（无编辑器页 / 日志 `adopt`·`reject` 只落常量 / `abc_class` 与 R12 无数据源 / `outbound` 未接业务 / 种子混放默认不过账拦截 / PRD 回溯 19 页另起提交），**不把 M26 / M35 规划写成现状**。另如实记录两处测试基线修复：共享物理库下 `seed_rules()` 因策略包仍在而不复活规则行，故 `test_doc_flags` 与 M25 测试各自显式重建种子基线；M25 测试用 `contextlib.closing` 包住写事务，避免连接泄漏锁死后续模块 | 取证自 `main.py::_migrate_m25()`、`constants.py`、`putaway_rules.py`、`routes_putaway_rules.py`、`putaway_service.py`、`routes_putaway.py`、`routes_asn.py`、`scope.py`、`web_app/asn_putaway.html`、`web_app/index.html`、`tests/test_m25_putaway_rules.py`、`tests/test_doc_flags.py`、`DEVELOPMENT.md` M25 章、`README.md` M25 章、`docs/DOMAIN_BLUEPRINT.md` §1.3；交叉审阅为独立只读核对，未改代码 |
 | v1.1 | 2026-11-13 | **M26 规则配置编辑器与推荐交互**：进度表续编 **#26**（`putaway_rules.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §7 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型 + 验收 + 边界）；§1 追加 v1.1 计数说明，**v0.6 的 3/3、v0.9 的 4/4 原文保留用于追溯**，当前进度更新为 **2/21（回溯）+ 5/5（M21 / M22 / M24 / M26 追加页）**；§4 加 M26 行。记录设计 §14 阶段 F 四条验收（多规则增删改排序 / 试算可用 / 改位必填原因码 / E2E 覆盖推荐→采纳→上架）、v3.3 4A 两步法第二步的可配字典（字段仍自由文本）、采纳驳回「同一条日志 UPDATE 不重复计数」、limits 三态编辑器以原 JSON 为基底只覆盖两键、reorder 负区间规避 UNIQUE 中间态、用户「演示数据写到系统里方便排查」的幂等播种、验收基线 460 例 + E2E 23/23。**按增量追加不重写原则，§1 原有 21 行与 #22–#25 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.0、§6 全部保留**。如实记录 4 条边界（日志未做货主隔离 / `abc_class` 与 R12 无数据源 / `outbound` 仅落配置 M35 才接入 / 字典不反写单据字段），**不把 M35 / M36 规划写成现状**。交叉审阅另如实记录一处真实调试修正：编辑器 `jparse()` 只接受 JSON 字符串导致新建规则行 fallback 链空白，由 E2E 第 5 项断言暴露后修正为兼容对象/数组 | 取证自 `web_app/putaway_rules.html`、`web_app/asn_putaway.html`、`web_app/js/layout.js`、`main.py::_migrate_m26()`、`constants.py`、`putaway_rules.py`、`routes_putaway_rules.py`、`scope.py`、`tools/seed_module_demo.py`、`tools/e2e_m26.py`、`tests/test_m26_rule_editor.py`、`DEVELOPMENT.md` M26 章、`README.md` M26 章、`docs/DOMAIN_BLUEPRINT.md` §1.3；交叉审阅为独立只读核对，未改代码 |
+| v1.2 | 2026-11-13 | **M35 出库波次分配与 FEFO**：进度表续编 **#27**（`outbound_allocation.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §8 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型单列一章 + 演示数据 / 验收 / 边界）；§1 追加 v1.2 计数说明，**v0.6 的 3/3、v0.9 的 4/4、v1.1 的 5/5 原文全部保留用于追溯**，当前进度更新为 **2/21（回溯）+ 6/6（M21 / M22 / M24 / M26 / M35 追加页）**；§4 加 M35 行。记录用户「依次功能做下去、不明确的先登记」指令与 `docs/OPEN_QUESTIONS.md` Q01–Q17 登记簿、3A 共表 `outbound` 规则、四类红线与跳批留痕解耦、两种排序策略、拆批与短拣、批次级 `dn_pick` 与 `ship()` 一致性、老行回退 M21 FEFO、轻波次不建主表、演示库 3 波次 6 条留痕；如实记录三处真实调试修正（跳批被 `break` 静默跳过 / 单测误取暂存位零行 / 老库 `ALTER TABLE` 函数型默认值报错）与 5 条边界。**按增量追加不重写原则，§1 原有 21 行与 #22–#26 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.1、§6、§7 全部保留**；不把 M36 规划写成现状。验收基线：M35 新增 14 单测（含老库迁移回归）+ E2E 27/27 + 全量 unittest 全绿 | 取证自 `outbound_allocation.py`、`routes_outbound_allocation.py`、`main.py::_migrate_m35()`、`constants.py`、`routes_dn.py`、`reservation_audit.py`、`scope.py`、`web_app/outbound_allocation.html`、`web_app/dns.html`、`web_app/js/layout.js`、`tools/e2e_m35.py`、`tools/seed_module_demo.py`、`tests/test_m35_outbound_allocation.py`、`docs/OPEN_QUESTIONS.md`、`DEVELOPMENT.md` M35 章、`README.md` M35 章、`docs/PUTAWAY_RECOMMENDATION.md` §15.1；交叉审阅为独立只读核对，未改代码 |
 
 ---
 
@@ -2051,4 +2059,134 @@ CREATE INDEX IF NOT EXISTS idx_owner_warehouse_wh
 2. `abc_class` 与 R12 无数据源、评分扩展默认关闭；`rule_type='outbound'` 仅落配置与 CRUD，M35 才接入出库分配。
 3. `external_doc_type` 字典不反写单据字段、不做强制校验；`default_zone_id` 目前只是配置项，尚未自动填充条件组。
 4. PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交；M26 追加页 #26 单独提交，不与代码提交混在一起。
+
+---
+
+## 8. M35 追加页 #27：出库波次分配（`outbound_allocation.html`）（2026-11-13 追加）
+
+> **本节性质**：M35 新增独立页面，按用户规格 2A「随 M21 起逐里程碑追加」续编进度表 **#27**；
+> 按「增量追加不重写」原则，§1 原有 21 行与 #22–#26 原行、§2.1–§2.9、§3.1–§3.9、
+> §4 已有行、§5 v0.1–v1.1、§6、§7 全部保留。回溯进度仍 **2/21**、追加页 **6/6**，分母不混算。
+> 取证一律来自代码与页面；Q01–Q17 待确认口径登记在 `docs/OPEN_QUESTIONS.md`，**不把 M36 规划写成现状**。
+
+### 8.1 [业务] 目标与口径
+
+| 项 | 内容 |
+|---|---|
+| 业务问题 | 出库拣货此前只能在 `dns.html` 明细区逐行手工点「拣货」，没有批次级自动分配；FEFO、专属库存、质量红线全靠人工判断，`dn_pick` 不记录批号，发货按 FEFO 事后推断，实物批次与分配意图可能对不上 |
+| 用户口径 | 2026-11-10 **3A**：出库分配规则与上架规则共用 `putaway_rule.rule_type='outbound'`；M35 范围＝轻波次 / FEFO / 先专属后通用 / 强管控批次维度 / 允许拆批与部分发货 / 跳批留痕 / 不合格冻结不可分配。2026-11-13「依次功能做下去，不明确的先登记，明确的一直做」 |
+| 设计依据 | `docs/PUTAWAY_RECOMMENDATION.md` §15（出库分配地基与 7 个待沟通议题）+ 新增 §15.1 M35 落地补注；`DEVELOPMENT.md` M35 章；`docs/OPEN_QUESTIONS.md` Q01–Q17 |
+| 不变约束 | `stock` 主账粒度永不改；数量变化唯一入口仍是库存调整单；分配真实占用 `allocated_qty`（主账 + 明细双层）；I1 / I2 / I3 容差 `1e-9` 无豁免；所有库存写入经 `inventory_service.adjust_stock()`，路由不直写明细层 |
+| 与 M23 的关系 | M23 2A 的人工拣货 / 发货链路**仍不拦截**专属不匹配（只提示 + `customer_reservation_log` 放行日志）；M35 的自动分配才跳过不匹配批次，两条链路口径差异已登记为 Q04（优先级最高） |
+
+### 8.2 [功能] 页面逐项记录
+
+| 区域 | 控件与行为 | 取证 |
+|---|---|---|
+| 分配参数 | 策略下拉（`own_first` / `strict_fefo`，取自 `/api/outbound/dict`）、波次号选填（留空自动生成）、「只读试算」不写库、「执行分配（占用库存）」二次确认 | `web_app/outbound_allocation.html` `loadDict()` / `doPlan()` / `doAllocate()` |
+| 待分配出库单 | 取 `/api/dns?page_size=100` 后前端过滤 `open` / `picking`；逐行勾选 / 全选 / 清空；展示单号、货主、客户、总数量、状态、波次号；每行「取消分配」按钮 | `loadDns()` / `toggleAll()` / `unallocate()` |
+| 分配结果 | 结果卡区分「只读试算（未写库）」与「已写库（真实占用）」；5 张统计卡（出库单数 / 分配行数 / 分配数量 / 跳批批次 / 短拣行数）；三张表：分配明细（单号 / SKU / 库位 / 批号 / 效期 / 专属客户 / 数量 / 引擎与命中规则）、跳批留痕（原因码与说明）、短拣 | `renderResult()` |
+| 波次汇总 | `/api/outbound/waves` 展示波次号、单据数、分配数量、日志条数、创建时间；「查看留痕」一键填入日志查询条件 | `loadWaves()` / `viewWave()` |
+| 留痕查询 | `/api/outbound/logs` 按波次 / 出库单 ID / 动作 / 日期区间过滤 + 分页；动作统计显示「分配 N · 跳批 N …」；表格含时间、波次、DN、动作标签、原因码、批号、库位、数量、引擎 / 规则优先级、操作人 | `loadLogs()` / `actionLabel()` / `reasonLabel()` |
+| 取消分配 | 二次确认后整单释放，对称回退 `allocated_qty` / `dn_pick` / `picked_qty`，成功后刷新 DN 列表与日志 | `POST /api/outbound/unallocate` |
+| 入口 | `dns.html` 卡片头「波次分配作业」按钮，工作台 iframe 走 `openWorkTab()`、独立页走新窗口 | `web_app/dns.html` |
+
+**导航归属**：`web_app/js/layout.js`「仓储作业 → 出库单据 → 波次分配」，三级页面数 24 → **25**；
+工作台 `window.MWS_NAV_TOOLS.mount()` 复用同一棵树，未在 `app.html` 另建副本。
+
+### 8.3 [实现] 服务层执行模型
+
+`outbound_allocation.plan(db, dn_ids, ..., dry_run, apply)` 是唯一分配入口，试算与实分配共用同一段逻辑：
+
+1. **校验 DN**：`dn_ids` 非空整数数组、去重、逐张校验存在性与状态（`shipped` / `cancelled` 拒绝）；可选 `line_ids` 只分配指定行。
+2. **构造上下文**：`build_context()` 产出与上架规则同形的 13 维 `ctx`（单据类型 / 货品属性 / 4 个标识位 / 外部单据类别 / 货主 / 是否专属 / 储区 / 产品 / 一级分类），供 `PR.match_rule()` 复用。
+3. **规则命中**：零启用 `outbound` 规则行 → `engine='legacy'`，仍按安全默认分配（不会因没配规则就允许不合格库存出库）；命中 → `engine='rules'`，`score.strategy` 可覆盖排序策略，`limits` 只作可解释标记（记录 `limits_quality`），`steps` 只解释候选库位范围。
+4. **候选快照**：`stock_batch` JOIN `location`，只看 `qty - allocated_qty > EPS`；试算时同一波次多张 DN 按 `(owner, product)` 共享本地余额快照，实分配每行重新查库看最新占用。
+5. **红线扫描（与剩余量解耦）**：先全量扫描四类红线写 `skip_map` 并留痕，再按排序分配；**跳批不因需求被前面的批次满足而消失**。原因码：`QUALITY_NOT_ALLOCATABLE` / `STOCK_STATUS_BLOCKED` / `LOCATION_DISABLED` / `CUSTOMER_RESERVED_FORBIDDEN`。
+6. **排序与分配**：`own_first`（专属分组优先、组内 FEFO、空效期最后、货位 / 明细 id 稳定）或 `strict_fefo`；`take = min(avail, remaining)` 允许跨批次拆批；不足量写 `short` 日志，**不新增部分发货状态**。
+7. **落库（`apply=True`）**：`adjust_stock(qty_delta=0, allocated_delta=take, batches=[完整 8 维])` → 插 `dn_pick`（批次维度 + `wave_no` + `rule_id`）→ `dn_line.picked_qty += take` → 写 `allocated` / `skipped` / `short` 日志 → DN 状态按「是否有已拣行」在 `open` / `picking` 间切换。`BEGIN IMMEDIATE` 由 `routes_outbound_allocation._run()` 统一开启。
+8. **取消分配**：`unallocate()` 按 `dn_pick` 行对称释放，新行按记录批次精确释放、老行（批号为空）回退 M21 自动推断，写 `unallocated` 日志。
+
+**发货一致性**（`routes_dn.ship()` / `reservation_audit.py`）：新 `dn_pick` 带批号时显式传
+`batches=` 按分配记录扣减；历史行无批号回退 FEFO 自动推断，老单据不破。风险预检直接用
+`dn_pick.designated_customer_id` 判定，不再用 FEFO 重算，避免预检批次与实际扣减批次不一致。
+
+### 8.4 [实现] 端点与数据模型（单列）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/outbound/dict` | 2 种策略 / 5 类动作 / 4 类跳批原因码 / 2 种引擎 / 可分配质量与冻结状态 / 规则字典 / 6 个权限码 |
+| POST | `/api/outbound/plan` | 只读试算，不开写事务、不写日志，返回与实分配同形结果 |
+| POST | `/api/outbound/allocate` | 生成波次并真实占用，201；`strategy` 非法值 400 |
+| POST | `/api/outbound/unallocate` | `dn_id` 必填，可选 `pick_ids`；对称释放，已发货 / 已取消拒绝 |
+| GET | `/api/outbound/logs` | 分页（上限 200）+ `wave_no` / `dn_id` / `action` / 日期区间过滤 + `stats` |
+| GET | `/api/outbound/waves` | 轻波次汇总（`dn_count` / `allocated_qty` / `log_count` / `created_at`） |
+
+**新增表**（`main.py::_migrate_m35()`）：`outbound_allocation_log(id, wave_no, dn_id, line_id,
+product_id, location_id, batch_no, batch_key, designated_customer_id, goods_property,
+stock_status, expiry_date, qty, action, reason_code, reason, rule_id, rule_priority,
+strategy, engine, operator, created_at)` + 4 个索引；归入 `scope.PUBLIC_TABLES`（控制面统计，
+与 M25/M26 日志一致，**未做货主隔离**）。
+
+**扩列**：`dn_pick` 增 `batch_no` / `batch_key` / `internal_batch_no` / `designated_customer_id` /
+`goods_property` / `stock_status` / `expiry_date` / `production_date` / `wave_no` / `rule_id`
+共 10 列（老库逐列 ALTER，历史行为空串 / NULL）；`dn` 增 `wave_no`（只作展示，不参与状态机）。
+`outbound_allocation_log` 与 `dn_pick` 均不建外键级联，删除单据不影响留痕。
+
+**常量**（`constants.py`）：`WAVE_PREFIX='WV'` / `WAVE_NO_MAXLEN=32`、
+`OUTBOUND_STRATEGY_OWN_FIRST` / `OUTBOUND_STRATEGY_STRICT_FEFO`、
+`OUTBOUND_ENGINE_RULES` / `OUTBOUND_ENGINE_LEGACY`、
+4 类 `OUTBOUND_SKIP_*` 原因码与中文标签、`OUTBOUND_ALLOCATABLE_GOODS=('', '合格')`、
+`OUTBOUND_BLOCKED_STATUSES=('质检','冻结')`、6 个权限码（**只落常量、不挂装饰器**，沿用 M24）。
+
+**轻波次**：`next_wave_no()` 按当日已有 `DISTINCT wave_no` +1 生成 `WV-YYYYMMDD-NNN`，
+**不建波次主表**；支持显式传 `wave_no` 覆盖。Q16 已登记「日志清理 / 跨业务库可能重号」。
+
+### 8.5 [功能] 演示数据与排查路径
+
+`tools/seed_module_demo.py` 新增 `m35_outbound_allocation()`，通过**真实 API**（不直接写业务表、
+不 `--reset`、不删现有数据）补：① 一条**停用**的 `outbound` 示例规则行（编辑器素材，
+不改变既有分配行为）、② 一个「无库存演示物料」、③ 三张演示 DN —— `DEMO-M35-FEFO`
+（客户不匹配 → `skipped`）/ `DEMO-M35-OWN`（专属优先 → `allocated` 后再 `unallocated`）
+/ `DEMO-M35-SHORT`（无库存 → `short`）。本地 `miniwms.db` 现有 **3 个波次、6 条分配留痕**
+（allocated 2 / skipped 2 / short 1 / unallocated 1）、`putaway_rule` 13 行；
+播种前备份 `miniwms_backup_20261113_m35.db`（`*.db` 被 `.gitignore` 忽略，不入库）。
+每步带哨兵，重复执行输出「新增 无（数据已存在）」；`--check` 只读打印各模块行数并做
+I1 / I2 / I3 一致性体检，表未迁移时显示「未迁移」而非报错。
+
+排查路径：作业页按波次 / 动作 / 日期过滤留痕 → 用 `dn_id` + `batch_no` 对照
+`GET /api/dns/<id>` 的 `picks`（完整批次维度 + `wave_no`）→ 回到规则配置页看命中的
+`rule_id` / `priority` → 用 `/api/stock/batch-reconcile` 核对 I2 / I3。
+
+### 8.6 验收要点
+
+- `tests/test_m35_outbound_allocation.py` **14/14**：DDL 与字典 / 参数校验 / 试算只读 /
+  FEFO 顺序 / 质量与状态跳批 / 专属优先与跳批 / 拆批与短拣 / 批次维度与波次 /
+  规则命中可解释 / 发货按记录批次 / 取消分配对称释放 / 人工拣货老链路 / 已发货拒绝 /
+  **老库迁移回归**。
+- 真实 Chrome E2E `tools/e2e_m35.py` **27/27**（独立端口 5120 + 临时库）：页面渲染、字典、
+  DN 候选、试算不写库、跳批留痕、波次号与写库标记、四类日志、批次维度、发货严格按记录
+  扣减、I1 / I2 / I3、取消分配后仍一致、`dns.html` 入口、无 JS 错误与业务 4xx。
+- 全量 unittest 全绿；`node --check` 校验 `outbound_allocation.html` / `dns.html` 内联脚本与
+  `layout.js`；演示库补数后 I1 / I2 / I3 一致性体检 OK。
+- **交叉审阅（真实调试修正，如实记录）**：① `plan()` 在 `remaining <= EPS` 时 `break`，
+  排后面的专属批次未走到红线判定，跳批静默消失；改为先全量扫描 `skip_map` 再分配。
+  ② 单测用 `SELECT ... FROM stock_batch` 取到上架后暂存位保留的 `qty=0` 零行，误判分配改了
+  在手量；改为按存储位 + `qty > 0` 过滤。③ `_migrate_m35()` 给 `dn_pick` 加
+  `created_at DEFAULT (datetime(...))`，SQLite `ALTER TABLE ADD COLUMN` **不允许函数型默认值**，
+  空表侥幸通过、有数据的演示库直接报错；M35 不依赖该列，移除并补 `test_14` 锁住回归。
+
+### 8.7 已知边界（如实记录，不把规划写成现状）
+
+1. 分配留痕仍属控制面统计、**未做货主隔离**（Q09）；`abc_class` 仍无数据源。
+2. 权限码只落常量、未挂 `@require_permission`；`outbound` 规则的 `limits` 只作可解释标记，
+   **不放松**质量 / 专属红线（Q02 / Q08）。
+3. 「部分发货」未新增状态机：`ship()` 仍要求所有行拣满，短拣需人工补拣或取消余量（Q06）；
+   轻波次号无持久序号表，日志清理后可能重号（Q16）。
+4. M23 人工拣货 / 发货链路**仍不拦截**专属不匹配，自动分配才跳过（Q04，优先级最高）；
+   匿名演示下日志 `operator` 为空（Q14）。
+5. `docs/OPEN_QUESTIONS.md` Q01–Q17 待用户统一答复；答复后以答复为准调整服务层 / 常量，
+   不改 `stock` 主账粒度、不改 I1 / I2 / I3 硬校验、不回收里程碑编号。
+6. PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交；M35 追加页 #27 单独提交，
+   不与代码提交混在一起。M36（独立复核单 + 作业页）为下一棒，**未实现**。
 
