@@ -27,6 +27,9 @@ OWNER_SCOPED_TABLES = (
     "batch", "batch_receipt",
     "customer_reservation_log",  # M23 风险放行日志，查询已接入 owner_where(table="rl")
     "inventory_transfer_line",   # M24 转移单明细；单据头按 EXISTS 注入同一条件
+    "dn_review",                 # M36 复核单头（带 owner_id，列表/详情查询已注入）
+    "dn_review_diff_log",        # M36 差异留痕（带 owner_id，日志查询已注入）
+    # dn_review_line 不带 owner_id，通过 review_id 关联父单继承隔离
 )
 # 公共表：不按货主隔离（仓库靠选库隔离，布局/权限表属于控制面）
 PUBLIC_TABLES = (

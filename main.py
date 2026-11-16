@@ -970,6 +970,111 @@ def _migrate_m35(conn):
     )
 
 
+def _migrate_m36(conn):
+    """M36 出库复核：独立复核单 + 复核行快照 + 差异留痕日志。
+
+    三张新表，不改 ``stock`` 主账粒度、不改 ``dn`` 状态机（Q18：复核独立于发货）。
+    复核行快照 ``dn_pick`` 的完整 8 维批次 + ``wave_no`` / ``rule_id``，
+    差异直接定位到批次 + 库位（Q17 默认最细粒度）。
+    ``dn_review_diff_log`` 只留痕：不生成调整单、不写库存流水。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS dn_review (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code            TEXT    NOT NULL UNIQUE,
+            dn_id           INTEGER NOT NULL REFERENCES dn(id),
+            dn_code         TEXT    NOT NULL DEFAULT '',
+            owner_id        INTEGER NOT NULL REFERENCES owner(id),
+            customer_id     INTEGER,
+            wave_no         TEXT    NOT NULL DEFAULT '',
+            status          TEXT    NOT NULL DEFAULT 'draft',
+            total_lines     INTEGER NOT NULL DEFAULT 0,
+            reviewed_lines  INTEGER NOT NULL DEFAULT 0,
+            diff_lines      INTEGER NOT NULL DEFAULT 0,
+            note            TEXT    NOT NULL DEFAULT '',
+            operator        TEXT    NOT NULL DEFAULT '',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            reviewed_at     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dnrev_dn     ON dn_review(dn_id);
+        CREATE INDEX IF NOT EXISTS idx_dnrev_status ON dn_review(status);
+        CREATE INDEX IF NOT EXISTS idx_dnrev_owner  ON dn_review(owner_id);
+
+        CREATE TABLE IF NOT EXISTS dn_review_line (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_id               INTEGER NOT NULL REFERENCES dn_review(id),
+            dn_id                   INTEGER NOT NULL,
+            line_id                 INTEGER,
+            pick_id                 INTEGER NOT NULL REFERENCES dn_pick(id),
+            product_id              INTEGER NOT NULL,
+            sku                     TEXT    NOT NULL DEFAULT '',
+            product_name            TEXT    NOT NULL DEFAULT '',
+            location_id             INTEGER NOT NULL,
+            location_code           TEXT    NOT NULL DEFAULT '',
+            batch_no                TEXT    NOT NULL DEFAULT '',
+            batch_key               TEXT    NOT NULL DEFAULT '',
+            internal_batch_no       TEXT    NOT NULL DEFAULT '',
+            designated_customer_id  INTEGER,
+            goods_property          TEXT    NOT NULL DEFAULT '',
+            stock_status            TEXT    NOT NULL DEFAULT '',
+            expiry_date             TEXT    NOT NULL DEFAULT '',
+            production_date         TEXT    NOT NULL DEFAULT '',
+            wave_no                 TEXT    NOT NULL DEFAULT '',
+            rule_id                 INTEGER,
+            expected_qty            REAL    NOT NULL,
+            actual_qty              REAL,
+            result                  TEXT,
+            diff_qty                REAL    NOT NULL DEFAULT 0,
+            reason_code             TEXT    NOT NULL DEFAULT '',
+            note                    TEXT    NOT NULL DEFAULT '',
+            operator                TEXT    NOT NULL DEFAULT '',
+            reviewed_at             TEXT,
+            UNIQUE(review_id, pick_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dnrevm_review ON dn_review_line(review_id);
+        CREATE INDEX IF NOT EXISTS idx_dnrevm_result ON dn_review_line(result);
+
+        CREATE TABLE IF NOT EXISTS dn_review_diff_log (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_id               INTEGER NOT NULL REFERENCES dn_review(id),
+            review_code             TEXT    NOT NULL DEFAULT '',
+            dn_id                   INTEGER NOT NULL,
+            dn_code                 TEXT    NOT NULL DEFAULT '',
+            owner_id                INTEGER NOT NULL,
+            line_id                 INTEGER,
+            pick_id                 INTEGER,
+            product_id              INTEGER,
+            sku                     TEXT    NOT NULL DEFAULT '',
+            product_name            TEXT    NOT NULL DEFAULT '',
+            location_id             INTEGER,
+            location_code           TEXT    NOT NULL DEFAULT '',
+            batch_no                TEXT    NOT NULL DEFAULT '',
+            batch_key               TEXT    NOT NULL DEFAULT '',
+            designated_customer_id  INTEGER,
+            expiry_date             TEXT    NOT NULL DEFAULT '',
+            goods_property          TEXT    NOT NULL DEFAULT '',
+            stock_status            TEXT    NOT NULL DEFAULT '',
+            wave_no                 TEXT    NOT NULL DEFAULT '',
+            expected_qty            REAL    NOT NULL DEFAULT 0,
+            actual_qty              REAL    NOT NULL DEFAULT 0,
+            diff_qty                REAL    NOT NULL DEFAULT 0,
+            reason_code             TEXT    NOT NULL DEFAULT '',
+            reason_label            TEXT    NOT NULL DEFAULT '',
+            note                    TEXT    NOT NULL DEFAULT '',
+            action                  TEXT    NOT NULL DEFAULT 'diff_registered',
+            operator                TEXT    NOT NULL DEFAULT '',
+            created_at              TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dnrefl_review ON dn_review_diff_log(review_id);
+        CREATE INDEX IF NOT EXISTS idx_dnrefl_dn     ON dn_review_diff_log(dn_id);
+        CREATE INDEX IF NOT EXISTS idx_dnrefl_owner  ON dn_review_diff_log(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_dnrefl_action ON dn_review_diff_log(action);
+        """
+    )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1694,6 +1799,7 @@ def init_db(path=None):
         _migrate_m25(conn)
         _migrate_m26(conn)
         _migrate_m35(conn)
+        _migrate_m36(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -1738,6 +1844,7 @@ else:
     from routes_inventory_transfer import it_bp  # noqa: E402
     from routes_putaway_rules import pr_bp  # noqa: E402
     from routes_outbound_allocation import oa_bp  # noqa: E402
+    from routes_dn_review import rv_bp  # noqa: E402
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -1764,3 +1871,4 @@ else:
     app.register_blueprint(it_bp)
     app.register_blueprint(pr_bp)
     app.register_blueprint(oa_bp)
+    app.register_blueprint(rv_bp)

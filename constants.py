@@ -381,3 +381,54 @@ OUTBOUND_PERM_CONFIG = "outbound_allocation:config"
 OUTBOUND_PERMISSIONS = (OUTBOUND_PERM_PLAN, OUTBOUND_PERM_ALLOCATE,
                         OUTBOUND_PERM_UNALLOCATE, OUTBOUND_PERM_WAVE,
                         OUTBOUND_PERM_LOG, OUTBOUND_PERM_CONFIG)
+
+# ── M36 出库复核（用户 2026-11-10 4B 定稿）───────────────────────────────
+# 独立复核单 + 独立作业页 + 登记差异只留痕（不生成调整单、不改库存）。
+# 复核单状态机：draft → reviewing → completed；draft / reviewing → cancelled。
+REVIEW_DRAFT = "draft"
+REVIEW_REVIEWING = "reviewing"
+REVIEW_COMPLETED = "completed"
+REVIEW_CANCELLED = "cancelled"
+REVIEW_STATUSES = (REVIEW_DRAFT, REVIEW_REVIEWING, REVIEW_COMPLETED, REVIEW_CANCELLED)
+REVIEW_TERMINAL = (REVIEW_COMPLETED, REVIEW_CANCELLED)
+
+# 复核行判定：pass = 实拣与应拣一致；diff = 登记差异（只写日志、不回填库存/单据）
+REVIEW_RESULT_PASS = "pass"
+REVIEW_RESULT_DIFF = "diff"
+REVIEW_RESULTS = (REVIEW_RESULT_PASS, REVIEW_RESULT_DIFF)
+REVIEW_RESULT_LABELS = {REVIEW_RESULT_PASS: "通过", REVIEW_RESULT_DIFF: "差异"}
+
+# 差异原因码（Q19：先落常量，不做字典表；登记差异时必选）
+REVIEW_DIFF_SHORT = "SHORT"
+REVIEW_DIFF_OVER = "OVER"
+REVIEW_DIFF_BATCH = "BATCH_MISMATCH"
+REVIEW_DIFF_EXPIRY = "EXPIRY_MISMATCH"
+REVIEW_DIFF_QUALITY = "QUALITY_MISMATCH"
+REVIEW_DIFF_OTHER = "OTHER"
+REVIEW_DIFF_REASONS = (REVIEW_DIFF_SHORT, REVIEW_DIFF_OVER, REVIEW_DIFF_BATCH,
+                       REVIEW_DIFF_EXPIRY, REVIEW_DIFF_QUALITY, REVIEW_DIFF_OTHER)
+REVIEW_DIFF_LABELS = {
+    REVIEW_DIFF_SHORT: "少货（实拣少于应拣）",
+    REVIEW_DIFF_OVER: "多货（实拣多于应拣）",
+    REVIEW_DIFF_BATCH: "批号不符",
+    REVIEW_DIFF_EXPIRY: "效期不符",
+    REVIEW_DIFF_QUALITY: "质量状态不符",
+    REVIEW_DIFF_OTHER: "其他（填备注说明）",
+}
+
+# 审计动作与引擎标识
+REVIEW_CODE_PREFIX = "RV"
+REVIEW_CODE_MAXLEN = 32
+REVIEW_ENGINE_MANUAL = "manual"           # M36 首版：人工逐行复核
+REVIEW_LOG_ACTION_DIFF = "diff_registered"
+REVIEW_LOG_ACTION_CLEARED = "diff_cleared"  # 差异被人工改判为通过时留痕
+
+# 6 个权限码：沿用 M24/M35 口径，只落常量不挂装饰器
+REVIEW_PERM_CREATE = "dn_review:create"
+REVIEW_PERM_CHECK = "dn_review:check"
+REVIEW_PERM_COMPLETE = "dn_review:complete"
+REVIEW_PERM_CANCEL = "dn_review:cancel"
+REVIEW_PERM_LOG = "dn_review:log"
+REVIEW_PERM_CONFIG = "dn_review:config"
+REVIEW_PERMISSIONS = (REVIEW_PERM_CREATE, REVIEW_PERM_CHECK, REVIEW_PERM_COMPLETE,
+                      REVIEW_PERM_CANCEL, REVIEW_PERM_LOG, REVIEW_PERM_CONFIG)
