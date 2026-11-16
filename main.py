@@ -1985,6 +1985,7 @@ else:
     from routes_dn_review import rv_bp  # noqa: E402
     from routes_care import care_bp  # noqa: E402
     from routes_dn_order import dn_order_bp  # noqa: E402
+    from routes_gsp import gsp_bp  # noqa: E402  M39 GSP 合规报表（纯只读）
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2014,3 +2015,4 @@ else:
     app.register_blueprint(rv_bp)
     app.register_blueprint(care_bp)
     app.register_blueprint(dn_order_bp)
+    app.register_blueprint(gsp_bp)

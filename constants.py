@@ -551,3 +551,49 @@ SPLIT_QTY_EPS = 1e-9                # 数量守恒容差，与 M21 I1/I2/I3 一�
 SPLIT_PERM_EXECUTE = "dn:split_merge"
 SPLIT_PERM_LOG = "dn:split_merge_log"
 SPLIT_PERMISSIONS = (SPLIT_PERM_EXECUTE, SPLIT_PERM_LOG)
+
+# ── M39 GSP 合规报表（只读：批次追溯 / 效期 / 养护 / 验收复核留痕）────────
+# 细节未拍板项登记 OPEN_QUESTIONS Q30–Q33，按下列默认实现，答复后以答复为准。
+# 纯只读、不新建表、不改库存：全部复用现有表（batch_receipt / stock_batch /
+# stock_movement / care_log / dn_review_diff_log），逐端点注入货主隔离。
+GSP_REPORT_TRACE = "trace"          # 批次追溯
+GSP_REPORT_EXPIRY = "expiry"        # 效期预警
+GSP_REPORT_CARE = "care"            # 养护留痕
+GSP_REPORT_RECEIPT = "receipt"      # 验收留痕
+GSP_REPORT_REVIEW = "review"        # 复核差异留痕
+GSP_REPORTS = (GSP_REPORT_TRACE, GSP_REPORT_EXPIRY, GSP_REPORT_CARE,
+               GSP_REPORT_RECEIPT, GSP_REPORT_REVIEW)
+GSP_REPORT_LABELS = {
+    GSP_REPORT_TRACE: "批次追溯", GSP_REPORT_EXPIRY: "效期预警",
+    GSP_REPORT_CARE: "养护记录", GSP_REPORT_RECEIPT: "验收留痕",
+    GSP_REPORT_REVIEW: "复核差异",
+}
+
+# 效期分级（按 stock_batch.expiry_date 与今天比较）
+GSP_EXPIRY_EXPIRED = "expired"      # 已过期（expiry_date < today）
+GSP_EXPIRY_SOON = "soon"            # 近效期（today <= expiry_date <= today+N）
+GSP_EXPIRY_NORMAL = "normal"        # 正常（expiry_date > today+N）
+GSP_EXPIRY_NONE = "none"            # 无有效期（expiry_date 空 / NULL）
+GSP_EXPIRY_LEVELS = (GSP_EXPIRY_EXPIRED, GSP_EXPIRY_SOON,
+                     GSP_EXPIRY_NORMAL, GSP_EXPIRY_NONE)
+GSP_EXPIRY_LABELS = {
+    GSP_EXPIRY_EXPIRED: "已过期", GSP_EXPIRY_SOON: "近效期",
+    GSP_EXPIRY_NORMAL: "正常", GSP_EXPIRY_NONE: "无有效期",
+}
+GSP_EXPIRY_SOON_DAYS_DEFAULT = 30   # 近效期默认阈值（天），可在查询参数 days 覆盖
+GSP_EXPIRY_SOON_DAYS_MAX = 365
+
+# 追溯链环节（收货 → 验收 → 上架库存 → 库存流水 → 出库复核）
+GSP_TRACE_RECEIPT = "receipt"
+GSP_TRACE_STOCK = "stock"
+GSP_TRACE_MOVEMENT = "movement"
+GSP_TRACE_STAGES = (GSP_TRACE_RECEIPT, GSP_TRACE_STOCK, GSP_TRACE_MOVEMENT)
+GSP_TRACE_STAGE_LABELS = {
+    GSP_TRACE_RECEIPT: "收货验收", GSP_TRACE_STOCK: "在库批次",
+    GSP_TRACE_MOVEMENT: "库存流水",
+}
+
+# 权限码：沿用 M24/M35/M36/M37/M38 口径，只落常量不挂装饰器（Q08 统一处置）
+GSP_PERM_VIEW = "gsp:view"
+GSP_PERM_EXPORT = "gsp:export"
+GSP_PERMISSIONS = (GSP_PERM_VIEW, GSP_PERM_EXPORT)
