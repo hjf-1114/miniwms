@@ -1,6 +1,6 @@
 # MiniWMS PRD 素材库（回溯 M1–M20 · 逐页详细记录）
 
-> 版本 **v1.7** · 2026-11-16 · 状态：**回溯进行中**（第 1 批 2 页；M21 起追加页已续编至 #32）。
+> 版本 **v1.8** · 2026-11-16 · 状态：**回溯进行中**（第 1 批 2 页；M21 起追加页已续编至 #33）。
 > v0.2 时点原文见 §5 变更日志，历史版本与历史章节一律保留用于追溯。
 > v0.2 时点原文见 §5 变更日志，历史版本与历史章节一律保留用于追溯。
 > **定位**：后续生成完整 PRD 的**唯一素材来源**。每页按 `docs/PRD_TEMPLATE.md` 的 11 项模板详细记录，
@@ -99,6 +99,8 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 | 30 | M38 追加页 | 拆单合单 | `dn_order.html` | M38 | **已记录** | §11（文件末尾增量章） |
 | 31 | M39 追加页 | GSP 合规报表 | `gsp.html` | M39 | **已记录** | §12（文件末尾增量章） |
 | 32 | M40 追加页 | 工作量统计 | `workload.html` | M40 | **已记录** | §13（文件末尾增量章） |
+| 33 | M41 追加页 | 打印模板配置 | `print_templates.html` | M41 | **已记录** | §14（文件末尾增量章） |
+| 34 | M41 追加页 | 打印预览与临时编辑 | `print_preview.html` | M41 | **已记录** | §14（文件末尾增量章） |
 
 > **追加页计数说明（v0.6）**：#1–#21 是用户规格 2A 定义的「回溯 M1–M20」固定范围，
 > 分母恒为 21；M21 起新增页面按规格「随里程碑逐次追加」续编，**不计入回溯分母**。
@@ -149,6 +151,12 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 > **2/21（回溯）+ 11/11（M21 / M22 / M24 / M26 / M35 / M36 / M37 / M38 / M39 / M40 追加页）**，回溯分母仍恒为 21。
 > §1 原有 21 行与 #22–#31 原行一律不改；§12 第 5 点「下一棒 M40 未实现」是 v1.6
 > 时点事实，保留追溯，已由本次 §13 覆盖（M40 已交付，下一棒 M41）。
+>
+> **追加页计数说明（v1.8 增量，不覆盖上方 v0.6 / v0.9 / v1.1–v1.7 原文）**：M41 一次新增
+> **两张**独立页面 `print_templates.html` 与 `print_preview.html`，按规格续编 **#33 / #34**，
+> 因此当前逐页记录进度更新为 **2/21（回溯）+ 13/13（#22–#34 追加页）**，回溯分母仍恒为 21。
+> §1 原有 21 行与 #22–#32 原行一律不改；§13 第 6 点「下一棒 M41 未实现」是 v1.7
+> 时点事实，保留追溯，已由本次 §14 覆盖（M41 已交付，下一棒 M31–M34 基础资料新域）。
 
 ---
 
@@ -2713,4 +2721,92 @@ python tools/seed_module_demo.py           # 幂等补演示数据，不覆盖�
 5. 事件流是只读视图，历史留痕被物理删除则统计同步减少，不做快照归档；权限码只落常量、
    未挂装饰器（Q08 口径延续）。
 6. `docs/OPEN_QUESTIONS.md` Q01–Q37 待统一答复；PRD 回溯 #3–#21 共 19 页仍另起独立提交。
+
+---
+
+## 14. M41 追加页 #33 / #34：打印中心（`print_templates.html` / `print_preview.html`）（2026-11-16 追加）
+
+> 本章为 v1.8 增量章。按「增量追加不重写」原则，§1–§13 全部历史原文保留；
+> 时点表述（如 §13 第 6 点「下一棒 M41」）保留追溯，以本章为准。
+
+### 14.1 [业务] 页面用途与使用场景
+
+打印中心解决「单据要打出来、打印前还要能改几个字」的现场问题，分两页：
+- **模板配置**（#33）：仓储主管按 6 类作业节点（收货 / 上架 / 拣货 / 复核 / 发货 / 批次标签）
+  配置打印模板，一节点多模板、一个生效。既能用占位符文本快速套打，也能拖拽区块排版。
+- **打印预览**（#34）：操作员打开一张 ASN / DN / 复核单，左侧临时微调数量、备注、收货人等字段，
+  右侧实时刷新 PDF，点「打印」弹出系统对话框人工确认出纸。
+**临时编辑只作用于本次打印件**，不回写业务单据（Q39），零安装、不引打印代理（蓝图 §6）。
+
+### 14.2 [功能] 页面行为
+
+1. 模板配置页：节点筛选 → 模板列表（编辑 / 复制 / 生效）→ 编辑器。
+   - L1：字段 chip 点击插入 `{{field}}`，`{{lines_table}}` 展开明细表；留空则走 L2。
+   - L2：原生 HTML5 拖拽区块排序、增删区块、字段显隐、列数与自由文本；每节点区块级排版。
+   - 字段映射表：显示名、列宽、可临时编辑开关；保存后即时影响预览渲染。
+2. 打印预览页：选节点 / 单据来源 / 单据 ID（也支持 URL 参数直接带入）→ 加载单据 →
+   左侧编辑白名单字段（备注 / 收货人 / 数量 / 行备注）→ 400ms 防抖后自动刷新 PDF iframe →
+   「打印」调用 iframe `window.print()`；收货单与出库单列表行也有「打印」入口。
+3. 模板配置页写 `print_template`；预览与 PDF 端点全只读，不改库存或单据。
+
+### 14.3 [实现] 代码落点
+
+- 迁移 `main._migrate_m41()`：`print_template` 表（`node/code/name/version/is_active/
+  layout_json/field_map/note` + 时间戳），`print_service.seed_templates()` 播种 6 张默认模板；
+  删除后不复活，渲染回退 `default_layout()`。
+- 服务层 `print_service.py`：模板 CRUD / 生效唯一；`_asn_document()` / `_dn_document()` /
+  `_review_document()` 单据取值（各自 `scope.scoped_where()`）；`merge_overrides()` 白名单；
+  `render_html()` 内联 CSS A4 HTML（L1 优先、L2 兜底）；`generate_pdf()` 调系统 Chrome
+  headless `--print-to-pdf --no-pdf-header-footer`，`--headless=new` 失败回退经典 headless，
+  临时目录用完即删，校验 `%PDF-` 文件头。
+- 路由 `routes_print.py`：`print_bp` 8 端点，`PrintError → 400`，PDF 返回
+  `application/pdf` + `Content-Disposition: inline` + `no-store`。
+- 前端 `web_app/print_templates.html`、`web_app/print_preview.html`：零依赖原生 HTML/JS/CSS；
+  `web_app/js/layout.js` 新增一级「打印中心 / 打印配置」，导航 30→32 页；
+  `asns.html` / `dns.html` 列表行加「打印」按钮。
+- 演示 `tools/seed_module_demo.py::m41_print()`：只读验证 6 张默认模板与节点数；
+  本地库 `print_template` 6 行，备份 `miniwms_backup_20261116_m41.db`。
+
+### 14.4 API 端点（单列）
+
+| 方法 | 路径 | 说明 | 关键参数 |
+|---|---|---|---|
+| GET | `/api/print/dict` | 字典（6 节点 / 3 来源 / 5 区块 / 17 字段 / 4 可编辑字段） | — |
+| GET | `/api/print/templates` | 模板列表 | node |
+| POST | `/api/print/templates` | 新建模板（201） | node / code / name / version / layout_json / field_map / is_active / note |
+| PUT | `/api/print/templates/<id>` | 编辑模板 | 同上（可部分） |
+| DELETE | `/api/print/templates/<id>` | 删除模板 | — |
+| POST | `/api/print/templates/<id>/activate` | 设为节点唯一生效模板 | — |
+| GET | `/api/print/preview` | 预览取数 + 渲染 HTML + 可编辑字段 | node / source / doc_id / template_id / overrides |
+| GET | `/api/print/pdf` | Chrome headless 出 PDF | 同上（overrides 为 URL 编码 JSON） |
+
+### 14.5 数据模型（单列）
+
+| 表 | 用途 | 关键字段 |
+|---|---|---|
+| `print_template`（**M41 新增**） | 节点模板配置 | node / code(UNIQUE) / is_active / layout_json / field_map |
+| `asn` / `asn_line` | 收货 / 上架单据取值 | owner_id / code / expected_qty / received_qty / putaway_qty |
+| `dn` / `dn_line` / `dn_pick` | 拣货 / 发货单据取值 | owner_id / customer_id / ordered_qty / picked_qty / batch_no / location_id |
+| `dn_review` / `dn_review_line` | 复核单取值 | owner_id / operator / expected_qty / actual_qty / batch_no |
+
+模板是系统级配置（Q38：无 owner_id），单据取值按货主隔离；临时编辑不落表。
+
+### 14.6 演示数据 / 验收
+
+- 本地库播种后 `print_template` 6 行（每节点一张默认生效模板），`--check` 两核对 OK；
+  预览页可直接打开演示库已有 ASN / DN 查看 PDF，无需预置打印快照。
+- 验收：M41 单测 **18/18**、真实 Chrome E2E `tools/e2e_m41.py` **31/31**、全量 unittest
+  **579/579**、历史 E2E M40 36/36 + M39 34/34 + M38 29/29 + M37 30/30 + M36 26/26 +
+  M35 27/27；E2E 验证 PDF 为 `%PDF-` 字节流、拖拽排序生效、临时编辑后 `asn.note` 未变、
+  stock/movement/adjustment/stock_batch 四表不变 + I1/I2/I3 一致。
+
+### 14.7 已知边界（如实记录，不把规划写成现状）
+
+1. 没有 `print_job` 表、没有节点自动触发、没有 QZ Tray 静默打印（M42 后置，Q40）。
+2. 模板为系统级配置，不按货主 / 仓库隔离；只有单据取值受货主隔离（Q38）。
+3. 临时编辑仅 4 个白名单字段，不留快照 / 审计日志（Q39）；业务单据与库存零改动。
+4. L2 只做区块级拖拽与字段显隐，不做像素级自由定位（蓝图 §6.4）。
+5. PDF 依赖本机 Chrome（`MINIWMS_CHROME` 可覆盖），未安装时模板配置与预览 HTML 仍可用。
+6. 权限码只落常量、未挂装饰器（Q08 口径延续）；`docs/OPEN_QUESTIONS.md` Q01–Q40 待统一答复；
+   PRD 回溯 #3–#21 共 19 页仍另起独立提交。
 

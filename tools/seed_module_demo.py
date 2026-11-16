@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M35–M40 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -759,6 +759,15 @@ def m39_gsp():
             f"概览卡片 {len(ov['cards'])} 张，效期分级 {stats}")
 
 
+def m41_print():
+    """M41 默认模板由 init_db() 幂等播种；这里只做只读验证，不预置打印快照。"""
+    d = get("/api/print/dict")
+    t = get("/api/print/templates")
+    active = sum(1 for x in t["templates"] if x["is_active"])
+    return (f"默认模板 {t['total']} 张（生效 {active} 张）/ {len(d['nodes'])} 个节点；"
+            f"PDF 按需用系统 Chrome headless 生成，不预置打印快照")
+
+
 def m40_workload():
     """M40 是纯只读统计：复用 M17–M39 已写入的留痕，不新增业务数据。
 
@@ -812,6 +821,7 @@ def main_cli():
         ("batch_location 批次实物分布(M21)", "batch_location"),
         ("stocktake 盘点单", "stocktake"),
         ("stock_batch 批次明细(M21)", "stock_batch"),
+        ("print_template 打印模板(M41)", "print_template"),
     ]
     if args.check:
         print(f"库：{DB}\n")
@@ -846,6 +856,7 @@ def main_cli():
     module("M38 拆单合单演示数据", m38_dn_order)
     module("M39 GSP 合规报表演示数据", m39_gsp)
     module("M40 工作量统计只读验证", m40_workload)
+    module("M41 打印模板只读验证", m41_print)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:

@@ -78,7 +78,7 @@
 - M38 拆单合单（用户「之后可以考虑」，可选）
 - M39 GSP 合规报表（批次追溯 / 效期 / 养护 / 验收复核留痕）
 - M40 工作量统计（按人 / 按节点 / 按时间段）✅ **2026-11-16 已交付**：纯只读聚合 8 类现有留痕，16 类作业节点 / 7 端点 / 作业页，18 单测 + E2E 36/36，详见文末同名章节
-- M41 打印模板配置 + PDF 预览与内容编辑（**方案 v2 已定稿**：零安装 / Chrome headless / 预览页可临时编辑单据内容 / 字段映射 + 可视化拖拽排版）
+- M41 打印模板配置 + PDF 预览与内容编辑（**方案 v2 已定稿**：零安装 / Chrome headless / 预览页可临时编辑单据内容 / 字段映射 + 可视化拖拽排版）✅ **2026-11-16 已交付**：6 节点默认模板 / 8 端点 / L1+L2 编辑器 / PDF 预览临时编辑不回写，18 单测 + E2E 31/31，详见文末同名章节
 - M42 打印任务队列 + 操作节点自动触发 — **后置**，等全部做好后用户额外补充，暂不排期
 
 > **领域蓝图（2026-11-05 用户提出「自上而下、后续细节再优化」，同日 v3 定稿）**：完整 5 层框架、
@@ -2030,7 +2030,75 @@ Q20（复核单与日志按货主隔离）四个新分歧登记在 `docs/OPEN_QU
 - `docs/OPEN_QUESTIONS.md` Q01–Q37 待统一答复;PRD 回溯 #3–#21 共 19 页仍另起独立提交。
 - **下一棒 M41 打印模板配置 + PDF 预览与内容编辑**（方案 v2 已定稿：零安装 /
   Chrome headless / 预览页可临时编辑单据内容 / 字段映射 + 可视化拖拽排版），
-  M42 打印任务队列与自动触发仍后置；M31–M34 基础资料新域仍后移。
+  M42 打印任务队列与自动触发仍后置；M31–M34 基础资料新域仍后移
+  （**该棒已于 2026-11-16 交付，见下章**）。
+
+---
+
+## M41 打印模板配置 + PDF 预览与内容编辑（2026-11-16）✅
+
+用户指令「按计划自己优化、不用问、做完一个做下一个、无人值守」；按 Roadmap 第 5 层
+推进 M41。方案 v2 五项已在 `docs/DOMAIN_BLUEPRINT.md` §6 定稿，新增细节分歧按
+`docs/OPEN_QUESTIONS.md` **Q38–Q40 当前默认**落地、编号登记，**全程未打断用户**。
+
+### 交付内容
+
+- **新表 `print_template`**：6 类节点（receive / putaway / pick / check / ship / label）
+  各挂多模板、`is_active` 每节点唯一；`layout_json` 同一份 JSON 同时存 L1
+  `content_template` 与 L2 `blocks`，`field_map` 存标签 / 列宽 / 可编辑开关。
+  `main._migrate_m41()` 幂等建表 + `print_service.seed_templates()` 播种 6 张默认模板；
+  用户删光某节点模板后不再复活，渲染回退内置默认排版。
+- **服务层 `print_service.py`**：模板 CRUD / 生效切换；ASN / DN / 复核单三类单据取值
+  （全部 `S.scoped_where()` 货主隔离，只读）；`merge_overrides()` 只认可编辑字段白名单；
+  `render_html()` 生成内联 CSS 的 A4 HTML（L1 占位符优先，清空走 L2 区块）；
+  `generate_pdf()` 调系统 Chrome headless `--print-to-pdf --no-pdf-header-footer`，
+  临时目录用完即删，零新增 Python 依赖。
+- **8 个端点**（`routes_print.py`）：字典 / 模板列表 / 新建 / 编辑 / 删除 / 生效 /
+  预览 / PDF；`PrintError → 400`，PDF 返回 `application/pdf` 字节流。
+- **两个页面**：`web_app/print_templates.html`（L1 字段 chip 插入占位符 + L2 原生
+  HTML5 拖拽区块排序 / 增删 / 字段显隐 + 字段映射表）；`web_app/print_preview.html`
+  （左侧镜像可编辑表单、右侧 PDF iframe，改字段 400ms 后自动重生成 PDF，点「打印」
+  调 iframe 的 `window.print()` 弹系统对话框人工确认）。导航 30→32 页，新增一级
+  「打印中心 / 打印配置」；`asns.html` / `dns.html` 列表行新增「打印」入口。
+- **不回写边界**：预览 / 导出 PDF / 临时改数量·备注·收货人**不写任何业务表**，
+  库存与主账零副作用；模板配置表是唯一写入对象。
+- **验证**：M41 单测 **18/18**、真实 Chrome E2E `tools/e2e_m41.py` **31/31**
+  （含 Chrome 生成 `%PDF-` 字节流、拖拽排序、临时编辑刷新 PDF）、全量 unittest
+  **579/579**、历史 E2E M40 36/36 + M39 34/34 + M38 29/29 + M37 30/30 + M36 26/26 +
+  M35 27/27 全绿；I1/I2/I3 一致；`node --check` 四个变更页面脚本通过。
+
+### 关键决策与踩坑
+
+- **一份 JSON 两层视图**：L1 有 `content_template` 时直接替换 `{{field}}` /
+  `{{lines_table}}`，否则按 L2 区块渲染；两个编辑器改的是同一份 `layout_json`，
+  避免两套模板互转丢数据（Q38 登记）。
+- **临时编辑白名单**：只允许 `note / receiver / qty / line_note`，其余字段即使
+  POST 覆盖也被忽略（单测验证 `code` / `product_name` 不会被篡改）。
+- **Chrome 路径**：本机 `chrome` 不在 PATH，实际路径为
+  `C:\Program Files\Google\Chrome\Application\chrome.exe`；服务层按
+  `MINIWMS_CHROME → PATH → 常见 Windows 路径` 顺序探测，未找到时返回明确错误码。
+- **老版本兼容**：先试 `--headless=new`，若未产出 PDF 再退回经典 `--headless`；
+  PDF 头校验 `%PDF-` 防止把错误页当打印件返回。
+- **E2E 造数**：DN 创建必须带 `customer_id`；默认模板被测试清空后要显式
+  `seed_templates()` 重建基线（与 M25 规则种子同坑）；Playwright `drag_to()`
+  在 headless 下未稳定触发 HTML5 drop，改用显式派发 `dragstart/dragover/drop`
+  事件验证拖拽处理器。
+
+### 已知边界 / 下一棒
+
+- Q38–Q40 待统一答复（模板是否按货主隔离 / 临时编辑字段范围 / 打印快照留存），
+  当前默认是全局模板 + 4 个可编辑字段 + 不留快照；答复后以答复为准。
+- M42 打印任务队列与操作节点自动触发**仍后置**（蓝图 §6.5：等全部做完后用户额外补充），
+  本里程碑只有手动「打开预览 → 改字段 → 生成 PDF → 人工确认打印」链路；
+  不引 QZ Tray、不静默打印、不写 `print_job` 表。
+- PDF 生成依赖本机 Chrome；无 Chrome 时预览与模板配置仍可用，仅 PDF 端点报错。
+- 打印页不做像素级自由定位（蓝图 §6.4 推荐），只做区块级拖拽与字段显隐；
+  临时编辑不生成快照、不留审计日志（Q40）。
+- 权限码 `PRINT_PERM_CONFIG/VIEW/PDF` 只落常量、未挂装饰器（Q08 统一处置）。
+- `docs/OPEN_QUESTIONS.md` Q01–Q40 待统一答复;PRD 回溯 #3–#21 共 19 页仍另起独立提交。
+- **下一棒**：M31 司机与车辆主数据 / M32 产品类型字典 / M33 序列号台账 /
+  M34 货位组主数据（基础资料新域，用户 11-10 1A 后移至今）；M28 经营报表编号保留、
+  M29/M30 仍降级暂缓；M42 只在用户额外补充后启动。
 
 ---
 

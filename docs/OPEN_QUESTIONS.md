@@ -57,6 +57,9 @@
 | Q35 | 「工作量」是否要按工时 / 人天统计，需要独立计时或工时表吗？ | M40 计量口径 | 系统没有工时表，按**留痕事件数 + 涉及数量**统计；数量对库存流水取 `abs(qty_delta)`、纯分配取 `abs(allocated_delta)`；不估算工时、不建工时表、不做效率排名 | 待答复（M40 已按默认落地） |
 | Q36 | 时间段粒度与日期口径：按日 / 周 / 月哪一种？周从周几起？按哪个时间字段？要不要时区换算？ | M40 时间口径 | 支持 day / week / month，默认 day；ISO 周（周一起，`YYYY-Www`）、月 `YYYY-MM`；统一取各留痕 `created_at`（复核行回退 reviewed_at）本地时间，不做时区转换 | 待答复（M40 已按默认落地） |
 | Q37 | 匿名演示 / 老数据 `operator` 为空时如何归组：剔除、单列还是强制登录补录？ | M40 人员口径 | 归并到「未记录」标签参与统计与筛选，不剔除、不强制登录；登录用户按 `operator` 原文分组，不关联 `user.id`（历史留痕只有字符串） | 待答复（M40 已按默认落地） |
+| Q38 | 打印模板配置要不要按货主 / 仓库隔离？L1 文本视图与 L2 拖拽排版要两套数据还是一份？ | M41 模板模型 | 模板是**系统级配置**（`print_template` 无 owner_id，按节点隔离，货主只隔离单据取值）；L1 `content_template` 与 L2 `blocks` 存在**同一份 `layout_json`**，L1 非空优先渲染、清空走 L2 | 待答复（M41 已按默认落地） |
+| Q39 | 预览页允许临时改哪些字段？改完要不要留快照 / 审计日志？ | M41 编辑边界 | 白名单只放 `note / receiver / qty / line_note`，其余字段即使传入也忽略；改动只作用于本次 PDF，**不回写业务单据、不留快照、不写审计**（Q40 同口径） | 待答复（M41 已按默认落地） |
+| Q40 | 打印触发方式：手动点打印，还是节点完成后自动打印？要不要 QZ Tray 静默出纸？ | M41/M42 触发 | 严格按蓝图 §6.5：M41 只做「手动打开预览 → 临时编辑 → Chrome headless 生成 PDF → `window.print()` 弹对话框人工确认」；`print_job` / 节点钩子 / QZ Tray 全部留到 M42，由用户后续补充 | 待答复（M41 已按默认落地） |
 
 ## 三、M35 落地复核（2026-11-13）
 
@@ -128,6 +131,17 @@
 | Q35 计量口径 | `by_operator()` / `by_node()` / `by_period()` | 事件数 + 涉及数量；单测验证纯分配流水的 `allocated_delta` 被计入（qty_delta=0 时取 6） |
 | Q36 时间口径 | `_period_key()` / `filtered_events()` | day / week / month 三种；E2E 验证按日两段、按周一桶、按月 `2026-11` 一桶 |
 | Q37 未记录操作人 | `WORKLOAD_UNKNOWN_OPERATOR` / 事件 SQL `COALESCE(NULLIF(...))` | 空 operator 归并为「未记录」；单测验证更新为空后按人统计出现该分组 |
+
+## 三·续 M41 落地复核（2026-11-16）
+
+> 按「不明确的先登记、明确的一直做」，M41 已按上表 Q38–Q40「当前默认」全部落地，
+> **没有中途打断用户**。以下是实现与登记的对照，便于统一答复时逐条比对。
+
+| 登记项 | 落地位置 | 实测 |
+|---|---|---|
+| Q38 模板模型 | `main._migrate_m41()` / `print_service.default_layout()` | 6 节点默认模板各 1 张生效；L1 `content_template` 与 L2 `blocks` 同存 `layout_json`；E2E 验证 L1 占位符渲染与 L2 区块拖拽排序 |
+| Q39 编辑边界 | `merge_overrides()` / `C.PRINT_EDITABLE_FIELDS` | 只接受 4 个白名单字段；单测验证 `code` / `product_name` 不被覆盖；E2E 验证临时编辑后 asn.note 未变 |
+| Q40 触发方式 | `routes_print.print_pdf()` / `print_preview.html::doPrint()` | 仅手动预览 + `window.print()` 人工确认；无 `print_job` 表、无节点钩子、无 QZ Tray；E2E 验证 PDF 字节流与库存零副作用 |
 
 ## 四、登记约定
 
