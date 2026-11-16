@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M35 / M36 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M35 / M36 / M37 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -14,6 +14,7 @@ M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主�
 默认写项目根目录的 `miniwms.db`，可用 `MINIWMS_DB` 覆盖。执行前建议先备份该库。
 """
 import argparse
+import datetime
 import os
 import sqlite3
 import sys
@@ -558,6 +559,73 @@ def m36_dn_review():
             f"差异留痕 {count('dn_review_diff_log')} 条 {stats}")
 
 
+def m37_care():
+    """让「养护管理」页打开即有可查数据（幂等、走真实 API）。
+
+    两个计划（温湿度 / 效期）到期生成任务；温湿度任务实测超限 → 异常 + 处置，
+    效期任务判正常。异常只留痕，不改库存、不生成调整单。
+    """
+    made = []
+    H = admin_headers()
+    owners, _prods, locs, _whs, _custs, _zones = fixtures()
+    if not owners:
+        return "跳过（无货主，请先运行 seed_demo.py）"
+    owner_id = owners.get("DEMO-OW1") or next(iter(owners.values()))
+    loc_id = next((v for k, v in locs.items() if "A" in k or "存储" in k),
+                  next(iter(locs.values()), 0))
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+
+    def ensure_plan(code, project, **extra):
+        exist = raw("SELECT id FROM care_plan WHERE note LIKE ? ORDER BY id LIMIT 1",
+                    (f"%{code}%",))
+        if exist:
+            return exist[0]["id"], False
+        payload = {"owner_id": owner_id, "project": project, "cycle": "daily",
+                   "next_due_date": yesterday,
+                   "note": PREFIX + f"M37 养护演示（{code}）"}
+        payload.update(extra)
+        body = post("/api/care-plans", payload, headers=H)
+        return body["id"], True
+
+    p1, new1 = ensure_plan("DEMO-M37-TEMP", "TEMP_HUMIDITY",
+                           location_id=loc_id, temp_min=2, temp_max=8,
+                           hum_min=30, hum_max=70)
+    p2, new2 = ensure_plan("DEMO-M37-EXPIRY", "EXPIRY")
+    if new1:
+        made.append("温湿度计划")
+    if new2:
+        made.append("效期计划")
+    gen = post("/api/care-tasks/generate", {}, headers=H)
+    if gen["generated"]:
+        made.append(f"{gen['generated']} 条养护任务")
+
+    tasks = get("/api/care-tasks?page_size=200")["tasks"]
+    for t in tasks:
+        if t["status"] != "pending":
+            continue
+        if t["project"] == "TEMP_HUMIDITY":
+            post(f"/api/care-tasks/{t['id']}/execute", {
+                "result": "abnormal", "temperature": 12, "humidity": 50,
+                "reason_code": "TEMP_HIGH",
+                "note": PREFIX + "M37 演示：冷藏温度 12℃ 超上限，只留痕不纠偏",
+            }, headers=H)
+            post(f"/api/care-tasks/{t['id']}/handle", {
+                "handled_note": PREFIX + "M37 演示：已通知工程部复核冷机",
+            }, headers=H)
+            made.append("超限异常 + 处置")
+        else:
+            post(f"/api/care-tasks/{t['id']}/execute", {
+                "result": "normal",
+                "note": PREFIX + "M37 演示：效期检查正常",
+            }, headers=H)
+            made.append("效期正常记录")
+
+    stats = {r["action"]: r["n"] for r in raw(
+        "SELECT action, COUNT(*) AS n FROM care_log GROUP BY action")}
+    return (f"新增 {made or '无（数据已存在）'}；计划 {count('care_plan')} 张，"
+            f"任务 {count('care_task')} 条，留痕 {count('care_log')} 条 {stats}")
+
+
 def consistency():
     """顺带体检：I1 / I2 / I3 与推荐引擎可用性。"""
     out = []
@@ -590,6 +658,9 @@ def main_cli():
         ("outbound_allocation_log 分配留痕(M35)", "outbound_allocation_log"),
         ("dn_review 复核单(M36)", "dn_review"),
         ("dn_review_diff_log 差异留痕(M36)", "dn_review_diff_log"),
+        ("care_plan 养护计划(M37)", "care_plan"),
+        ("care_task 养护任务(M37)", "care_task"),
+        ("care_log 养护留痕(M37)", "care_log"),
         ("customer_reservation_log 风险放行(M23)", "customer_reservation_log"),
         ("batch_location 批次实物分布(M21)", "batch_location"),
         ("stocktake 盘点单", "stocktake"),
@@ -617,6 +688,7 @@ def main_cli():
     module("M26 规则配置演示数据", m26_rule_editor_data)
     module("M35 波次分配演示数据", m35_outbound_allocation)
     module("M36 出库复核演示数据", m36_dn_review)
+    module("M37 养护管理演示数据", m37_care)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:

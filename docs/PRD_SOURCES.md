@@ -1,6 +1,7 @@
 # MiniWMS PRD 素材库（回溯 M1–M20 · 逐页详细记录）
 
-> 版本 **v0.2** · 2026-11-05 · 状态：**回溯进行中**（第 1 批：基础主数据 2 页，已完成自审 + 独立交叉审阅修正）。
+> 版本 **v1.4** · 2026-11-16 · 状态：**回溯进行中**（第 1 批 2 页；M21 起追加页已续编至 #29）。
+> v0.2 时点原文见 §5 变更日志，历史版本与历史章节一律保留用于追溯。
 > **定位**：后续生成完整 PRD 的**唯一素材来源**。每页按 `docs/PRD_TEMPLATE.md` 的 11 项模板详细记录，
 > 分 `[业务]` / `[功能]` / `[实现]` 三层书写，兼顾质检演示、内部开发交付、业务方评审三类读者。
 > **范围**：回溯补齐 M1–M20 已交付的 21 个页面，之后每个新里程碑按同一模板同步追加。
@@ -93,6 +94,7 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 | 26 | M26 追加页 | 上架规则配置 | `putaway_rules.html` | M26 | **已记录** | §7（文件末尾增量章） |
 | 27 | M35 追加页 | 出库波次分配 | `outbound_allocation.html` | M35 | **已记录** | §8（文件末尾增量章） |
 | 28 | M36 追加页 | 出库复核 | `dn_review.html` | M36 | **已记录** | §9（文件末尾增量章） |
+| 29 | M37 追加页 | 养护管理 | `care.html` | M37 | **已记录** | §10（文件末尾增量章） |
 
 > **追加页计数说明（v0.6）**：#1–#21 是用户规格 2A 定义的「回溯 M1–M20」固定范围，
 > 分母恒为 21；M21 起新增页面按规格「随里程碑逐次追加」续编，**不计入回溯分母**。
@@ -119,6 +121,12 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 > `dn_review.html`，按规格续编 **#28**，因此当前逐页记录进度更新为
 > **2/21（回溯）+ 7/7（M21 / M22 / M24 / M26 / M35 / M36 追加页）**，回溯分母仍恒为 21。
 > §1 原有 21 行与 #22–#27 原行一律不改。
+>
+> **追加页计数说明（v1.4 增量，不覆盖上方 v0.6 / v0.9 / v1.1 / v1.2 / v1.3 原文）**：M37 新增独立页面
+> `care.html`，按规格续编 **#29**，因此当前逐页记录进度更新为
+> **2/21（回溯）+ 8/8（M21 / M22 / M24 / M26 / M35 / M36 / M37 追加页）**，回溯分母仍恒为 21。
+> §1 原有 21 行与 #22–#28 原行一律不改；§8 第 6 点「M37 / M38 为下一棒、未实现」是 v1.3
+> 时点事实，保留追溯，已由本次 §10 覆盖（M37 已交付，下一棒 M38）。
 
 ---
 
@@ -1794,6 +1802,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | M26 | 规则配置编辑器与推荐交互（13 维条件组 / fallback 链拖拽 / 8 项 limits 三态 / 9 条评分 / 采纳驳回与改位原因码 / 命中率统计 / 外部单据类别字典 / 可复跑 E2E） | `putaway_rules.html`（#26 追加页）+ `asn_putaway.html` 增强 | **已完成 2026-11-13** |
 | M35 | 出库波次分配与 FEFO（轻波次 / 批次级分配 / 先专属后通用 / 拆批与短拣 / 跳批留痕 / 共表 `outbound` 规则 / 发货按记录批次扣减 / 独立作业页） | `outbound_allocation.html`（#27 追加页）+ `dns.html` 入口增强 | **已完成 2026-11-13** |
 | M36 | 出库复核（独立复核单 / 作业页 / 按拣货行逐条复核 / 快照 8 维批次 / 登记差异只留痕不改库存 / 差异留痕查询） | `dn_review.html`（#28 追加页）+ `dns.html` 入口增强 | **已完成 2026-11-16** |
+| M37 | 养护管理（温湿度 / 养护项目 / 周期 / 异常只留痕，GSP；计划→任务→留痕三层 / 到期生成幂等 / 越界强制异常 / 异常处置不改库存） | `care.html`（#29 追加页） | **已完成 2026-11-16** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -1820,6 +1829,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | v1.0 | 2026-11-10 | **M25 上架推荐规则引擎**：M25 **不新增页面**（编辑器属 M26），进度表 21 行原行与 #22–#25 追加页**一律不改**，**回溯仍 2/21、追加页仍 4/4，分母不混算**；按「增量追加不重写」新增 §2.9（业务口径 / 执行模型 / 硬约束三态 / 既有页面增量如实记录「页面代码零改动」/ 配置能力 / 取证与边界）与 §3.9（10 个新端点 / 2 个既有端点增量 / 3 张表 DDL / 常量 / 既有模块增量 / 事务与隔离）；§4 加 M25 行。**§2.1–§2.8、§3.1–§3.8、§4 已有行、§5 v0.1–v0.9、§6 全部保留**。记录用户 1A / 2A / 3A / 4B 口径、M20→M25 过渡期结束、13 维条件组、按 `priority` 命中即停、fallback 链、8 项 limits 的 `enabled` / `recommend_only` 三态、11 行种子启用 7 行、删行即不拦截、零配置退回简版、`rule_type` 两类共用表（M35 复用）、验收基线 447 例 + E2E 34/34 + 七组基线复跑；如实记录 6 条边界（无编辑器页 / 日志 `adopt`·`reject` 只落常量 / `abc_class` 与 R12 无数据源 / `outbound` 未接业务 / 种子混放默认不过账拦截 / PRD 回溯 19 页另起提交），**不把 M26 / M35 规划写成现状**。另如实记录两处测试基线修复：共享物理库下 `seed_rules()` 因策略包仍在而不复活规则行，故 `test_doc_flags` 与 M25 测试各自显式重建种子基线；M25 测试用 `contextlib.closing` 包住写事务，避免连接泄漏锁死后续模块 | 取证自 `main.py::_migrate_m25()`、`constants.py`、`putaway_rules.py`、`routes_putaway_rules.py`、`putaway_service.py`、`routes_putaway.py`、`routes_asn.py`、`scope.py`、`web_app/asn_putaway.html`、`web_app/index.html`、`tests/test_m25_putaway_rules.py`、`tests/test_doc_flags.py`、`DEVELOPMENT.md` M25 章、`README.md` M25 章、`docs/DOMAIN_BLUEPRINT.md` §1.3；交叉审阅为独立只读核对，未改代码 |
 | v1.1 | 2026-11-13 | **M26 规则配置编辑器与推荐交互**：进度表续编 **#26**（`putaway_rules.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §7 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型 + 验收 + 边界）；§1 追加 v1.1 计数说明，**v0.6 的 3/3、v0.9 的 4/4 原文保留用于追溯**，当前进度更新为 **2/21（回溯）+ 5/5（M21 / M22 / M24 / M26 追加页）**；§4 加 M26 行。记录设计 §14 阶段 F 四条验收（多规则增删改排序 / 试算可用 / 改位必填原因码 / E2E 覆盖推荐→采纳→上架）、v3.3 4A 两步法第二步的可配字典（字段仍自由文本）、采纳驳回「同一条日志 UPDATE 不重复计数」、limits 三态编辑器以原 JSON 为基底只覆盖两键、reorder 负区间规避 UNIQUE 中间态、用户「演示数据写到系统里方便排查」的幂等播种、验收基线 460 例 + E2E 23/23。**按增量追加不重写原则，§1 原有 21 行与 #22–#25 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.0、§6 全部保留**。如实记录 4 条边界（日志未做货主隔离 / `abc_class` 与 R12 无数据源 / `outbound` 仅落配置 M35 才接入 / 字典不反写单据字段），**不把 M35 / M36 规划写成现状**。交叉审阅另如实记录一处真实调试修正：编辑器 `jparse()` 只接受 JSON 字符串导致新建规则行 fallback 链空白，由 E2E 第 5 项断言暴露后修正为兼容对象/数组 | 取证自 `web_app/putaway_rules.html`、`web_app/asn_putaway.html`、`web_app/js/layout.js`、`main.py::_migrate_m26()`、`constants.py`、`putaway_rules.py`、`routes_putaway_rules.py`、`scope.py`、`tools/seed_module_demo.py`、`tools/e2e_m26.py`、`tests/test_m26_rule_editor.py`、`DEVELOPMENT.md` M26 章、`README.md` M26 章、`docs/DOMAIN_BLUEPRINT.md` §1.3；交叉审阅为独立只读核对，未改代码 |
 | v1.2 | 2026-11-13 | **M35 出库波次分配与 FEFO**：进度表续编 **#27**（`outbound_allocation.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §8 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型单列一章 + 演示数据 / 验收 / 边界）；§1 追加 v1.2 计数说明，**v0.6 的 3/3、v0.9 的 4/4、v1.1 的 5/5 原文全部保留用于追溯**，当前进度更新为 **2/21（回溯）+ 6/6（M21 / M22 / M24 / M26 / M35 追加页）**；§4 加 M35 行。记录用户「依次功能做下去、不明确的先登记」指令与 `docs/OPEN_QUESTIONS.md` Q01–Q17 登记簿、3A 共表 `outbound` 规则、四类红线与跳批留痕解耦、两种排序策略、拆批与短拣、批次级 `dn_pick` 与 `ship()` 一致性、老行回退 M21 FEFO、轻波次不建主表、演示库 3 波次 6 条留痕；如实记录三处真实调试修正（跳批被 `break` 静默跳过 / 单测误取暂存位零行 / 老库 `ALTER TABLE` 函数型默认值报错）与 5 条边界。**按增量追加不重写原则，§1 原有 21 行与 #22–#26 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.1、§6、§7 全部保留**；不把 M36 规划写成现状。验收基线：M35 新增 14 单测（含老库迁移回归）+ E2E 27/27 + 全量 unittest 全绿 | 取证自 `outbound_allocation.py`、`routes_outbound_allocation.py`、`main.py::_migrate_m35()`、`constants.py`、`routes_dn.py`、`reservation_audit.py`、`scope.py`、`web_app/outbound_allocation.html`、`web_app/dns.html`、`web_app/js/layout.js`、`tools/e2e_m35.py`、`tools/seed_module_demo.py`、`tests/test_m35_outbound_allocation.py`、`docs/OPEN_QUESTIONS.md`、`DEVELOPMENT.md` M35 章、`README.md` M35 章、`docs/PUTAWAY_RECOMMENDATION.md` §15.1；交叉审阅为独立只读核对，未改代码 |
+| v1.4 | 2026-11-16 | **M37 养护管理**：进度表续编 **#29**（`care.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §10 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型单列一章 + 演示数据 / 验收 / 边界）；§1 追加 v1.4 计数说明，**v0.6 的 3/3、v0.9 的 4/4、v1.1 的 5/5、v1.2 的 6/6、v1.3 的 7/7 原文全部保留用于追溯**，当前进度更新为 **2/21（回溯）+ 8/8（M21 / M22 / M24 / M26 / M35 / M36 / M37 追加页）**；§4 加 M37 行。记录 Q21–Q25 默认落地（项目常量 / 逾期任务记目标日 / 温湿度必填越界强制异常 / 异常只留痕 / 阈值配置在计划）、三张新表全 CREATE 无 ALTER、温湿度阈值快照与 8 类原因码常量、写操作统一事务与货主双守门；如实记录 4 处真实调试修正（编辑计划取不存在列 500 / `_run` 错误分支叠加 status / 前端缺 `btnCancel` 导致处置面板不出现 / 播种哨兵误用 code LIKE）与 4 条边界。**按增量追加不重写原则，§1 原有 21 行与 #22–#28 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.3、§6–§9 全部保留**。验收基线：M37 新增 18 单测 + E2E 30/30 + 全量 unittest 509/509 + 历史 E2E M26/M35/M36 复跑全绿 | 取证自 `care_service.py`、`routes_care.py`、`main.py::_migrate_m37()`、`constants.py`、`scope.py`、`web_app/care.html`、`web_app/js/layout.js`、`tools/e2e_m37.py`、`tools/seed_module_demo.py`、`tests/test_m37_care.py`、`docs/OPEN_QUESTIONS.md`、`DEVELOPMENT.md` M37 章、`README.md` M37 章；交叉审阅为独立只读核对，未改代码 |
 | v1.3 | 2026-11-16 | **M36 出库复核**：进度表续编 **#28**（`dn_review.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §9 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型单列一章 + 演示数据 / 验收 / 边界）；§1 追加 v1.3 计数说明，**v0.6 的 3/3、v0.9 的 4/4、v1.1 的 5/5、v1.2 的 6/6 原文全部保留用于追溯**，当前进度更新为 **2/21（回溯）+ 7/7（M21 / M22 / M24 / M26 / M35 / M36 追加页）**；§4 加 M36 行。记录用户 4B 独立复核单 + 差异只留痕不改库存、Q17 按 `dn_pick` 行逐条复核（快照 8 维批次）、Q18 复核独立于发货不接 `dn.ship()` 状态机、Q19 原因码常量、Q20 复核单与日志按货主隔离（比控制面日志更严）、三张新表全 CREATE 无 ALTER、差异重复复核只留最新一条不重复计数 + 改判为通过另写 `diff_cleared` 审计轨迹、E2E 逐项验证「库存/调整单/库存流水/DN 状态四不变」；如实记录一处真实调试修正（建单 SQL 误从 `dn_line` 取 `dl.line_id`，实际 `dn_pick` 自带 `line_id`）与 5 条边界。**按增量追加不重写原则，§1 原有 21 行与 #22–#27 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.2、§6、§7、§8 全部保留**；不把 M37 / M38 规划写成现状。验收基线：M36 新增 17 单测 + E2E 26/26 + 全量 unittest 全绿 | 取证自 `review_service.py`、`routes_dn_review.py`、`main.py::_migrate_m36()`、`constants.py`、`scope.py`、`web_app/dn_review.html`、`web_app/dns.html`、`web_app/js/layout.js`、`tools/e2e_m36.py`、`tools/seed_module_demo.py`、`tests/test_m36_dn_review.py`、`docs/OPEN_QUESTIONS.md`、`DEVELOPMENT.md` M36 章、`README.md` M36 章；交叉审阅为独立只读核对，未改代码 |
 
 ---
@@ -2305,4 +2315,127 @@ python tools/seed_module_demo.py           # 幂等补演示数据，不覆盖�
 3. 原因码是常量非可配字典表（Q19）；如需字典化后续再补。
 4. 差异**只留痕**，不自动生成调整单、不回填库存；数量纠偏仍走 M22 库存调整单。
 5. 复核不拦截发货（Q18）；`docs/OPEN_QUESTIONS.md` Q01–Q20 待统一答复，答复后以答复为准调整服务层/常量。
+
+---
+
+## 10. M37 追加页 #29：养护管理（`care.html`）（2026-11-16 追加）
+
+> **本节性质**：M37 新增独立页面，按用户规格 2A「随 M21 起逐里程碑追加」续编进度表 **#29**；
+> 按「增量追加不重写」原则，§1 原有 21 行、#22–#28、§2.1–§2.9、§3.1–§3.9、§4 已有行、
+> §5 v0.1–v1.3、§6–§9 全部保留。回溯进度仍 **2/21**、追加页 **8/8**，分母不混算。
+> §8 第 6 点「M37 / M38 为下一棒、未实现」属 v1.3 时点事实，保留追溯，已由本节覆盖。
+
+### 10.1 [业务] 目标与口径
+
+医疗器械 GSP 场景下，仓库需按周期对在库环境（温湿度）与货物状态（外观 / 包装 / 效期 / 堆码）
+执行养护并留痕。蓝图只给框架，细节分歧登记 `docs/OPEN_QUESTIONS.md` Q21–Q25，按「当前默认」落地。
+
+| 口径 | 结论 | 来源 |
+|---|---|---|
+| 载体 | 三表 `care_plan`（计划）→ `care_task`（任务）→ `care_log`（留痕）+ 独立作业页 `care.html` | M37 默认 |
+| 养护项目 | 5 类常量：温湿度 / 外观 / 包装 / 效期 / 堆码；不做字典表 | Q21 默认 |
+| 周期生成 | 到期日默认今天；逾期不补历史任务，生成后推进下次到期日；同一计划同一天幂等 | Q22 默认 |
+| 温湿度规则 | 温湿度项目实测必填；越界拒绝判正常（`THRESHOLD_EXCEEDED`），必须选异常原因码 | Q23 默认 |
+| 异常边界 | 只写 `care_log`；不改库存、不生成调整单、不写库存流水、不改单据状态 | Q24 默认 |
+| 阈值来源 | 计划上配置并快照到任务；未接库位 / 储区温区主数据 | Q25 默认 |
+
+### 10.2 [功能] 页面逐项记录
+
+`web_app/care.html`（三级导航 26 → 27 页，路径「仓储作业 → 库存与追溯 → 养护管理」）：
+
+1. **统计卡**：启用计划 / 待执行任务 / 今日到期 / 异常待处置 / 已完成 + 已处置，取自 `/api/care/overview`。
+2. **养护计划列表**：计划编号 / 货主 / 范围（库位或仓）/ 项目 / 周期（自定义带天数）/ 温湿度阈值 /
+   下次到期 / 状态标签 / 编辑与启停按钮 + 分页。
+3. **计划表单**：货主 / 仓库（0 不限）/ 库位（0 全库位）/ 项目 / 周期 / 自定义天数 / 温湿度上下限 /
+   下次到期日 / 备注；新建与编辑共用，编辑时锁定归属（owner / warehouse 不可改）。
+4. **任务生成**：可按计划指定或「全部到期计划」（留空），可覆盖到期日；响应显示生成 / 跳过条数；
+   后端 `UNIQUE(plan_id,due_date)` 保证幂等。
+5. **任务列表**：任务编号 / 计划 / 货主 / 库位 / 项目 / 到期日 / 阈值快照 / 状态 / 结果 / 实测，
+   状态筛选（待执行 / 已完成 / 异常待处置 / 已处置 / 已取消）+ 关键字 + 分页；点击行进入执行面板。
+6. **执行面板**：展示计划、项目、到期、阈值快照与范围；实测温度 / 湿度、结果（正常 / 异常）、
+   异常原因码（8 类）、备注；提交养护结果、取消任务；越界判正常时后端拒绝并在消息区提示。
+7. **异常处置面板**：仅在任务状态 `abnormal` 时出现，处置说明必填，提交后状态置 `handled`，
+   仅写留痕、不纠偏库存。
+8. **留痕查询**：按动作（生成 / 养护正常 / 登记异常 / 异常处置 / 任务取消）+ 关键字过滤 + 分页，
+   顶部展示各动作统计；任务详情内另附该任务的全链路留痕表。
+
+### 10.3 [实现] 服务层执行模型
+
+`care_service.py`（写操作由路由层 `BEGIN IMMEDIATE` 包裹）：
+
+1. `create_plan / update_plan / toggle_plan`：校验货主存在、项目 / 周期 / 日期 / 温湿度上下限；
+   `custom` 必须给正整数 `cycle_days`；编辑只改业务字段，归属不可变。
+2. `generate_tasks(db, plan_id=None, due_date=None, ...)`：扫描启用且 `next_due_date <= 目标日` 的计划，
+   `INSERT` 任务并快照阈值 + 项目 + 库位，`UNIQUE(plan_id,due_date)` 冲突即跳过；
+   按 `cycle_days` 步进推进 `next_due_date` 到超过目标日；每条新任务写 `generated` 留痕。
+3. `execute_task`：校验任务为 `pending`；温湿度项目实测必填；
+   `_threshold_breaks()` 比对快照阈值，越界 + 判正常 → `THRESHOLD_EXCEEDED`；
+   判异常必须选合法原因码；UPDATE 任务 + INSERT `checked` / `abnormal` 留痕。
+4. `handle_task`：仅 `abnormal` 可处置，说明必填；置 `handled` + handler + 时间，写 `handled` 留痕。
+5. `cancel_task`：仅 `pending` 可取消，写 `cancelled` 留痕。
+6. 全程**不调用** `adjust_stock()`、不写 `stock_movement`、不建 `stock_adjustment`、不改 DN / ASN 状态。
+
+### 10.4 [实现] 端点与数据模型（单列）
+
+**14 个端点**（`routes_care.py`）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/care/dict` | 项目 / 周期 / 状态 / 结果 / 8 类原因码 / 动作 / 权限码字典 |
+| GET | `/api/care/overview` | 计划与任务状态统计、今日到期、异常待处置 |
+| GET | `/api/care/logs` | 留痕查询（动作 / 计划 / 任务 / 项目 / 原因 / 关键字 + 统计 + 货主隔离） |
+| GET / POST | `/api/care-plans` | 计划列表（状态 / 项目 / 货主 / 关键字 + 分页）/ 新建计划 |
+| GET | `/api/care-plans/<id>` | 计划详情（含最近 20 条任务） |
+| POST | `/api/care-plans/<id>/update` | 编辑计划（归属不可改） |
+| POST | `/api/care-plans/<id>/toggle` | 启用 / 停用 |
+| POST | `/api/care-tasks/generate` | 按到期日生成任务（幂等） |
+| GET | `/api/care-tasks` | 任务列表（状态 / 计划 / 项目 / 到期日 / 关键字 + 统计 + 货主隔离） |
+| GET | `/api/care-tasks/<id>` | 任务详情（含留痕） |
+| POST | `/api/care-tasks/<id>/execute` | 执行养护（正常 / 异常，越界强制异常） |
+| POST | `/api/care-tasks/<id>/handle` | 异常处置（只留痕） |
+| POST | `/api/care-tasks/<id>/cancel` | 取消待执行任务 |
+
+**3 张表**（`main.py::_migrate_m37()`，全 `CREATE TABLE IF NOT EXISTS`，无 ALTER）：
+
+- `care_plan`：code 唯一（CP-YYYYMMDD-NNN）、owner_id / warehouse_id / location_id（0 = 不限）、
+  project / cycle / cycle_days、temp_min/max 与 hum_min/max（可空）、next_due_date、status、note、operator、时间戳。
+- `care_task`：code 唯一（CT-YYYYMMDD-NNN）、plan_id + due_date UNIQUE、owner_id、库位与项目快照、
+  阈值快照、status / result / 实测 / 原因码 / 备注 / 操作人 / 执行时间、handled_note / handler / handled_at。
+- `care_log`：task_id / task_code / plan_id / plan_code / owner_id / project / due_date / action /
+  result / 实测 / 原因码与 label / note / operator / 时间戳；5 类 action。
+
+**常量**（`constants.py`）：5 项目 + 5 周期（daily 1 / weekly 7 / monthly 30 / quarterly 90 / custom）、
+计划状态 2、任务状态 5、结果 2、8 类异常原因 + 中文标签、5 类日志 action、6 个权限码（只落常量不挂装饰器）。
+
+**隔离**：`scope.py` 把三表列入 `OWNER_SCOPED_TABLES`；`main.RESOURCE_OWNER_TABLES` 映射
+`care-plans` / `care-tasks` 做按 ID 归属守门；`routes_care._guard()` 在详情与写操作前二次断言；
+列表与日志查询通过 `scoped_where()` 注入货主条件。事务：写操作全部 `BEGIN IMMEDIATE`，失败 rollback。
+
+### 10.5 [功能] 演示数据与排查路径
+
+`tools/seed_module_demo.py` 新增 M37 模块（幂等、走真实 API）：本地 `miniwms.db` 现有 2 计划 /
+2 任务 / 5 条留痕（`generated` 2 / `checked` 1 / `abnormal` 1 / `handled` 1）。排查命令：
+
+```bash
+python tools/seed_module_demo.py --check   # 只读盘点各模块行数 + 一致性体检
+python tools/seed_module_demo.py           # 幂等补演示数据，不覆盖现有数据
+```
+
+### 10.6 验收要点
+
+- M37 单测 **18/18**（计划 CRUD / 参数校验 / 生成快照与幂等 / 正常与异常执行 / 越界拒绝 /
+  原因码必填 / 处置 / 取消 / 库存与调整单流水四不变 / 日志统计 / 货主隔离 / 老库迁移幂等 / 分页）。
+- 真实 Chrome E2E `tools/e2e_m37.py` **30/30**（独立端口 5131 + 临时库）：
+  首屏 → 生成任务 → 快照阈值 → 越界拒绝判正常 → 正常执行 → 异常 + 原因码 → 处置 →
+  库存四不变 / I1 / I2 / I3 → 留痕查询 → 导航入口 → 无 JS 错误与业务 4xx。
+- 全量 unittest **509/509**；历史 E2E M26 23/23、M35 27/27、M36 26/26 复跑通过；
+  演示库一致性体检 OK；`node --check` 页面内联脚本与 `layout.js` 通过。
+
+### 10.7 已知边界（如实记录，不把规划写成现状）
+
+1. 养护项目 / 异常原因 / 权限码均为常量，不做字典表、不挂权限装饰器（Q21 / Q19 / Q08）。
+2. 逾期任务记目标日、不补造历史任务（Q22）；阈值来自计划配置，未接温区主数据（Q25）。
+3. 养护不与批次库存联动：没有按批号抽检、没有临期批次自动生成养护任务；GSP 报表联动留 M39。
+4. 异常只留痕，不生成调整单、不冻结库存、不拦截出库（Q24）；匿名模式 `operator` 留空串（Q14）。
+5. `docs/OPEN_QUESTIONS.md` Q01–Q25 待统一答复；PRD 回溯 #3–#21 共 19 页仍另起独立提交。
 
