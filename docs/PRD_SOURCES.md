@@ -92,6 +92,7 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 | 25 | M24 追加页 | 库存转移 | `inventory_transfers.html` | M24 | **已记录** | [2.8](#28-库存转移inventory_transfershtml) |
 | 26 | M26 追加页 | 上架规则配置 | `putaway_rules.html` | M26 | **已记录** | §7（文件末尾增量章） |
 | 27 | M35 追加页 | 出库波次分配 | `outbound_allocation.html` | M35 | **已记录** | §8（文件末尾增量章） |
+| 28 | M36 追加页 | 出库复核 | `dn_review.html` | M36 | **已记录** | §9（文件末尾增量章） |
 
 > **追加页计数说明（v0.6）**：#1–#21 是用户规格 2A 定义的「回溯 M1–M20」固定范围，
 > 分母恒为 21；M21 起新增页面按规格「随里程碑逐次追加」续编，**不计入回溯分母**。
@@ -113,6 +114,11 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 > `outbound_allocation.html`，按规格续编 **#27**（M27–M34 暂缓或后移、不占追加页编号），
 > 因此当前逐页记录进度更新为 **2/21（回溯）+ 6/6（M21 / M22 / M24 / M26 / M35 追加页）**，
 > 回溯分母仍恒为 21。§1 原有 21 行与 #22–#26 原行一律不改。
+>
+> **追加页计数说明（v1.3 增量，不覆盖上方 v0.6 / v0.9 / v1.1 / v1.2 原文）**：M36 新增独立页面
+> `dn_review.html`，按规格续编 **#28**，因此当前逐页记录进度更新为
+> **2/21（回溯）+ 7/7（M21 / M22 / M24 / M26 / M35 / M36 追加页）**，回溯分母仍恒为 21。
+> §1 原有 21 行与 #22–#27 原行一律不改。
 
 ---
 
@@ -1787,6 +1793,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | M25 | 上架推荐规则引擎（三张配置表 / 13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 11 行种子启用 7 行 / 规则配置 API / 可解释推荐与日志 / 上架过账按 limits 拦截） | `asn_putaway.html` / `asns.html` 页面代码零改动，**无新增页面**；增量记 §2.9 / §3.9 | **已完成 2026-11-10** |
 | M26 | 规则配置编辑器与推荐交互（13 维条件组 / fallback 链拖拽 / 8 项 limits 三态 / 9 条评分 / 采纳驳回与改位原因码 / 命中率统计 / 外部单据类别字典 / 可复跑 E2E） | `putaway_rules.html`（#26 追加页）+ `asn_putaway.html` 增强 | **已完成 2026-11-13** |
 | M35 | 出库波次分配与 FEFO（轻波次 / 批次级分配 / 先专属后通用 / 拆批与短拣 / 跳批留痕 / 共表 `outbound` 规则 / 发货按记录批次扣减 / 独立作业页） | `outbound_allocation.html`（#27 追加页）+ `dns.html` 入口增强 | **已完成 2026-11-13** |
+| M36 | 出库复核（独立复核单 / 作业页 / 按拣货行逐条复核 / 快照 8 维批次 / 登记差异只留痕不改库存 / 差异留痕查询） | `dn_review.html`（#28 追加页）+ `dns.html` 入口增强 | **已完成 2026-11-16** |
 | 非里程碑 | 工作台与收货单体验增强（M18 后 UI；M20-A 再改侧栏伸缩） | `app.html` | 已完成 |
 
 > 里程碑编号权威来源为 `DEVELOPMENT.md` Roadmap；本表只做「里程碑 ↔ 页面」映射，不重述交付细节。
@@ -1813,6 +1820,7 @@ SQLite 不能 ALTER 表级约束，`main.py::_migrate_m22()` 检测旧 `sqlite_m
 | v1.0 | 2026-11-10 | **M25 上架推荐规则引擎**：M25 **不新增页面**（编辑器属 M26），进度表 21 行原行与 #22–#25 追加页**一律不改**，**回溯仍 2/21、追加页仍 4/4，分母不混算**；按「增量追加不重写」新增 §2.9（业务口径 / 执行模型 / 硬约束三态 / 既有页面增量如实记录「页面代码零改动」/ 配置能力 / 取证与边界）与 §3.9（10 个新端点 / 2 个既有端点增量 / 3 张表 DDL / 常量 / 既有模块增量 / 事务与隔离）；§4 加 M25 行。**§2.1–§2.8、§3.1–§3.8、§4 已有行、§5 v0.1–v0.9、§6 全部保留**。记录用户 1A / 2A / 3A / 4B 口径、M20→M25 过渡期结束、13 维条件组、按 `priority` 命中即停、fallback 链、8 项 limits 的 `enabled` / `recommend_only` 三态、11 行种子启用 7 行、删行即不拦截、零配置退回简版、`rule_type` 两类共用表（M35 复用）、验收基线 447 例 + E2E 34/34 + 七组基线复跑；如实记录 6 条边界（无编辑器页 / 日志 `adopt`·`reject` 只落常量 / `abc_class` 与 R12 无数据源 / `outbound` 未接业务 / 种子混放默认不过账拦截 / PRD 回溯 19 页另起提交），**不把 M26 / M35 规划写成现状**。另如实记录两处测试基线修复：共享物理库下 `seed_rules()` 因策略包仍在而不复活规则行，故 `test_doc_flags` 与 M25 测试各自显式重建种子基线；M25 测试用 `contextlib.closing` 包住写事务，避免连接泄漏锁死后续模块 | 取证自 `main.py::_migrate_m25()`、`constants.py`、`putaway_rules.py`、`routes_putaway_rules.py`、`putaway_service.py`、`routes_putaway.py`、`routes_asn.py`、`scope.py`、`web_app/asn_putaway.html`、`web_app/index.html`、`tests/test_m25_putaway_rules.py`、`tests/test_doc_flags.py`、`DEVELOPMENT.md` M25 章、`README.md` M25 章、`docs/DOMAIN_BLUEPRINT.md` §1.3；交叉审阅为独立只读核对，未改代码 |
 | v1.1 | 2026-11-13 | **M26 规则配置编辑器与推荐交互**：进度表续编 **#26**（`putaway_rules.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §7 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型 + 验收 + 边界）；§1 追加 v1.1 计数说明，**v0.6 的 3/3、v0.9 的 4/4 原文保留用于追溯**，当前进度更新为 **2/21（回溯）+ 5/5（M21 / M22 / M24 / M26 追加页）**；§4 加 M26 行。记录设计 §14 阶段 F 四条验收（多规则增删改排序 / 试算可用 / 改位必填原因码 / E2E 覆盖推荐→采纳→上架）、v3.3 4A 两步法第二步的可配字典（字段仍自由文本）、采纳驳回「同一条日志 UPDATE 不重复计数」、limits 三态编辑器以原 JSON 为基底只覆盖两键、reorder 负区间规避 UNIQUE 中间态、用户「演示数据写到系统里方便排查」的幂等播种、验收基线 460 例 + E2E 23/23。**按增量追加不重写原则，§1 原有 21 行与 #22–#25 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.0、§6 全部保留**。如实记录 4 条边界（日志未做货主隔离 / `abc_class` 与 R12 无数据源 / `outbound` 仅落配置 M35 才接入 / 字典不反写单据字段），**不把 M35 / M36 规划写成现状**。交叉审阅另如实记录一处真实调试修正：编辑器 `jparse()` 只接受 JSON 字符串导致新建规则行 fallback 链空白，由 E2E 第 5 项断言暴露后修正为兼容对象/数组 | 取证自 `web_app/putaway_rules.html`、`web_app/asn_putaway.html`、`web_app/js/layout.js`、`main.py::_migrate_m26()`、`constants.py`、`putaway_rules.py`、`routes_putaway_rules.py`、`scope.py`、`tools/seed_module_demo.py`、`tools/e2e_m26.py`、`tests/test_m26_rule_editor.py`、`DEVELOPMENT.md` M26 章、`README.md` M26 章、`docs/DOMAIN_BLUEPRINT.md` §1.3；交叉审阅为独立只读核对，未改代码 |
 | v1.2 | 2026-11-13 | **M35 出库波次分配与 FEFO**：进度表续编 **#27**（`outbound_allocation.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §8 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型单列一章 + 演示数据 / 验收 / 边界）；§1 追加 v1.2 计数说明，**v0.6 的 3/3、v0.9 的 4/4、v1.1 的 5/5 原文全部保留用于追溯**，当前进度更新为 **2/21（回溯）+ 6/6（M21 / M22 / M24 / M26 / M35 追加页）**；§4 加 M35 行。记录用户「依次功能做下去、不明确的先登记」指令与 `docs/OPEN_QUESTIONS.md` Q01–Q17 登记簿、3A 共表 `outbound` 规则、四类红线与跳批留痕解耦、两种排序策略、拆批与短拣、批次级 `dn_pick` 与 `ship()` 一致性、老行回退 M21 FEFO、轻波次不建主表、演示库 3 波次 6 条留痕；如实记录三处真实调试修正（跳批被 `break` 静默跳过 / 单测误取暂存位零行 / 老库 `ALTER TABLE` 函数型默认值报错）与 5 条边界。**按增量追加不重写原则，§1 原有 21 行与 #22–#26 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.1、§6、§7 全部保留**；不把 M36 规划写成现状。验收基线：M35 新增 14 单测（含老库迁移回归）+ E2E 27/27 + 全量 unittest 全绿 | 取证自 `outbound_allocation.py`、`routes_outbound_allocation.py`、`main.py::_migrate_m35()`、`constants.py`、`routes_dn.py`、`reservation_audit.py`、`scope.py`、`web_app/outbound_allocation.html`、`web_app/dns.html`、`web_app/js/layout.js`、`tools/e2e_m35.py`、`tools/seed_module_demo.py`、`tests/test_m35_outbound_allocation.py`、`docs/OPEN_QUESTIONS.md`、`DEVELOPMENT.md` M35 章、`README.md` M35 章、`docs/PUTAWAY_RECOMMENDATION.md` §15.1；交叉审阅为独立只读核对，未改代码 |
+| v1.3 | 2026-11-16 | **M36 出库复核**：进度表续编 **#28**（`dn_review.html` 追加页，不计入回溯 21 页分母）+ 文件末尾追加 §9 完整页面记录（[业务] / [功能] / [实现] 三层 + 端点与数据模型单列一章 + 演示数据 / 验收 / 边界）；§1 追加 v1.3 计数说明，**v0.6 的 3/3、v0.9 的 4/4、v1.1 的 5/5、v1.2 的 6/6 原文全部保留用于追溯**，当前进度更新为 **2/21（回溯）+ 7/7（M21 / M22 / M24 / M26 / M35 / M36 追加页）**；§4 加 M36 行。记录用户 4B 独立复核单 + 差异只留痕不改库存、Q17 按 `dn_pick` 行逐条复核（快照 8 维批次）、Q18 复核独立于发货不接 `dn.ship()` 状态机、Q19 原因码常量、Q20 复核单与日志按货主隔离（比控制面日志更严）、三张新表全 CREATE 无 ALTER、差异重复复核只留最新一条不重复计数 + 改判为通过另写 `diff_cleared` 审计轨迹、E2E 逐项验证「库存/调整单/库存流水/DN 状态四不变」；如实记录一处真实调试修正（建单 SQL 误从 `dn_line` 取 `dl.line_id`，实际 `dn_pick` 自带 `line_id`）与 5 条边界。**按增量追加不重写原则，§1 原有 21 行与 #22–#27 原行、§2.1–§2.9、§3.1–§3.9、§4 已有行、§5 v0.1–v1.2、§6、§7、§8 全部保留**；不把 M37 / M38 规划写成现状。验收基线：M36 新增 17 单测 + E2E 26/26 + 全量 unittest 全绿 | 取证自 `review_service.py`、`routes_dn_review.py`、`main.py::_migrate_m36()`、`constants.py`、`scope.py`、`web_app/dn_review.html`、`web_app/dns.html`、`web_app/js/layout.js`、`tools/e2e_m36.py`、`tools/seed_module_demo.py`、`tests/test_m36_dn_review.py`、`docs/OPEN_QUESTIONS.md`、`DEVELOPMENT.md` M36 章、`README.md` M36 章；交叉审阅为独立只读核对，未改代码 |
 
 ---
 
@@ -2185,8 +2193,116 @@ I1 / I2 / I3 一致性体检，表未迁移时显示「未迁移」而非报错�
    轻波次号无持久序号表，日志清理后可能重号（Q16）。
 4. M23 人工拣货 / 发货链路**仍不拦截**专属不匹配，自动分配才跳过（Q04，优先级最高）；
    匿名演示下日志 `operator` 为空（Q14）。
-5. `docs/OPEN_QUESTIONS.md` Q01–Q17 待用户统一答复；答复后以答复为准调整服务层 / 常量，
+5. `docs/OPEN_QUESTIONS.md` Q01–Q20 待用户统一答复；答复后以答复为准调整服务层 / 常量，
    不改 `stock` 主账粒度、不改 I1 / I2 / I3 硬校验、不回收里程碑编号。
-6. PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交；M35 追加页 #27 单独提交，
-   不与代码提交混在一起。M36（独立复核单 + 作业页）为下一棒，**未实现**。
+6. PRD 回溯 #3–#21 共 19 页仍待补，按用户节奏另起独立提交；M36 追加页 #28 单独提交，
+   不与代码提交混在一起。M37 / M38（养护 / 拆单合单）为下一棒，**未实现**。
+
+---
+
+## 9. M36 追加页 #28：出库复核（`dn_review.html`）（2026-11-16 追加）
+
+> **本节性质**：M36 新增独立页面，按用户规格 2A「随 M21 起逐里程碑追加」续编进度表 **#28**；
+> 按「增量追加不重写」原则，§1 原有 21 行、#22–#27、§2.1–§2.9、§3.1–§3.9、§4 已有行、
+> §5 v0.1–v1.2、§6、§7、§8 全部保留。回溯进度仍 **2/21**、追加页 **7/7**，分母不混算。
+
+### 9.1 [业务] 目标与口径
+
+独立出库复核作业：拣货完成后按拣货明细逐条复核实拣数量，登记差异只留痕、不生成调整单、不改库存。
+用户 2026-11-10 4B 定稿；存疑项 Q17–Q20 见 `docs/OPEN_QUESTIONS.md`，按「当前默认」落地不打断用户。
+
+| 口径 | 结论 | 来源 |
+|---|---|---|
+| 复核载体 | 独立复核单 `dn_review`（RV-YYYYMMDD-NNN）+ 独立作业页 `dn_review.html` | 用户 4B |
+| 差异处理 | 只写 `dn_review_diff_log`，**不生成调整单、不改库存、不写库存流水** | 用户 4B |
+| 复核粒度 | 按 `dn_pick` 行逐条复核，快照 8 维批次 + `wave_no` / `rule_id` | Q17 默认 |
+| 与发货关系 | 复核不接 `dn.ship()` 状态机，发货无需等复核 | Q18 默认 |
+| 原因码 | 常量 `REVIEW_DIFF_REASONS` 6 类，登记差异必选 | Q19 默认 |
+| 货主隔离 | 复核单与差异日志按 `owner_id` 隔离，复核行继承父单 | Q20 默认 |
+
+### 9.2 [功能] 页面逐项记录
+
+`web_app/dn_review.html`（三级导航 25 → 26 页，路径「仓储作业 → 出库单据 → 出库复核」）：
+
+1. **复核单列表**：状态筛选 + 关键字查询 + 分页；列复核单号（可点进作业）/ 出库单 / 货主 / 波次 /
+   状态标签 / 复核进度（reviewed/total）/ 差异行数 / 创建人 / 创建时间 / 复核按钮；顶部 `stats` 显示待复核、复核中数量。
+2. **生成复核单**：已拣货出库单下拉（遍历详情接口取有 `picks` 的 DN）+ 备注输入；生成时快照拣货明细，
+   已有进行中复核单的 DN 被后端拒绝（`DUPLICATE_REVIEW`）。
+3. **复核作业区**：单号 / 出库单 / 状态标签；进度、差异行、留痕数、波次统计卡；
+   逐行表格展示 SKU、库位、批号、效期、质量/状态、应拣、实拣输入、判定标签、原因码下拉、备注、提交按钮；
+   「数量一致自动判通过、不一致自动判差异并要求原因码」（前端预判 + 后端 `PASS_QTY_MISMATCH` 双保险）；
+   完成复核（须全部行已复核）、取消复核单按钮。
+4. **差异留痕表**：当前复核单的差异日志（时间 / 库位 / 批号 / 应拣 / 实拣 / 差异 / 原因 / 动作 / 操作人）；
+   `diff_registered` = 登记差异，`diff_cleared` = 差异改判为通过的审计轨迹。
+5. **差异留痕查询**：按复核单 ID / 出库单 ID / 动作 / 原因码过滤 + 分页；
+   顶部显示动作统计与原因统计。
+6. **出库页入口**：`dns.html` 列表头加「出库复核」按钮（`openWorkTab` 开标签）。
+
+### 9.3 [实现] 服务层执行模型
+
+`review_service.py`（写操作由路由层 `BEGIN IMMEDIATE` 包裹）：
+
+1. `create_review(db, dn_id, ...)`：校验 DN 存在且非取消、有 `dn_pick`、无进行中复核单；
+   生成 RV 单号（当日计数 +1 + 唯一性while避让）；把每条 `dn_pick` 的 8 维批次 + 应拣量快照进 `dn_review_line`。
+2. `record(db, review_id, line_id, actual, result, reason_code, ...)`：校验复核单非终态、行归属、
+   数量合法、结果合法、差异必填原因码、通过时数量必须相等；UPDATE 复核行 + 计数；
+   差异先 DELETE 该 pick 旧日志再 INSERT 最新（不重复计数），改判为通过则清差异日志另写 `diff_cleared`。
+3. `complete(db, ...)`：须全部行已复核，置 `completed` + `reviewed_at`；`cancel()` 非终态可取消。
+4. 计数 `_delta_counts()` 以 `dn_review_line` 为唯一事实来源重算，避免多处 +1/-1 漂移。
+
+### 9.4 [实现] 端点与数据模型（单列）
+
+**8 个端点**（`routes_dn_review.py`，prefix `/api/dn-reviews`）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/dict` | 状态 / 判定 / 6 类原因码 / 动作 / 权限码 / 引擎字典 |
+| POST | `/` | 从 DN 拣货明细生成复核单（快照批次维度） |
+| GET | `/` | 复核单列表（状态 / DN / 关键字过滤 + 分页 + 状态统计 + 货主隔离） |
+| GET | `/<id>` | 复核单详情（头 + 行 + 差异留痕） |
+| POST | `/<id>/check` | 逐行复核（通过 / 登记差异只留痕） |
+| POST | `/<id>/complete` | 完成复核（须全部行已复核） |
+| POST | `/<id>/cancel` | 取消复核单（非终态） |
+| GET | `/logs` | 差异留痕查询（分页 + 动作 / 原因统计 + 货主隔离） |
+
+**3 张表**（`main.py::_migrate_m36()`，全 `CREATE TABLE IF NOT EXISTS`，无 ALTER）：
+
+- `dn_review`：复核单头（code 唯一 / dn_id / owner_id / customer_id / wave_no / status / 进度计数 / note / operator / 时间戳）。
+- `dn_review_line`：复核行（review_id + pick_id UNIQUE / 8 维批次快照 / expected_qty / actual_qty /
+  result / diff_qty / reason_code / note / operator / reviewed_at）。
+- `dn_review_diff_log`：差异留痕（review/dn/owner 关联 / 批次库位快照 / 应拣实拣差异 / 原因码与 label /
+  action / operator / 时间戳）。
+
+**常量**（`constants.py`）：状态 4 值（draft/reviewing/completed/cancelled）、判定 2 值（pass/diff）、
+原因码 6 类 + 中文标签、2 个日志 action、引擎 `manual`、6 个权限码（只落常量不挂装饰器）。
+
+**隔离**：`scope.py` 把 `dn_review` / `dn_review_diff_log` 列入 `OWNER_SCOPED_TABLES`；
+`dn_review_line` 通过 `review_id` 继承父单隔离。
+
+### 9.5 [功能] 演示数据与排查路径
+
+`tools/seed_module_demo.py` 新增 M36 模块（幂等、走真实 API）：本地 `miniwms.db` 现有 2 张复核单
+（1 张完成含差异、1 张待复核）、1 条差异留痕（少货 SHORT）。排查命令：
+
+```bash
+python tools/seed_module_demo.py --check   # 只读盘点各模块行数 + 一致性体检
+python tools/seed_module_demo.py           # 幂等补演示数据，不覆盖现有数据
+```
+
+### 9.6 验收要点
+
+- M36 单测 **17/17**（批次快照 / 状态机 / 差异必填原因码 / 差异只留痕不改库存 / 重复复核不重复计数 /
+  改判留痕 / 未完成不可完成 / 完成终态 / 取消 / DN 状态不变 / 日志统计 / 货主隔离 / 老库迁移幂等）。
+- 真实 Chrome E2E `tools/e2e_m36.py` **26/26**（独立端口 + 临时库，复跑 5126/5127）：
+  首屏 → 生成复核单（批次快照）→ 登记差异 → **库存/调整单/库存流水/DN 状态四不变** →
+  I1/I2/I3 一致 → 留痕查询 → 完成 → 取消 → 无 JS 错误与业务 4xx。
+- 全量 unittest 全绿；演示库一致性体检 OK；`node --check` 页面内联脚本与 `layout.js` 全通过。
+
+### 9.7 已知边界（如实记录，不把规划写成现状）
+
+1. 复核单与差异日志按货主隔离（Q20），与 M25/M26/M35 控制面日志口径不同，待用户统一答复。
+2. 权限码只落常量、未挂 `@require_permission`；匿名模式 `operator` 留空串（Q14）。
+3. 原因码是常量非可配字典表（Q19）；如需字典化后续再补。
+4. 差异**只留痕**，不自动生成调整单、不回填库存；数量纠偏仍走 M22 库存调整单。
+5. 复核不拦截发货（Q18）；`docs/OPEN_QUESTIONS.md` Q01–Q20 待统一答复，答复后以答复为准调整服务层/常量。
 
