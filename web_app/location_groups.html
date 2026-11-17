@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>货位组主数据 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
+<style>
+.tabbar { display:flex; gap:6px; margin:4px 0 14px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:8px 14px; border:none; background:none; cursor:pointer; font-size:13px;
+  color:#475569; border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; }
+.panel.active { display:block; }
+</style>
 </head>
 <body>
 <div class="app">
@@ -26,7 +34,7 @@
           <button class="tab active" data-tab="list">货位组列表</button>
           <button class="tab" data-tab="pick">拣货顺序</button>
         </div>
-        <div class="panel" id="panel-list">
+        <div class="panel active" id="panel-list">
           <div class="toolbar">
             <input id="kw" placeholder="编码/名称搜索">
             <select id="statusFilter">
@@ -53,7 +61,7 @@
             <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
           </div>
         </div>
-        <div class="panel" id="panel-pick" style="display:none">
+        <div class="panel" id="panel-pick">
           <div class="muted" style="margin-bottom:8px">
             按「拣货顺序」升序排列货位组，拣货可按组走；序号相同时按编码排序。
           </div>
@@ -248,8 +256,8 @@ document.querySelectorAll(".tabbar .tab").forEach(btn => {
     document.querySelectorAll(".tabbar .tab").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     const t = btn.dataset.tab;
-    document.getElementById("panel-list").style.display = t === "list" ? "" : "none";
-    document.getElementById("panel-pick").style.display = t === "pick" ? "" : "none";
+    document.querySelectorAll(".panel").forEach(p =>
+      p.classList.toggle("active", p.id === "panel-" + t));
     if (t === "pick") loadPick();
   });
 });

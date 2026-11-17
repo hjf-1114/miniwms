@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>序列号台账 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
+<style>
+.tabbar { display:flex; gap:6px; margin:4px 0 14px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:8px 14px; border:none; background:none; cursor:pointer; font-size:13px;
+  color:#475569; border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; }
+.panel.active { display:block; }
+</style>
 </head>
 <body>
 <div class="app">
@@ -26,7 +34,7 @@
           <button class="tab active" data-tab="list">台账列表</button>
           <button class="tab" data-tab="stats">按货品统计</button>
         </div>
-        <div class="panel" id="panel-list">
+        <div class="panel active" id="panel-list">
           <div class="toolbar">
             <input id="kw" placeholder="序列号/批次搜索">
             <select id="statusFilter">
@@ -54,7 +62,7 @@
             <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
           </div>
         </div>
-        <div class="panel" id="panel-stats" style="display:none">
+        <div class="panel" id="panel-stats">
           <div class="table-wrap">
             <table>
             <thead><tr><th>货品</th><th>名称</th><th>台账总数</th><th>在库</th><th>已出库</th>
@@ -304,8 +312,8 @@ document.querySelectorAll(".tabbar .tab").forEach(btn => {
     document.querySelectorAll(".tabbar .tab").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     const t = btn.dataset.tab;
-    document.getElementById("panel-list").style.display = t === "list" ? "" : "none";
-    document.getElementById("panel-stats").style.display = t === "stats" ? "" : "none";
+    document.querySelectorAll(".panel").forEach(p =>
+      p.classList.toggle("active", p.id === "panel-" + t));
     if (t === "stats") loadStats();
   });
 });
