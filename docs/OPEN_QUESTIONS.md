@@ -60,6 +60,10 @@
 | Q38 | 打印模板配置要不要按货主 / 仓库隔离？L1 文本视图与 L2 拖拽排版要两套数据还是一份？ | M41 模板模型 | 模板是**系统级配置**（`print_template` 无 owner_id，按节点隔离，货主只隔离单据取值）；L1 `content_template` 与 L2 `blocks` 存在**同一份 `layout_json`**，L1 非空优先渲染、清空走 L2 | 待答复（M41 已按默认落地） |
 | Q39 | 预览页允许临时改哪些字段？改完要不要留快照 / 审计日志？ | M41 编辑边界 | 白名单只放 `note / receiver / qty / line_note`，其余字段即使传入也忽略；改动只作用于本次 PDF，**不回写业务单据、不留快照、不写审计**（Q40 同口径） | 待答复（M41 已按默认落地） |
 | Q40 | 打印触发方式：手动点打印，还是节点完成后自动打印？要不要 QZ Tray 静默出纸？ | M41/M42 触发 | 严格按蓝图 §6.5：M41 只做「手动打开预览 → 临时编辑 → Chrome headless 生成 PDF → `window.print()` 弹对话框人工确认」；`print_job` / 节点钩子 / QZ Tray 全部留到 M42，由用户后续补充 | 待答复（M41 已按默认落地） |
+| Q41 | 司机 / 车辆是否按货主隔离，还是全系统共享运力？ | M31 归属 | `owner_id` 可空：`NULL＝全系统共享运力`，非空＝该货主专属；列表 `allow_null=True` 仍可见共享，写路径对非空 owner 过 `assert_owner_allowed()`，按 ID 访问也纳入守门 | 待答复（M31 已按默认落地） |
+| Q42 | 司机 / 车辆与承运商是一对多还是多对多？ | M31 关联 | 一名司机 / 一辆车只挂一个可空 `carrier_id`，不建中间表；本里程碑只做主数据，不接 ASN/DN 派工 | 待答复（M31 已按默认落地） |
+| Q43 | 证照过期要不要硬拦截派车 / 出入库？ | M31 效期 | 只读四级预警（已过期 / 临近到期 / 正常 / 未登记），默认 30 天可配置；不拦截业务、不生成任务、不自动停用档案 | 待答复（M31 已按默认落地） |
+| Q44 | 编码 / 驾驶证号 / 车牌号唯一范围？空值怎么处理？ | M31 唯一键 | `code` 全局唯一；驾驶证号 / 车牌号非空时唯一，空串可重复（车辆车牌号为必填，因此实际不允许空）；唯一校验含更新排除自身 | 待答复（M31 已按默认落地） |
 
 ## 三、M35 落地复核（2026-11-13）
 
@@ -142,6 +146,18 @@
 | Q38 模板模型 | `main._migrate_m41()` / `print_service.default_layout()` | 6 节点默认模板各 1 张生效；L1 `content_template` 与 L2 `blocks` 同存 `layout_json`；E2E 验证 L1 占位符渲染与 L2 区块拖拽排序 |
 | Q39 编辑边界 | `merge_overrides()` / `C.PRINT_EDITABLE_FIELDS` | 只接受 4 个白名单字段；单测验证 `code` / `product_name` 不被覆盖；E2E 验证临时编辑后 asn.note 未变 |
 | Q40 触发方式 | `routes_print.print_pdf()` / `print_preview.html::doPrint()` | 仅手动预览 + `window.print()` 人工确认；无 `print_job` 表、无节点钩子、无 QZ Tray；E2E 验证 PDF 字节流与库存零副作用 |
+
+## 三·续 M31 落地复核（2026-11-16）
+
+> 按「不明确的先登记、明确的一直做」，M31 已按上表 Q41–Q44「当前默认」全部落地，
+> **没有中途打断用户**。以下是实现与登记的对照，便于统一答复时逐条比对。
+
+| 登记项 | 落地位置 | 实测 |
+|---|---|---|
+| Q41 归属与隔离 | `main._migrate_m31()` / `fleet_service.list_records()` / `scope.OWNER_SCOPED_TABLES` / `main.RESOURCE_OWNER_TABLES` | 可空 `owner_id`；列表 `allow_null=True`，详情/编辑/删除按 ID 守门；单测验证受限账号只看本货主 + 共享，越权详情/写入抛 403 |
+| Q42 承运商关联 | `driver.carrier_id` / `vehicle.carrier_id` / `fleet_service._nullable_id()` | 单值可空外键，`carrier_id=0/""/null` 统一转 NULL；单测验证不存在的承运商 400 |
+| Q43 效期只读 | `fleet_service._expiry_level()` / `expiry_report()` / `web_app/js/fleet.js` | 三类证照（驾驶证 / 车辆保险 / 道路运输证）+ 四级分级；E2E 验证 9 条证照（3 名司机 × 驾驶证 + 3 辆车 × 保险/运输证）、days=5 使临近归零，库存零副作用 |
+| Q44 唯一性 | `fleet_service._unique()` | 编码全局唯一；驾驶证号 / 车牌号非空唯一且空串跳过；单测覆盖重复编码、重复证号、重复车牌、空证号多条、更新排除自身 |
 
 ## 四、登记约定
 
