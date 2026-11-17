@@ -13,6 +13,7 @@ M32–M34 与 PRD 自审中已发现 3 处同类缺陷（供应商弹窗、客�
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ PORT = 5145
 BASE = ""
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 ISSUES = []
+DEEP = False
 
 
 def note(kind, page, detail):
@@ -122,6 +124,119 @@ def login_token():
     except Exception:
         _TOKEN["t"] = ""
     return _TOKEN["t"]
+
+
+
+# ── 深度巡检：填必填项 → 提交 → 检查后端响应 ──────────────────────────
+
+def fill_and_submit(pg, page):
+    """在当前弹窗/表单里填必填项并提交，返回后端响应列表。
+
+    填法：select 取第一个非空选项；文本填 AUDIT；数字填 1；日期填今天；
+    textarea 填 AUDIT。目的是把**必填缺失**排除掉，让后端校验真正跑起来。
+    """
+    pg.evaluate("""() => {
+      const scope = document.querySelector('.modal-overlay .modal') || document;
+      const today = new Date().toISOString().slice(0, 10);
+      scope.querySelectorAll('select').forEach(s => {
+        if (!s.required) return;
+        const opt = Array.from(s.options).find(o => o.value !== '' && o.textContent.trim());
+        if (opt) { s.value = opt.value; s.dispatchEvent(new Event('change', {bubbles:true})); }
+      });
+      scope.querySelectorAll('input[required], textarea[required]').forEach(i => {
+        if (i.type === 'number') i.value = '1';
+        else if (i.type === 'date') i.value = today;
+        else if (i.type === 'email') i.value = 'audit@example.com';
+        else if (i.type === 'checkbox') i.checked = true;
+        else i.value = i.type === 'radio' ? i.value || '1' : 'AUDIT';
+        i.dispatchEvent(new Event('input', {bubbles:true}));
+        i.dispatchEvent(new Event('change', {bubbles:true}));
+      });
+    }""")
+    pg.wait_for_timeout(250)
+    # 点提交：优先弹窗内的提交按钮
+    btn = pg.locator(".modal-overlay .modal-foot button.btn")
+    if btn.count() == 0:
+        btn = pg.locator("#modalForm button[type='submit']")
+    if btn.count() == 0:
+        # 页内卡片型表单：按各页真实的提交按钮 id / 文案定位
+        for sel in ("#saveBtn", "#submitBtn", "#btnSave", "#planSubmit"):
+            cand = pg.locator(sel)
+            if cand.count():
+                btn = cand
+                break
+    if btn.count() == 0:
+        btn = pg.get_by_role("button", name=re.compile(r"^(创建|保存|保存方案|保存模板|保存为 draft|提交|创建计划)$"))
+    if btn.count() == 0:
+        note("提交按钮缺失", page, "找不到可点的提交按钮")
+        return
+    try:
+        btn.first.click(timeout=5000)
+    except Exception as e:
+        note("提交点击失败", page, str(e)[:120])
+        return
+    pg.wait_for_timeout(900)
+
+
+def audit_deep(page, browser, api_fail):
+    """深度巡检：打开表单 → 填必填 → 提交 → 收集后端 4xx/5xx。"""
+    from playwright.sync_api import sync_playwright
+    errors = []
+    pg = browser.new_page()
+    pg.on("pageerror", lambda e: errors.append("pageerror: " + str(e)))
+    responses = []
+    pg.on("response", lambda r: responses.append((r.status, r.url))
+          if "/api/" in r.url and r.status >= 400 else None)
+    btn_text = dict(PAGE_BUTTONS).get(page)
+    if not btn_text:
+        pg.close()
+        return
+    try:
+        pg.goto(BASE + "/" + page, wait_until="networkidle")
+    except Exception as e:
+        note("加载失败", page, str(e)[:120])
+        pg.close()
+        return
+    pg.wait_for_timeout(500)
+    if page in LOGIN_PAGES:
+        tok = login_token()
+        if tok:
+            pg.evaluate("t => { localStorage.setItem('miniwms_token', t); }", tok)
+            pg.reload(wait_until="networkidle")
+            pg.wait_for_timeout(500)
+    btn = pg.get_by_role("button", name=btn_text, exact=True)
+    if btn.count() == 0:
+        btn = pg.get_by_role("button", name=btn_text, exact=False)
+    if btn.count() == 0:
+        pg.close()
+        return
+    try:
+        btn.first.click(timeout=5000)
+        pg.wait_for_timeout(700)
+    except Exception:
+        pg.close()
+        return
+    fill_and_submit(pg, page)
+    # 读取前端展示的错误文本（api.js 会把后端 error 打到消息条 / 弹窗错误区）
+    shown = ""
+    for sel in (".modal-err", "#msg", ".msg"):
+        try:
+            loc = pg.locator(sel)
+            if loc.count():
+                txt = loc.first.inner_text().strip()
+                if txt:
+                    shown = txt[:180]
+                    break
+        except Exception:
+            pass
+    for status, url in responses:
+        if status >= 500:
+            note("服务端错误", page, f"{status} {url} | {shown}")
+        elif status >= 400:
+            note("提交被拒", page, f"{status} {url} | {shown}")
+    for e in list(errors):
+        note("提交 JS 错误", page, e[:200])
+    pg.close()
 
 
 # 页面路径 → 需要先造的数据（通过真实 API）
@@ -272,6 +387,10 @@ def run(port, keep):
                 browser = p.chromium.launch(headless=True, args=["--no-proxy-server"])
             for page, _btn in PAGE_BUTTONS:
                 audit(page, browser)
+            if DEEP:
+                print("\n--- 深度巡检（填必填项 → 提交）---")
+                for page, _btn in PAGE_BUTTONS:
+                    audit_deep(page, browser, None)
     finally:
         if browser:
             try:
@@ -298,5 +417,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--deep", action="store_true", help="额外做「填必填项 → 提交」的深度巡检")
     a = ap.parse_args()
+    globals()["DEEP"] = a.deep
     sys.exit(run(a.port, a.keep))

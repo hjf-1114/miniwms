@@ -4,7 +4,7 @@
     C:/Python311/python.exe tools/e2e_m26.py
     C:/Python311/python.exe tools/e2e_m26.py --port 5119 --keep   # 保留临时库排查
 
-覆盖：规则编辑器渲染 → 13 维条件组 / fallback / limits / score → 试算 →
+覆盖：规则编辑器渲染 → 14 维条件组 / fallback / limits / score → 试算 →
 新增与删除规则行 → 拖拽优先级 → 外部单据字典 → 推荐日志统计 →
 上架作业页可解释字段 → 一键采纳写日志 → 无 JS 错误与业务 404。
 
@@ -126,7 +126,7 @@ def run(port, keep):
                   page.locator("#ruleBody tr.rule-row").count())
 
             page.locator("button:has-text('新增规则行')").first.click()
-            check("13 维条件组控件", page.locator("#condGrid .fld").count() == 13,
+            check("14 维条件组控件", page.locator("#condGrid .fld").count() == 14,
                   page.locator("#condGrid .fld").count())
             check("fallback 步骤可见", page.locator("#stepsBox .step-row").count() >= 1)
             check("8 项 limits 三态矩阵", page.locator("#limitsBody tr").count() == 8)
@@ -149,7 +149,7 @@ def run(port, keep):
                   page.locator("#ruleBody tr.rule-row").count())
             rules = http("GET", "/api/putaway-rules")["rules"]
             new_rule = next((r for r in rules if r["name"] == "E2E 临时规则"), None)
-            check("新规则带 13 维空条件组", new_rule is not None and
+            check("新规则带 14 维空条件组", new_rule is not None and
                   json.loads(new_rule["condition"]) == {}, new_rule and new_rule["id"])
             http("DELETE", f"/api/putaway-rules/{new_rule['id']}")
             page.locator("button:has-text('刷新')").first.click()

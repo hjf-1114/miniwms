@@ -80,7 +80,7 @@ tr.dragging { opacity: .45; }
           <table>
             <thead><tr>
               <th style="width:36px"></th><th style="width:76px">优先级</th><th>规则名称</th>
-              <th>条件组（13 维）</th><th>fallback 链</th><th>硬约束</th>
+              <th>条件组（14 维）</th><th>fallback 链</th><th>硬约束</th>
               <th style="width:70px">状态</th><th style="width:230px">操作</th>
             </tr></thead>
             <tbody id="ruleBody"></tbody>
@@ -102,7 +102,7 @@ tr.dragging { opacity: .45; }
         </div>
 
         <div class="editor-sec">
-          <h3>① 条件组（13 维 AND，留空 = 通配；多值用英文逗号分隔）</h3>
+          <h3>① 条件组（14 维 AND，留空 = 通配；多值用英文逗号分隔）</h3>
           <div id="condGrid" class="grid13"></div>
         </div>
 
@@ -387,6 +387,15 @@ function parseCondVal(dim, raw) {
   }
   return /^\d+$/.test(s) ? Number(s) : s;
 }
+// 条件组各维度的填写提示（值型维度填的是标识，不是显示名）
+const DIM_HINTS = {
+  owner_id: "货主 ID", product_id: "物料 ID", zone_id: "储区 ID",
+  product_type: "产品类型编码，如 PT-FG",
+  category_l1: "一级分类文本", doc_type: "单据类型文本",
+  external_doc_type: "外部单据类别文本", goods_property: "合格 / 不合格",
+  abc_class: "A / B / C",
+};
+
 function condValue(v) {
   return v === undefined || v === null ? "" : Array.isArray(v) ? v.join(",") : String(v);
 }
@@ -397,7 +406,7 @@ function renderCondGrid(cond) {
       ? `<select id="cond_${d.value}"><option value="">不限</option>
            <option value="1"${v === "1" ? " selected" : ""}>是</option>
            <option value="0"${v === "0" ? " selected" : ""}>否</option></select>`
-      : `<input id="cond_${d.value}" value="${esc(v)}" placeholder="留空=不限">`;
+      : `<input id="cond_${d.value}" value="${esc(v)}" placeholder="${esc(DIM_HINTS[d.value] || "留空=不限")}">`;
     return `<label class="fld"><span>${esc(d.label)} <span class="dim">${esc(d.value)}</span></span>${input}</label>`;
   }).join("");
 }

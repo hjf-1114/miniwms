@@ -304,3 +304,100 @@ class M32ProductTypeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class M32RuleEngineLinkTest(unittest.TestCase):
+    """M32 产品类型接入上架规则引擎：条件组新增第 14 维 ``product_type``。
+
+    验证三件事：
+    1. 条件组维度白名单已含 ``product_type``（不再被拒为「未知维度」）；
+    2. 推荐上下文带出货品的产品类型编码，规则行可按它命中；
+    3. **既有规则行不受影响** —— 条件组里没有该键即视为通配（不限）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        main.init_db()
+        cls.client = main.app.test_client()
+
+    def setUp(self):
+        with closing(_conn()) as c:
+            c.execute("PRAGMA foreign_keys=OFF")
+            c.execute("DELETE FROM putaway_rule WHERE name LIKE 'M32-链接%'")
+            c.execute("DELETE FROM product WHERE sku LIKE 'M32-LNK%'")
+            c.execute("DELETE FROM asn_line WHERE id IN"
+                      " (SELECT id FROM asn WHERE code LIKE 'M32-LNK%')")
+            c.execute("DELETE FROM asn WHERE code LIKE 'M32-LNK%'")
+            c.execute("DELETE FROM owner WHERE code = 'M32-LNK-OW'")
+            c.commit()
+        self.owner = self.client.post("/api/owners", json={
+            "code": "M32-LNK-OW", "name": "M32 联动货主"}).get_json()["owner"]["id"]
+
+    def _post(self, path, payload, status=201):
+        r = self.client.post(path, json=payload)
+        self.assertEqual(r.status_code, status, (path, r.get_data(as_text=True)[:200]))
+        return r.get_json() or {}
+
+    def _rule_set(self):
+        sets = self.client.get("/api/putaway-rule-sets").get_json()["rule_sets"]
+        return sets[0]["id"]
+
+    def test_01_product_type_is_known_dim(self):
+        self.assertIn("product_type", C.PUTAWAY_CONDITION_DIMS)
+        self.assertEqual(C.PUTAWAY_CONDITION_LABELS["product_type"], "产品类型")
+        r = self.client.post("/api/putaway-rules", json={
+            "rule_set_id": self._rule_set(), "name": "M32-链接-维度",
+            "condition": {"product_type": "PT-FG"},
+            "steps": [{"type": "all_active"}], "enabled": 0})
+        self.assertEqual(r.status_code, 201, r.get_json())
+
+    def test_02_condition_dims_count_is_14(self):
+        d = self.client.get("/api/putaway-rule-types").get_json()
+        dims = {x["value"] for x in d["condition_dims"]}
+        self.assertIn("product_type", dims)
+        self.assertEqual(len(d["condition_dims"]), 14)
+
+    def test_03_trial_matches_by_product_type(self):
+        r = self.client.post("/api/putaway-rules/trial", json={
+            "condition": {"product_type": "PT-FG"},
+            "ctx": {"product_type": "PT-FG"}})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertTrue(r.get_json()["matched"])
+        r2 = self.client.post("/api/putaway-rules/trial", json={
+            "condition": {"product_type": "PT-FG"},
+            "ctx": {"product_type": "PT-RM"}})
+        self.assertFalse(r2.get_json()["matched"])
+        # 没有该键 → 通配
+        r3 = self.client.post("/api/putaway-rules/trial", json={
+            "condition": {}, "ctx": {"product_type": "PT-FG"}})
+        self.assertTrue(r3.get_json()["matched"])
+
+    def test_04_existing_rules_unaffected(self):
+        """既有规则行（条件组里没有 product_type 键）仍按通配命中。"""
+        r = self.client.post("/api/putaway-rules/trial", json={
+            "condition": {"doc_type": "采购"},
+            "ctx": {"doc_type": "采购", "product_type": "PT-FG"}})
+        self.assertTrue(r.get_json()["matched"])
+
+    def test_05_context_carries_product_type(self):
+        """推荐上下文取货品的产品类型编码（供规则行按类型分流）。"""
+        import putaway_rules as PR
+        prod = self._post("/api/products", {
+            "sku": "M32-LNK-P1", "name": "链接测试物料", "product_type": "PT-RM"})
+        pid = prod["product"]["id"]
+        with closing(_conn()) as c:
+            c.execute("INSERT INTO asn (code, owner_id, doc_type, status)"
+                      " VALUES ('M32-LNK-ASN', ?, '采购', 'open')", (self.owner,))
+            asn_id = c.execute("SELECT id FROM asn WHERE code='M32-LNK-ASN'").fetchone()[0]
+            c.execute("INSERT INTO asn_line (asn_id, product_id, expected_qty)"
+                      " VALUES (?, ?, 10)", (asn_id, pid))
+            line_id = c.execute(
+                "SELECT id FROM asn_line WHERE asn_id = ?", (asn_id,)).fetchone()[0]
+            c.commit()
+        with main.app.app_context():
+            ctx = PR.build_context(main.get_db(), asn_id, line_id, 10)
+        self.assertEqual(ctx["ctx"]["product_type"], "PT-RM")
+
+
+if __name__ == "__main__":
+    unittest.main()

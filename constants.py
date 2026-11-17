@@ -241,18 +241,20 @@ RULE_STATUS_DISABLED = "disabled"
 RULE_STATUSES = (RULE_STATUS_ACTIVE, RULE_STATUS_DISABLED)
 RULE_FALLBACK_PRIORITY = 999
 
-# 13 维条件组（v3.3 4A：首批 13 维起步，M26 编辑器预留扩展位）
+# 上架规则条件组维度（M25 首批 13 维；M32 起 +product_type 为第 14 维，
+# M26 编辑器「预留扩展位」的第一个扩展位）。每维单选、维度间 AND，
+# null / 空串 = 通配，列表 = 该维多选。
 PUTAWAY_CONDITION_DIMS = (
     "doc_type", "goods_property", "is_virtual", "is_direct", "is_cold_chain",
     "is_hazard", "external_doc_type", "abc_class", "owner_id", "is_designated",
-    "zone_id", "product_id", "category_l1",
+    "zone_id", "product_id", "category_l1", "product_type",
 )
 PUTAWAY_CONDITION_LABELS = {
     "doc_type": "单据类型", "goods_property": "货品属性", "is_virtual": "虚拟标识",
     "is_direct": "直调标识", "is_cold_chain": "冷链标识", "is_hazard": "危险标识",
     "external_doc_type": "外部单据类别", "abc_class": "ABC 分类", "owner_id": "货主",
     "is_designated": "指定客户专属", "zone_id": "储区", "product_id": "物料",
-    "category_l1": "一级分类",
+    "category_l1": "一级分类", "product_type": "产品类型",
 }
 
 # 9 种寻址步骤（业界 6 种 + 本项目 zone_by_product / same_category + M20 兼容型 all_active）

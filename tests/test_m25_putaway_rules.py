@@ -118,7 +118,7 @@ class M25PutawayRulesTest(unittest.TestCase):
             c.close()
 
     def test_02_constant_dimensions(self):
-        self.assertEqual(len(C.PUTAWAY_CONDITION_DIMS), 13)
+        self.assertEqual(len(C.PUTAWAY_CONDITION_DIMS), 14)  # M32 起 +product_type
         self.assertEqual(len(C.PUTAWAY_LIMIT_KEYS), 8)
         self.assertEqual(len(C.PUTAWAY_SCORE_RULES), 9)
         # 8 种预设寻址 + 1 种 M20 兼容型
@@ -282,7 +282,7 @@ class M25PutawayRulesTest(unittest.TestCase):
         r = self.client.get("/api/putaway-rule-types")
         self.assertEqual(r.status_code, 200)
         d = r.get_json()
-        self.assertEqual(len(d["condition_dims"]), 13)
+        self.assertEqual(len(d["condition_dims"]), 14)
         self.assertEqual(len(d["step_types"]), 9)
         self.assertEqual(len(d["limit_keys"]), 8)
         self.assertEqual(len(d["score_rules"]), 9)

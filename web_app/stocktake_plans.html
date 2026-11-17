@@ -54,8 +54,8 @@
           <button class="btn secondary sm" onclick="resetForm()">清空</button>
         </div>
         <div class="form-grid">
-          <label>编码 *<input id="f-code" placeholder="PLAN-FULL"></label>
-          <label>名称 *<input id="f-name" placeholder="全仓全盘"></label>
+          <label>编码 *<input id="f-code" placeholder="PLAN-FULL" required></label>
+          <label>名称 *<input id="f-name" placeholder="全仓全盘" required></label>
           <label>范围类型
             <select id="f-scope_type">
               <option value="full">全盘</option>
@@ -125,6 +125,13 @@ function renderTypeChecks(values) {
 }
 
 function formBody() {
+  // 前端必填校验：编码 / 名称标了「*」，这里先拦一道，
+  // 避免把明显缺字段的请求发到后端再被 400 打回
+  for (const [id, label] of [["f-code", "编码"], ["f-name", "名称"]]) {
+    if (!document.getElementById(id).value.trim()) {
+      throw new Error(label + "必填");
+    }
+  }
   let scope = {};
   const raw = document.getElementById("f-scope").value.trim();
   if (raw) {

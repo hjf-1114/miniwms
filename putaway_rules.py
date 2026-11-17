@@ -91,6 +91,8 @@ def build_context(db, asn_id, line_id, qty=0.0):
         "zone_id": None,                       # 由规则行指定，条件组里通常不限
         "product_id": line["product_id"],
         "category_l1": str(prod_d.get("category_l1") or prod_d.get("category") or ""),
+        # M32：产品类型字典的编码（M32 起 product.product_type 引用 product_type.code）
+        "product_type": str(prod_d.get("product_type") or ""),
     }
     return {
         "ctx": ctx, "asn": asn_d, "line": dict(line), "product": prod_d,
