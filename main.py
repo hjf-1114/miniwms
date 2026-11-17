@@ -1384,6 +1384,19 @@ def _migrate_m33(conn):
     )
 
 
+def _migrate_abc(conn):
+    """ABC 分类：给货品加 ``abc_class`` 列（补齐规则条件组里那一维的数据源）。
+
+    列本身在货品表上；分类值由 ``abc_service.apply()`` 按近 N 天出库金额累计占比写入。
+    这里只负责加列与索引：老库幂等补列、存量行留空（表示「未分类 / 不限」）。
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(product)")}
+    if "abc_class" not in cols:
+        conn.execute(
+            "ALTER TABLE product ADD COLUMN abc_class TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_product_abc ON product(abc_class)")
+
+
 def _migrate_m34(conn):
     """M34 货位组主数据：独立表替代 ``location.location_group`` 文本字段。
 
@@ -2153,6 +2166,7 @@ def init_db(path=None):
         _migrate_m32(conn)
         _migrate_m33(conn)
         _migrate_m34(conn)
+        _migrate_abc(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -2206,6 +2220,7 @@ else:
     from routes_fleet import fleet_bp  # noqa: E402  M31 司机/车辆主数据（编号后移补做）
     from routes_product_type import product_type_bp  # noqa: E402  M32 产品类型字典
     from routes_serial import serial_bp  # noqa: E402  M33 序列号台账
+    from routes_abc import abc_bp  # noqa: E402  ABC 分类（补规则条件组数据源）
     from routes_location_group import location_group_bp  # noqa: E402  M34 货位组主数据
     from routes_operation_report import operation_report_bp  # noqa: E402  M28 经营报表
 
@@ -2243,5 +2258,6 @@ else:
     app.register_blueprint(fleet_bp)
     app.register_blueprint(product_type_bp)
     app.register_blueprint(serial_bp)
+    app.register_blueprint(abc_bp)
     app.register_blueprint(location_group_bp)
     app.register_blueprint(operation_report_bp)

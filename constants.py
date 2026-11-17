@@ -896,3 +896,16 @@ OP_REPORT_UTIL_DIMENSIONS = ("warehouse", "zone", "location_group", "all")
 # 权限码：只落常量不挂装饰器（Q08 口径延续）
 OP_REPORT_PERM_VIEW = "operation_report:view"
 OP_REPORT_PERMISSIONS = (OP_REPORT_PERM_VIEW,)
+
+# ── ABC 分类（补齐上架规则条件组里「有维度无取值」的那一维）──────────────
+# 分类口径：按**货主**分别计算（不同货主的品类结构差异大，全局算没有业务意义），
+# 依据近 N 天出库金额降序累计占比：
+#   累计 ≤ ABC_A_CUM → A（高价值，重点保管与优先拣货）
+#   累计 ≤ ABC_B_CUM → B（次之）
+#   其余 → C（长尾低值）
+# 无出库记录的货品**不分类**（留空＝不限），不硬凑成 C。
+ABC_CLASSES = ("A", "B", "C")
+ABC_A_CUM = 0.80
+ABC_B_CUM = 0.95
+ABC_WINDOW_DAYS = 30
+ABC_MIN_AMOUNT = 0.0     # 出库金额低于此值视为无出库，不参与分类

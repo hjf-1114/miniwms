@@ -25,6 +25,7 @@
       <input id="kw" placeholder="SKU/名称搜索">
       <select id="ownerFilter"><option value="">全部货主</option></select>
       <button class="btn secondary" onclick="load()">查询</button>
+      <button class="btn secondary" onclick="openAbcPanel()">ABC 分类</button>
     </div>
     <div class="table-wrap">
       <table>
@@ -110,10 +111,50 @@ function productFields() {
         value: z.id, label: `${z.code} · ${z.name}〔${z.warehouse_name || "全仓共享"}｜${z.temp_class}〕`,
       })),
       help: "上架推荐会给该储区下的库位加分；下方「绑定货位」可指定优先级更高的固定货位" },
+    { name: "abc_class", label: "ABC 分类", readonly: true,
+      help: "按近 30 天出库金额累计占比自动分级（A 累计≤80%、B ≤95%、其余 C）；无出库记录则不分类" },
     { name: "owner_id", label: "货主（可空=自营）", type: "select", nullable: true, options: ownerOptions },
     { name: "status", label: "状态", type: "select", options: [{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }] },
     { name: "note", label: "备注", type: "textarea", full: true },
   ];
+}
+
+// ABC 分类面板：看分布 + 预览 + 重算（只写货品的 abc_class 一列）
+async function openAbcPanel() {
+  const ov = await api("GET", "/api/abc/overview");
+  const rows = (ov.distribution || []).map(d =>
+    `<tr><td>${d.owner_id === null ? '<span class="muted">自营</span>' : "#" + d.owner_id}</td>
+      <td>${d.A}</td><td>${d.B}</td><td>${d.C}</td><td>${d.total}</td></tr>`).join("");
+  const ov2 = document.createElement("div");
+  ov2.className = "modal-overlay";
+  ov2.innerHTML = `<div class="modal" role="dialog" aria-modal="true" style="max-width:720px">
+    <div class="modal-head"><h3>ABC 分类</h3>
+      <button class="modal-x" type="button" onclick="this.closest('.modal-overlay').remove()">×</button></div>
+    <div class="modal-body">
+      <p class="muted">按货主分别计算，依据近 ${ov.days} 天出库金额累计占比：
+         A（累计≤80%）／B（≤95%）／C（其余）；无出库记录的货品不分类。
+         当前未分类 <b>${ov.unclassified}</b> 个。</p>
+      <table><thead><tr><th>货主</th><th>A</th><th>B</th><th>C</th><th>合计</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="muted">暂无已分类的货品</td></tr>'}</tbody></table>
+      <div class="modal-foot">
+        <button type="button" class="btn secondary" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+        <button type="button" class="btn" id="abcRecalc">重算并写回</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(ov2);
+  ov2.querySelector("#abcRecalc").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await api("POST", "/api/abc/recalculate", {days: ov.days});
+      showMsg(document.getElementById("msg"),
+        `重算完成：更新 ${r.changed_count} 个货品的分类`, "success");
+      ov2.remove();
+      load();
+    } catch (err) {
+      showMsg(document.getElementById("msg"), "重算失败：" + err.message, "error");
+      e.target.disabled = false;
+    }
+  });
 }
 
 async function loadOwners() {

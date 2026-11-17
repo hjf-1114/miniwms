@@ -85,7 +85,8 @@ def build_context(db, asn_id, line_id, qty=0.0):
         "is_cold_chain": int(asn_d.get("is_cold_chain") or 0),
         "is_hazard": int(asn_d.get("is_hazard") or 0),
         "external_doc_type": str(asn_d.get("external_doc_type") or ""),
-        "abc_class": "",                       # ABC 由近 30 天出库频次聚合，暂无缓存字段
+        # ABC 分类：取货品上的 abc_class 列（由 abc_service 按出库金额累计占比写入）
+        "abc_class": str(prod_d.get("abc_class") or ""),
         "owner_id": asn_d.get("owner_id"),
         "is_designated": 1 if dcid else 0,
         "zone_id": None,                       # 由规则行指定，条件组里通常不限
