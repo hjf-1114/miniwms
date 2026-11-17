@@ -68,6 +68,10 @@
 | Q46 | 产品类型要不要层级？几层？ | M32 层级 | 单父级、最多**两级**（父级不能再有上级）；自引用 400 `PT_HIERARCHY_CYCLE`、第三级 400 `PT_MAX_DEPTH`；不做多父级、不做无限树 | 待答复（M32 已按默认落地） |
 | Q47 | 货品上的 `product_type` 老数据怎么迁移？改引用会不会打断历史盘点维度与报表分组？ | M32 老数据回填 | **老文本原样当字典 code**，货品取值一个字符都不改；迁移 `main._migrate_m32()` 自动回填，另有 `backfill_from_products()` 可重复执行；历史盘点方案维度（`stocktake_service` 用 `p.product_type`）与报表分组继续匹配 | 待答复（M32 已按默认落地） |
 | Q48 | 货品填了字典外的类型怎么办？字典行被引用后能不能删 / 改编码？ | M32 写入与保护 | 写入时**自动 get-or-create 建行**（继承该货品归属），不阻塞录入；被引用行**禁止删除与改编码**（`PT_IN_USE`），不静默改写货品、不留悬空引用；有子类型时禁止删除（`PT_HAS_CHILDREN`） | 待答复（M32 已按默认落地） |
+| Q49 | 序列号台账按货主隔离还是全系统共享？ | M33 归属 | `owner_id` 可空（`NULL`＝全系统台账）；列表 `allow_null=True` 可见共享，详情/编辑/出库/状态变更均过 `assert_owner_allowed()`，按 ID 访问也守门 | 待答复（M33 已按默认落地） |
+| Q50 | 序列号状态机怎么定？报废后还能复活吗？ | M33 状态机 | 四态：在库 / 已出库 / 冻结 / 报废；允许 在库→已出库·冻结·报废、冻结→在库·报废；**报废是终态**，不可再流转；非法流转 400 `SERIAL_BAD_TRANSITION` | 待答复（M33 已按默认落地） |
+| Q51 | 序列号要不要与 ASN 收货 / DN 发货强制绑定校验？ | M33 与单据关系 | M33 **不接发货硬拦截**：出入库主流程完全不变，序列号只做**手工台账 + 与单据的只读关联**（流水可记 `ref_type=asn/dn` + `ref_id`）；原因是为序列号硬拦截会推翻 M1–M41 已稳定的库存链路 | 待答复（M33 已按默认落地） |
+| Q52 | 序列号数量要不要参与库存计算？台账与库存账怎么对齐？ | M33 与库存关系 | **不参与**：序列号台账独立于 `stock` 主账，登记/出库/状态变更**不写 `stock`、不写 `stock_movement`**；只提供只读「待登记缺口」＝当前库存 − 在库台账数，供人工核对，不做任何自动对齐 | 待答复（M33 已按默认落地） |
 
 ## 三、M35 落地复核（2026-11-13）
 
@@ -174,6 +178,18 @@
 | Q46 层级 | `product_type_service._check_hierarchy()` | 单父级最多两级；单测覆盖第三级 400 `PT_MAX_DEPTH`、自引用 400 `PT_HIERARCHY_CYCLE`、父级不存在 400 |
 | Q47 老数据回填 | `main._migrate_m32()` / `product_type_service.backfill_from_products()` | 老文本原样当 code，货品取值一个字符不改；单测与 E2E 均验证「老自由文本 → 建行后货品仍为老自由文本」 |
 | Q48 写入与保护 | `product_type_service.ensure_type()` / `delete()` / `update()` | 字典外类型自动建行（继承货品归属）；被引用删除 400 `PT_IN_USE`、被引用改编码 400 `PT_IN_USE`、有子类型删除 400 `PT_HAS_CHILDREN`；E2E 验证前端删除被引用类型时弹「该产品类型仍被货品引用」提示 |
+
+## 三·续 M33 落地复核（2026-11-17）
+
+> 按「不明确的先登记、明确的一直做」，M33 已按上表 Q49–Q52「当前默认」全部落地，
+> **没有中途打断用户**。以下是实现与登记的对照，便于统一答复时逐条比对。
+
+| 登记项 | 落地位置 | 实测 |
+|---|---|---|
+| Q49 归属与隔离 | `main._migrate_m33()` / `serial_service.list_records()` / `scope.OWNER_SCOPED_TABLES` | 可空 `owner_id`（NULL＝全系统台账）；列表 `allow_null=True`；单测验证受限账号可见「本货主 + 全系统」、看不到他货主台账；详情/编辑/出库/状态变更按 ID 守门，越权一律 403 |
+| Q50 状态机 | `constants.SERIAL_TRANSITIONS` / `serial_service.change_status()` / `outbound()` | 四态 + 终态；单测覆盖 在库→出库、冻结↔在库、报废后三种流转全被拒、重复出库被拒、目标状态相同被拒；非法流转统一 400 `SERIAL_BAD_TRANSITION` |
+| Q51 与单据关系 | `serial_service.outbound()` 的 `ref_type` / `ref_id` / `constants.SERIAL_REF_TYPES` | 出库流水可记 `asn` / `dn` / `manual` 来源与单据 id；**不改 ASN/DN 收发主流程**；`/api/serials/dict` 显式声明 `dn_binding=false`；E2E 验证台账操作后 stock 四表不变 |
+| Q52 与库存关系 | `serial_service.stats()` 的 `stock_qty` / `gap` | 台账不写 `stock` / `stock_movement`；只读统计出「当前库存 − 在库台账数」的待登记缺口；单测与 E2E 均验证四表计数前后一致、I1/I2/I3 一致 |
 
 ## 四、登记约定
 
