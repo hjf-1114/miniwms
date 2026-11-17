@@ -20,7 +20,7 @@ EPS = 1e-9
 SCOPE_COLUMNS = {
     "warehouse_id": "l.warehouse_id",
     "zone_id": "l.zone_id",
-    "location_group": "l.zone",       # M34 货位组落地前按库位区文本近似
+    "location_group": "COALESCE(NULLIF(l.location_group, ''), l.zone)",  # M34：优先真实货位组，为空回落 zone 文本
     "location_ids": "l.id",
     "loc_type": "l.loc_type",
     "product_ids": "p.id",

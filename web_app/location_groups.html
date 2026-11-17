@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>货位组主数据 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>货位组主数据</h1><div class="crumb">MiniWMS / 基础主数据 / 仓储布局</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>货位组</h2>
+          <button class="btn" onclick="openCreate()">+ 新建货位组</button>
+        </div>
+        <div class="tabbar">
+          <button class="tab active" data-tab="list">货位组列表</button>
+          <button class="tab" data-tab="pick">拣货顺序</button>
+        </div>
+        <div class="panel" id="panel-list">
+          <div class="toolbar">
+            <input id="kw" placeholder="编码/名称搜索">
+            <select id="statusFilter">
+              <option value="">全部状态</option>
+              <option value="active">启用</option>
+              <option value="inactive">停用</option>
+            </select>
+            <select id="whFilter">
+              <option value="">全部仓库</option>
+            </select>
+            <button class="btn secondary" id="btnQuery" onclick="load()">查询</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>仓库</th><th>储区</th>
+              <th>拣货顺序</th><th>容积(cm³)</th><th>重量(kg)</th>
+              <th>混放(品/批/主)</th><th>库位数</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
+            <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+            <span id="pageInfo"></span>
+            <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+          </div>
+        </div>
+        <div class="panel" id="panel-pick" style="display:none">
+          <div class="muted" style="margin-bottom:8px">
+            按「拣货顺序」升序排列货位组，拣货可按组走；序号相同时按编码排序。
+          </div>
+          <div id="pickBody"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>使用说明</h2></div>
+        <div class="content" style="padding:4px 2px">
+          <ul class="muted" style="line-height:1.9;margin:0;padding-left:18px">
+            <li>库位的「货位组」不再是自由文本：它现在引用本表的<b>编码</b>；填了表里没有的组会自动建行。</li>
+            <li>老数据在 M34 迁移时已按原文本回填成货位组行，<b>库位取值不变</b>，历史盘点方案维度继续匹配。</li>
+            <li>组级混放标志与容积只是<b>默认提示</b>：库位自身的混放设置优先，不覆盖上架规则引擎的判定。</li>
+            <li>仍被库位引用的货位组<b>不能删除</b>，也不能改编码；请先调整库位的货位组。</li>
+            <li>货位组属仓库布局，不按货主隔离；容积 / 重量上限填 <b>0</b> 表示不限。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
+    <script src="/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+let whOptions = [];
+let zoneOptions = [];
+
+function fields() {
+  const yesno = [{ value: 0, label: "禁止" }, { value: 1, label: "允许" }];
+  return [
+    { name: "code", label: "编码 *", required: true,
+      help: "库位「货位组」列引用的就是它；全系统唯一" },
+    { name: "name", label: "名称 *", required: true },
+    { name: "warehouse_id", label: "所属仓库", type: "select", placeholder: "（不限仓库）",
+      options: whOptions.map(w => ({ value: w.id, label: w.code + " · " + w.name })) },
+    { name: "zone_id", label: "所属储区", type: "select", placeholder: "（不限储区）",
+      options: zoneOptions.map(z => ({ value: z.id, label: z.code + " · " + z.name })) },
+    { name: "pick_seq", label: "拣货顺序", type: "number", help: "数字越小越先拣" },
+    { name: "capacity_volume", label: "容积上限(cm³)", type: "number",
+      help: "0 表示不限" },
+    { name: "capacity_weight", label: "重量上限(kg)", type: "number",
+      help: "0 表示不限" },
+    { name: "allow_mix_product", label: "允许产品混放", type: "select", options: yesno },
+    { name: "allow_mix_batch", label: "允许批号混放", type: "select", options: yesno },
+    { name: "allow_mix_owner", label: "允许货主混放", type: "select", options: yesno },
+    { name: "status", label: "状态", type: "select", options: [
+      { value: "active", label: "启用" }, { value: "inactive", label: "停用" } ] },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+async function loadBase() {
+  try {
+    const d = await api("GET", "/api/warehouses?page_size=100");
+    whOptions = d.warehouses || [];
+    const sel = document.getElementById("whFilter");
+    whOptions.forEach(w => sel.insertAdjacentHTML("beforeend",
+      `<option value="${w.id}">${esc(w.code)} · ${esc(w.name)}</option>`));
+  } catch (e) { /* 忽略 */ }
+  try {
+    const d = await api("GET", "/api/zones?page_size=100");
+    zoneOptions = d.zones || [];
+  } catch (e) { /* 忽略 */ }
+}
+
+function mixTag(v) {
+  return v ? '<span class="tag ok">允许</span>' : '<span class="muted">禁止</span>';
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const wh = document.getElementById("whFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  if (wh) qs.set("warehouse_id", wh);
+  try {
+    const data = await api("GET", "/api/location-groups?" + qs);
+    document.getElementById("tbody").innerHTML = data.location_groups.map((g) =>
+      `<tr>
+        <td>${g.id}</td><td><b>${esc(g.code)}</b></td><td>${esc(g.name)}</td>
+        <td>${g.warehouse_id ? esc(whName(g.warehouse_id)) : '<span class="muted">不限</span>'}</td>
+        <td>${g.zone_id ? esc(zoneName(g.zone_id)) : '<span class="muted">不限</span>'}</td>
+        <td>${g.pick_seq}</td>
+        <td>${g.volume_unlimited ? '<span class="muted">不限</span>' : g.capacity_volume}</td>
+        <td>${g.weight_unlimited ? '<span class="muted">不限</span>' : g.capacity_weight}</td>
+        <td>${mixTag(g.allow_mix_product)} / ${mixTag(g.allow_mix_batch)} / ${mixTag(g.allow_mix_owner)}</td>
+        <td>${g.location_count ? `<b>${g.location_count}</b>` : 0}</td>
+        <td>${statusTag(g.status)}</td>
+        <td>${esc(g.note)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${g.id})">编辑</button>
+          <button class="btn secondary sm" onclick="toggle(${g.id},'${g.status}')">${g.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger sm" onclick="del(${g.id})">删除</button>
+        </td>
+      </tr>`).join("");
+    document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+async function loadPick() {
+  try {
+    const d = await api("GET", "/api/location-groups/pick-order");
+    document.getElementById("pickBody").innerHTML = d.groups.map((g, i) => `
+      <div class="card" style="margin-bottom:10px">
+        <div class="card-head">
+          <h2>${i + 1}. ${esc(g.code)} · ${esc(g.name)}</h2>
+          <span class="muted">拣货顺序 ${g.pick_seq} · 库位 ${g.location_count} 个
+            ${g.warehouse_code ? " · 仓库 " + esc(g.warehouse_code) : ""}
+            ${g.zone_code ? " · 储区 " + esc(g.zone_code) : ""}</span>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th>库位编码</th><th>库位名称</th></tr></thead>
+          <tbody>${(g.locations || []).map(l =>
+            `<tr><td>${esc(l.code)}</td><td>${esc(l.name)}</td></tr>`).join("")
+            || '<tr><td colspan="2" class="muted">该组暂无库位</td></tr>'}</tbody></table>
+        </div>
+      </div>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "拣货顺序加载失败：" + e.message, "error");
+  }
+}
+
+function whName(id) {
+  const hit = whOptions.find(w => w.id === id);
+  return hit ? hit.code + " · " + hit.name : ("#" + id);
+}
+function zoneName(id) {
+  const hit = zoneOptions.find(z => z.id === id);
+  return hit ? hit.code + " · " + hit.name : ("#" + id);
+}
+
+function turn(d) { page += d; load(); }
+
+function openCreate() {
+  openForm({
+    title: "新建货位组", submitText: "创建", width: 760, fields: fields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/location-groups", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/location-groups/" + id);
+  openForm({
+    title: "编辑货位组", submitText: "保存", width: 760, fields: fields(),
+    values: data.location_group,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/location-groups/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/location-groups/" + id,
+              { status: status === "active" ? "inactive" : "active" });
+    showMsg(document.getElementById("msg"), "已切换状态", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "操作失败：" + e.message, "error");
+  }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该货位组？仍被库位引用时会被拒绝。")) return;
+  try {
+    await api("DELETE", "/api/location-groups/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+document.querySelectorAll(".tabbar .tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabbar .tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const t = btn.dataset.tab;
+    document.getElementById("panel-list").style.display = t === "list" ? "" : "none";
+    document.getElementById("panel-pick").style.display = t === "pick" ? "" : "none";
+    if (t === "pick") loadPick();
+  });
+});
+
+loadBase().then(load);
+</script>
+</body>
+</html>

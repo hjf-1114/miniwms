@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M31 / M32 / M33 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M31 / M32 / M33 / M34 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -896,6 +896,32 @@ def m33_serial():
             f" / 冻结 {one.get('frozen', 0)}；台账不写库存账")
 
 
+def m34_location_group():
+    """M34 货位组主数据：给演示库补齐组属性（拣货顺序 / 容积 / 混放默认）。"""
+    groups = raw("SELECT id, code FROM location_group ORDER BY code")
+    if not groups:
+        return "跳过：演示库没有货位组"
+    # 给前 3 个组补上可查的属性（拣货顺序 / 容积 / 重量 / 混放默认）
+    profiles = [
+        (10, 120000.0, 3000.0, 1, 1, 0, "演示：一号货位组（可混产品/批号）"),
+        (20, 80000.0, 2000.0, 1, 0, 0, "演示：二号货位组"),
+        (30, 50000.0, 1500.0, 0, 0, 0, "演示：三号货位组（严格分区）"),
+    ]
+    made = 0
+    for grp in groups[:3]:
+        seq, vol, wt, mp, mb, mo, note = profiles[made]
+        put("/api/location-groups/" + str(grp["id"]), {
+            "pick_seq": seq, "capacity_volume": vol, "capacity_weight": wt,
+            "allow_mix_product": mp, "allow_mix_batch": mb, "allow_mix_owner": mo,
+            "note": note,
+        })
+        made += 1
+    po = get("/api/location-groups/pick-order")
+    locs = sum(g["location_count"] for g in po["groups"])
+    return (f"属性更新 {made} 个货位组；字典共 {len(groups)} 组，"
+            f"拣货顺序视图覆盖库位 {locs} 个；库位取值不变、不写库存账")
+
+
 def m40_workload():
     """M40 是纯只读统计：复用 M17–M39 已写入的留痕，不新增业务数据。
 
@@ -955,6 +981,7 @@ def main_cli():
         ("product_type 产品类型字典(M32)", "product_type"),
         ("serial_no 序列号档案(M33)", "serial_no"),
         ("serial_transaction 序列号流水(M33)", "serial_transaction"),
+        ("location_group 货位组(M34)", "location_group"),
     ]
     if args.check:
         print(f"库：{DB}\n")
@@ -993,6 +1020,7 @@ def main_cli():
     module("M31 司机车辆主数据", m31_fleet)
     module("M32 产品类型字典", m32_product_type)
     module("M33 序列号台账", m33_serial)
+    module("M34 货位组主数据", m34_location_group)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:

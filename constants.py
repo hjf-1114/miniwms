@@ -839,3 +839,34 @@ SERIAL_PAGE_SIZE_MAX = 100
 SERIAL_PERM_VIEW = "serial:view"
 SERIAL_PERM_CONFIG = "serial:config"
 SERIAL_PERMISSIONS = (SERIAL_PERM_VIEW, SERIAL_PERM_CONFIG)
+
+# ── M34 货位组主数据（第 2 层仓库相关）────────────────────────────────────
+# 细节未拍板项登记 OPEN_QUESTIONS Q53–Q56，按下列默认实现，答复后以答复为准。
+LOC_GROUP_STATUS_ACTIVE = "active"
+LOC_GROUP_STATUS_INACTIVE = "inactive"
+LOC_GROUP_STATUSES = (LOC_GROUP_STATUS_ACTIVE, LOC_GROUP_STATUS_INACTIVE)
+LOC_GROUP_STATUS_LABELS = {LOC_GROUP_STATUS_ACTIVE: "启用",
+                            LOC_GROUP_STATUS_INACTIVE: "停用"}
+
+# 组级混放标志：与 location / zone 同语义（0=禁止，1=允许）；
+# 组级值只是**默认提示**，库位自身的 allow_mix_* 优先（Q54）。
+LOC_GROUP_MIX_FIELDS = ("allow_mix_product", "allow_mix_batch", "allow_mix_owner")
+LOC_GROUP_MIX_LABELS = {
+    "allow_mix_product": "允许产品混放",
+    "allow_mix_batch": "允许批号混放",
+    "allow_mix_owner": "允许货主混放",
+}
+
+LOC_GROUP_CODE_MAXLEN = 32
+LOC_GROUP_NAME_MAXLEN = 64
+LOC_GROUP_NOTE_MAXLEN = 200
+LOC_GROUP_PAGE_SIZE_DEFAULT = 20
+LOC_GROUP_PAGE_SIZE_MAX = 100
+
+# 容积 / 重量上限：0 表示不限
+LOC_GROUP_CAPACITY_UNLIMITED = 0
+
+# 权限码：只落常量不挂装饰器（Q08 口径延续）
+LOC_GROUP_PERM_VIEW = "location_group:view"
+LOC_GROUP_PERM_CONFIG = "location_group:config"
+LOC_GROUP_PERMISSIONS = (LOC_GROUP_PERM_VIEW, LOC_GROUP_PERM_CONFIG)

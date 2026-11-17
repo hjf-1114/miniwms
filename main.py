@@ -1384,6 +1384,43 @@ def _migrate_m33(conn):
     )
 
 
+def _migrate_m34(conn):
+    """M34 货位组主数据：独立表替代 ``location.location_group`` 文本字段。
+
+    ``location`` 表结构不变；分组文本继续存在，但语义升级为「引用 code」。
+    回填时**老文本原样当 code**，库位取值一个字符都不改（Q55）。
+    盘点维度改为「优先真实货位组，为空回落 zone 文本」，老方案继续命中（Q56）。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS location_group (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            code              TEXT    NOT NULL UNIQUE,
+            name              TEXT    NOT NULL,
+            warehouse_id      INTEGER REFERENCES warehouse(id),
+            zone_id           INTEGER REFERENCES zone(id),
+            pick_seq          INTEGER NOT NULL DEFAULT 0,
+            capacity_volume   REAL    NOT NULL DEFAULT 0,
+            capacity_weight   REAL    NOT NULL DEFAULT 0,
+            allow_mix_product INTEGER NOT NULL DEFAULT 0,
+            allow_mix_batch   INTEGER NOT NULL DEFAULT 0,
+            allow_mix_owner   INTEGER NOT NULL DEFAULT 0,
+            status            TEXT    NOT NULL DEFAULT 'active',
+            note              TEXT    NOT NULL DEFAULT '',
+            created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_loc_group_wh   ON location_group(warehouse_id);
+        CREATE INDEX IF NOT EXISTS idx_loc_group_zone ON location_group(zone_id);
+        CREATE INDEX IF NOT EXISTS idx_loc_group_seq  ON location_group(pick_seq);
+        CREATE INDEX IF NOT EXISTS idx_loc_ref        ON location(location_group);
+        """
+    )
+    import location_group_service as LGS
+    LGS.backfill_from_locations(conn)
+    conn.commit()
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -2115,6 +2152,7 @@ def init_db(path=None):
         _migrate_m31(conn)
         _migrate_m32(conn)
         _migrate_m33(conn)
+        _migrate_m34(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -2168,6 +2206,7 @@ else:
     from routes_fleet import fleet_bp  # noqa: E402  M31 司机/车辆主数据（编号后移补做）
     from routes_product_type import product_type_bp  # noqa: E402  M32 产品类型字典
     from routes_serial import serial_bp  # noqa: E402  M33 序列号台账
+    from routes_location_group import location_group_bp  # noqa: E402  M34 货位组主数据
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2203,3 +2242,4 @@ else:
     app.register_blueprint(fleet_bp)
     app.register_blueprint(product_type_bp)
     app.register_blueprint(serial_bp)
+    app.register_blueprint(location_group_bp)

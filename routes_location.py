@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 import math
 
 import constants as C
+import location_group_service as LGS
 from main import get_db, request_payload
 
 location_bp = Blueprint("location", __name__, url_prefix="/api/locations")
@@ -75,6 +76,7 @@ def _validate_location_payload(payload, *, partial=False):
         cleaned["barcode"] = str(payload.get("barcode") or "").strip()
 
     # M13 库位组（可手工维护，建库位时留空则按编码前缀自动生成）
+    # M34：分组文本语义升级为「引用 location_group.code」，写入时自动建行
     if "location_group" in payload:
         cleaned["location_group"] = str(payload.get("location_group") or "").strip()
 
@@ -176,6 +178,10 @@ def _row_to_dict(row, db=None):
         ).fetchone()
         if wh:
             d["warehouse_name"] = f"{wh['code']} {wh['name']}"
+    # M34：货位组引用字典 —— 补显示名与是否命中字典
+    gname, gknown = LGS.resolve_name(db, d.get("location_group"))
+    d["location_group_name"] = gname
+    d["location_group_known"] = gknown
     eff = {}
     for f in C.MIX_FIELDS:
         own = d.get(f)
@@ -210,6 +216,10 @@ def create_location():
     if not group:
         code = cleaned["code"]
         group = code.split("-")[0] if "-" in code else (code[:2] if len(code) >= 2 else code)
+    # M34：分组引用字典 —— 字典里没有则自动建行（老文本即 code，取值不变）
+    group = LGS.ensure_group(db, group,
+                              warehouse_id=cleaned.get("warehouse_id"),
+                              zone_id=cleaned.get("zone_id"))
     length_cm = float(cleaned.get("length_cm", 0) or 0)
     width_cm = float(cleaned.get("width_cm", 0) or 0)
     height_cm = float(cleaned.get("height_cm", 0) or 0)
@@ -315,12 +325,24 @@ def list_locations():
 
 @location_bp.route("/groups", methods=["GET"])
 def list_location_groups():
-    """库位组列表（去重），供下拉/筛选使用。"""
+    """库位组列表（去重），供下拉/筛选使用。
+
+    M34 起改为读 ``location_group`` 字典表（未建组的库位其分组文本会自动建行）；
+    字典外的历史取值仍会出现在结果里，保证老库位的筛选项不丢。
+    """
     db = get_db()
     rows = db.execute(
-        "SELECT DISTINCT location_group FROM location WHERE location_group != '' ORDER BY location_group"
+        "SELECT code FROM location_group ORDER BY pick_seq, code"
     ).fetchall()
-    return jsonify({"ok": True, "groups": [r["location_group"] for r in rows]})
+    codes = {r["code"] for r in rows}
+    legacy = db.execute(
+        "SELECT DISTINCT location_group FROM location WHERE location_group != ''"
+        " ORDER BY location_group"
+    ).fetchall()
+    for r in legacy:
+        if r["location_group"] not in codes:
+            codes.add(r["location_group"])
+    return jsonify({"ok": True, "groups": sorted(codes)})
 
 
 @location_bp.route("/<int:location_id>", methods=["GET"])
@@ -370,6 +392,16 @@ def update_location(location_id):
         cur_row = db.execute("SELECT code FROM location WHERE id = ?", (location_id,)).fetchone()
         code = cur_row["code"]
         cleaned["location_group"] = code.split("-")[0] if "-" in code else (code[:2] if len(code) >= 2 else code)
+    # M34：分组引用字典 —— 字典里没有则自动建行
+    if "location_group" in cleaned:
+        cur = db.execute(
+            "SELECT warehouse_id, zone_id FROM location WHERE id = ?", (location_id,)
+        ).fetchone()
+        cleaned["location_group"] = LGS.ensure_group(
+            db, cleaned["location_group"],
+            warehouse_id=cleaned.get("warehouse_id", cur["warehouse_id"] if cur else None),
+            zone_id=cleaned.get("zone_id", cur["zone_id"] if cur else None),
+        )
 
     set_sql = ", ".join(f"{k} = :{k}" for k in cleaned)
     cleaned["id"] = location_id
