@@ -72,6 +72,15 @@ def _validate_customer_payload(payload, *, partial=False):
         if key in payload:
             cleaned[key] = str(payload.get(key) or "").strip()
 
+    # 地区汇总列：前端三级联动只提交 province/city/district，这里拼出可检索的
+    # region 文本，避免 region 列恒空（列表「地区」列读的就是它）
+    if "region" not in cleaned:
+        parts = [cleaned.get("province", ""), cleaned.get("city", ""),
+                 cleaned.get("district", "")]
+        joined = "/".join(p for p in parts if p)
+        if joined:
+            cleaned["region"] = joined
+
     return errors, cleaned
 
 

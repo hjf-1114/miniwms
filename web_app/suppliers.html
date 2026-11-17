@@ -66,7 +66,10 @@ const FIELDS = [
 
 async function loadOptions() {
   const data = await api("GET", "/api/owners?page_size=100");
-  ownerOptions = data.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  // 就地修改（不重新赋值）：FIELDS 常量引用的是同一个数组对象
+  ownerOptions.length = 0;
+  data.owners.forEach((o) => ownerOptions.push(
+    { value: o.id, label: `${o.code} · ${o.name}` }));
   document.getElementById("ownerFilter").innerHTML =
     `<option value="">全部货主</option>` +
     ownerOptions.map((o) => `<option value="${o.value}">${esc(o.label)}</option>`).join("");

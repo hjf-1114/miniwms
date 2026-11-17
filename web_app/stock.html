@@ -77,11 +77,13 @@ async function loadFilters() {
     api("GET", "/api/products?page_size=100"),
     api("GET", "/api/locations?page_size=100"),
   ]);
-  const opts = (list, label) =>
+  // 货主与库位用 code，物料没有 code 列（只有 sku），故单独给显示文案
+  const opts = (list, label, textOf) =>
     `<option value="">全部${label}</option>` + list.map(
-      (x) => `<option value="${x.id}">${esc(x.code)}</option>`).join("");
+      (x) => `<option value="${x.id}">${esc(textOf ? textOf(x) : x.code)}</option>`).join("");
   document.getElementById("ownerFilter").innerHTML = opts(ow.owners, "货主");
-  document.getElementById("productFilter").innerHTML = opts(pr.products, "物料");
+  document.getElementById("productFilter").innerHTML =
+    opts(pr.products, "物料", (p) => `${p.sku} · ${p.name}`);
   document.getElementById("locationFilter").innerHTML = opts(loc.locations, "库位");
 }
 

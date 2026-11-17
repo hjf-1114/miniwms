@@ -44,7 +44,10 @@ function modalFieldHtml(f, val) {
   let control;
   if (f.type === "select") {
     const emptyOpt = f.placeholder ? `<option value="">${esc(f.placeholder)}</option>` : "";
-    const opts = (f.options || []).map((o) => {
+    // options 支持数组或函数（惰性求值）：模块级 FIELDS 常量 + 异步加载的
+    // 下拉数据用函数传入，避免常量捕获到加载前的空数组
+    const rawOpts = typeof f.options === "function" ? (f.options() || []) : (f.options || []);
+    const opts = rawOpts.map((o) => {
       const sel = (o.value === "" && (val === "" || val === null || val === undefined)) ||
         String(o.value) === String(val);
       return `<option value="${esc(o.value)}" ${sel ? "selected" : ""}>${esc(o.label)}</option>`;
@@ -109,7 +112,8 @@ function renderLinesEditor(container, lineFields, initial, cfg) {
       let control;
       if (lf.type === "select") {
         const emptyOpt = lf.placeholder ? `<option value="">${esc(lf.placeholder)}</option>` : "";
-        const opts = (lf.options || []).map((o) => {
+        const rawOpts = typeof lf.options === "function" ? (lf.options() || []) : (lf.options || []);
+        const opts = rawOpts.map((o) => {
           const sel = (o.value === "" && (val === "" || val === null || val === undefined)) ||
             String(o.value) === String(val);
           return `<option value="${esc(o.value)}" ${sel ? "selected" : ""}>${esc(o.label)}</option>`;
