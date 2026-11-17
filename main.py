@@ -1336,6 +1336,54 @@ def _migrate_m32(conn):
     conn.commit()
 
 
+def _migrate_m33(conn):
+    """M33 序列号台账：序列号档案 + 收发绑定流水两张表。
+
+    台账**独立于库存主账**：序列号不参与 ``stock.qty`` 计算、不写
+    ``stock_movement``，只在自己的流水表里留痕（Q52）。
+    不改动 ASN / DN 收货发货主流程，M33 只做手工台账 + 只读关联（Q51）。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS serial_no (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            serial_no   TEXT    NOT NULL UNIQUE,
+            product_id  INTEGER NOT NULL REFERENCES product(id),
+            batch_no    TEXT    NOT NULL DEFAULT '',
+            owner_id    INTEGER REFERENCES owner(id),
+            status      TEXT    NOT NULL DEFAULT 'in_stock',
+            location_id INTEGER REFERENCES location(id),
+            in_date     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            out_date    TEXT    NOT NULL DEFAULT '',
+            note        TEXT    NOT NULL DEFAULT '',
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_serial_product  ON serial_no(product_id);
+        CREATE INDEX IF NOT EXISTS idx_serial_owner    ON serial_no(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_serial_status   ON serial_no(status);
+        CREATE INDEX IF NOT EXISTS idx_serial_batch    ON serial_no(batch_no);
+
+        CREATE TABLE IF NOT EXISTS serial_transaction (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            serial_id        INTEGER NOT NULL REFERENCES serial_no(id),
+            action           TEXT    NOT NULL,
+            from_status      TEXT    NOT NULL DEFAULT '',
+            to_status        TEXT    NOT NULL DEFAULT '',
+            ref_type         TEXT    NOT NULL DEFAULT 'manual',
+            ref_id           INTEGER,
+            from_location_id INTEGER,
+            to_location_id   INTEGER,
+            operator         TEXT    NOT NULL DEFAULT '',
+            note             TEXT    NOT NULL DEFAULT '',
+            occurred_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_serial_txn_serial ON serial_transaction(serial_id);
+        CREATE INDEX IF NOT EXISTS idx_serial_txn_time   ON serial_transaction(occurred_at);
+        """
+    )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -2066,6 +2114,7 @@ def init_db(path=None):
         _migrate_m41(conn)
         _migrate_m31(conn)
         _migrate_m32(conn)
+        _migrate_m33(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -2118,6 +2167,7 @@ else:
     from routes_print import print_bp  # noqa: E402  M41 打印模板 + PDF/预览
     from routes_fleet import fleet_bp  # noqa: E402  M31 司机/车辆主数据（编号后移补做）
     from routes_product_type import product_type_bp  # noqa: E402  M32 产品类型字典
+    from routes_serial import serial_bp  # noqa: E402  M33 序列号台账
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2152,3 +2202,4 @@ else:
     app.register_blueprint(print_bp)
     app.register_blueprint(fleet_bp)
     app.register_blueprint(product_type_bp)
+    app.register_blueprint(serial_bp)

@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>序列号台账 - MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>序列号台账</h1><div class="crumb">MiniWMS / 基础主数据 / 货品档案</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>序列号台账</h2>
+          <button class="btn" onclick="openCreate()">+ 登记序列号</button>
+        </div>
+        <div class="tabbar">
+          <button class="tab active" data-tab="list">台账列表</button>
+          <button class="tab" data-tab="stats">按货品统计</button>
+        </div>
+        <div class="panel" id="panel-list">
+          <div class="toolbar">
+            <input id="kw" placeholder="序列号/批次搜索">
+            <select id="statusFilter">
+              <option value="">全部状态</option>
+              <option value="in_stock">在库</option>
+              <option value="out">已出库</option>
+              <option value="frozen">冻结</option>
+              <option value="scrapped">报废</option>
+            </select>
+            <select id="productFilter">
+              <option value="">全部货品</option>
+            </select>
+            <button class="btn secondary" id="btnQuery" onclick="load()">查询</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>ID</th><th>序列号</th><th>货品</th><th>批次</th><th>状态</th>
+              <th>库位</th><th>归属货主</th><th>入库时间</th><th>出库时间</th><th>备注</th><th>操作</th></tr></thead>
+            <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+            <span id="pageInfo"></span>
+            <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+          </div>
+        </div>
+        <div class="panel" id="panel-stats" style="display:none">
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>货品</th><th>名称</th><th>台账总数</th><th>在库</th><th>已出库</th>
+              <th>冻结</th><th>报废</th><th>当前库存</th><th>待登记缺口</th></tr></thead>
+            <tbody id="statsBody"></tbody>
+            </table>
+          </div>
+          <div class="muted" style="margin-top:10px">
+            「待登记缺口」＝该货品当前库存 − 已在库台账数，仅为只读提示；序列号台账不写库存账。
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>使用说明</h2></div>
+        <div class="content" style="padding:4px 2px">
+          <ul class="muted" style="line-height:1.9;margin:0;padding-left:18px">
+            <li>台账与库存主账<b>解耦</b>：登记 / 出库 / 状态变更只写序列号档案与流水，
+              不改 <code>stock</code>、不写 <code>stock_movement</code>。</li>
+            <li>状态机：在库 → 已出库 / 冻结 / 报废；冻结 → 在库 / 报废；<b>报废是终态</b>。</li>
+            <li>每次状态迁移都留流水（前后状态、位置、单据来源、操作人、时间），详情里可查。</li>
+            <li>序列号<b>全系统唯一</b>；归属货主留空＝全系统台账，受限账号可见。</li>
+            <li>M33 <b>不接发货硬拦截</b>：出入库主流程保持不变，台账与单据目前是只读关联。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/modal.js"></script>
+    <script src="/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+let ownerOptions = [{ value: "", label: "（全系统台账，不绑定货主）" }];
+let ownerNames = {};
+let productOptions = [];
+let locationOptions = [];
+let dict = { statuses: [], transitions: {} };
+
+function statusLabel(code) {
+  const hit = (dict.statuses || []).find(s => s.code === code);
+  return hit ? hit.label : code;
+}
+
+function serialStatusTag(code) {
+  const cls = code === "in_stock" ? "ok" : (code === "frozen" ? "warn" : "muted");
+  return `<span class="tag ${cls}">${esc(statusLabel(code))}</span>`;
+}
+
+function fields() {
+  return [
+    { name: "serial_no", label: "序列号 *", required: true,
+      help: "全系统唯一；建议用设备 / 箱码的单件标识" },
+    { name: "product_id", label: "货品 *", type: "select", required: true,
+      options: productOptions.map(p => ({ value: p.id, label: p.sku + " · " + p.name })) },
+    { name: "batch_no", label: "批次号" },
+    { name: "location_id", label: "当前库位", type: "select", placeholder: "未指定库位",
+      options: locationOptions.map(l => ({ value: l.id, label: l.code })) },
+    { name: "owner_id", label: "归属货主", type: "select", nullable: true, options: ownerOptions,
+      help: "留空＝全系统台账；指定货主后仅该货主可见" },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+async function loadBase() {
+  try {
+    const d = await api("GET", "/api/serials/dict");
+    dict = d;
+  } catch (e) { /* 忽略 */ }
+  try {
+    const d = await api("GET", "/api/products?page_size=100");
+    productOptions = d.products || [];
+    const sel = document.getElementById("productFilter");
+    productOptions.forEach(p => sel.insertAdjacentHTML("beforeend",
+      `<option value="${p.id}">${esc(p.sku)} · ${esc(p.name)}</option>`));
+  } catch (e) { /* 忽略 */ }
+  try {
+    const d = await api("GET", "/api/locations?page_size=100");
+    locationOptions = d.locations || [];
+  } catch (e) { /* 忽略 */ }
+  try {
+    const d = await api("GET", "/api/owners?page_size=100");
+    ownerOptions.length = 0;
+    ownerOptions.push({ value: "", label: "（全系统台账，不绑定货主）" });
+    d.owners.forEach((o) => {
+      ownerOptions.push({ value: o.id, label: o.code + " · " + o.name });
+      ownerNames[o.id] = o.code + " · " + o.name;
+    });
+  } catch (e) { /* 忽略 */ }
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const pid = document.getElementById("productFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  if (pid) qs.set("product_id", pid);
+  try {
+    const data = await api("GET", "/api/serials?" + qs);
+    document.getElementById("tbody").innerHTML = data.serials.map((s) =>
+      `<tr>
+        <td>${s.id}</td>
+        <td><b>${esc(s.serial_no)}</b></td>
+        <td>${esc(s.product_code || "")} · ${esc(s.product_name || "")}</td>
+        <td>${esc(s.batch_no)}</td>
+        <td>${serialStatusTag(s.status)}</td>
+        <td>${s.location_id ? esc(locationName(s.location_id)) : '<span class="muted">—</span>'}</td>
+        <td>${s.owner_id
+          ? esc(ownerNames[s.owner_id] || ("#" + s.owner_id))
+          : '<span class="muted">全系统</span>'}</td>
+        <td>${esc(s.in_date)}</td>
+        <td>${esc(s.out_date) || '<span class="muted">—</span>'}</td>
+        <td>${esc(s.note)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="viewDetail(${s.id})">流水</button>
+          <button class="btn secondary sm" onclick="openEdit(${s.id})">编辑</button>
+          ${s.status === "in_stock"
+            ? `<button class="btn secondary sm" onclick="openOut(${s.id})">出库</button>` : ""}
+          ${s.status !== "scrapped" && s.status !== "out"
+            ? `<button class="btn secondary sm" onclick="openStatus(${s.id})">状态</button>` : ""}
+        </td>
+      </tr>`).join("");
+    document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+async function loadStats() {
+  try {
+    const d = await api("GET", "/api/serials/stats");
+    document.getElementById("statsBody").innerHTML = d.items.map((i) =>
+      `<tr>
+        <td>${esc(i.sku)}</td><td>${esc(i.name)}</td>
+        <td><b>${i.total}</b></td>
+        <td>${i.in_stock}</td><td>${i.out}</td><td>${i.frozen}</td><td>${i.scrapped}</td>
+        <td>${i.stock_qty}</td>
+        <td>${i.gap > 0 ? `<b style="color:#c0392b">${i.gap}</b>` : (i.gap < 0 ? i.gap : 0)}</td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "统计加载失败：" + e.message, "error");
+  }
+}
+
+function locationName(id) {
+  const hit = locationOptions.find(l => l.id === id);
+  return hit ? hit.code : ("#" + id);
+}
+
+function turn(d) { page += d; load(); }
+
+function openCreate() {
+  openForm({
+    title: "登记序列号", submitText: "创建", width: 700, fields: fields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/serials", p);
+      showMsg(document.getElementById("msg"), "登记成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/serials/" + id);
+  const s = data.serial;
+  const fs = fields().map(f => {
+    if (f.name === "serial_no") return { ...f, readonly: true };
+    return f;
+  });
+  openForm({
+    title: "编辑序列号", submitText: "保存", width: 700, fields: fs, values: s,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/serials/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+function openOut(id) {
+  openForm({
+    title: "序列号出库", submitText: "确认出库", width: 560,
+    fields: [
+      { name: "operator", label: "操作人" },
+      { name: "note", label: "备注", type: "textarea", full: true },
+    ],
+    onSubmit: async (p) => {
+      await api("POST", "/api/serials/" + id + "/outbound", p);
+      showMsg(document.getElementById("msg"), "已出库", "success");
+      load();
+    },
+  });
+}
+
+function openStatus(id) {
+  const options = (dict.transitions && dict.transitions.in_stock) || [];
+  openForm({
+    title: "变更状态", submitText: "保存", width: 560,
+    fields: [
+      { name: "status", label: "目标状态", type: "select", required: true,
+        options: options.map(c => ({ value: c, label: statusLabel(c) })) },
+      { name: "operator", label: "操作人" },
+      { name: "note", label: "备注", type: "textarea", full: true },
+    ],
+    onSubmit: async (p) => {
+      await api("POST", "/api/serials/" + id + "/status", p);
+      showMsg(document.getElementById("msg"), "状态已变更", "success");
+      load();
+    },
+  });
+}
+
+async function viewDetail(id) {
+  const data = await api("GET", "/api/serials/" + id);
+  const s = data.serial;
+  const lines = (s.transactions || []).map(t =>
+    `<tr><td>${esc(t.occurred_at)}</td><td>${esc(t.action_label || t.action)}</td>
+      <td>${esc(statusLabel(t.from_status) || "—")}</td>
+      <td>${esc(statusLabel(t.to_status) || "—")}</td>
+      <td>${esc(t.ref_type)}${t.ref_id ? " #" + t.ref_id : ""}</td>
+      <td>${esc(t.operator)}</td><td>${esc(t.note)}</td></tr>`).join("");
+  const html = `
+    <div style="padding:14px 18px">
+      <p><b>序列号</b>：${esc(s.serial_no)}　<b>货品</b>：${esc(s.product_code || "")} ${esc(s.product_name || "")}
+        　<b>批次</b>：${esc(s.batch_no) || "—"}　<b>状态</b>：${esc(statusLabel(s.status))}</p>
+      <table style="margin-top:8px">
+        <thead><tr><th>时间</th><th>动作</th><th>原状态</th><th>新状态</th><th>来源</th><th>操作人</th><th>备注</th></tr></thead>
+        <tbody>${lines || '<tr><td colspan="7" class="muted">暂无流水</td></tr>'}</tbody>
+      </table>
+    </div>`;
+  const ov = document.createElement("div");
+  ov.className = "overlay";
+  ov.innerHTML = `<div class="modal" style="max-width:960px"><div class="modal-head">
+      <h3>序列号流水</h3><button class="btn secondary sm" onclick="this.closest('.overlay').remove()">关闭</button>
+    </div><div class="modal-body">${html}</div></div>`;
+  document.body.appendChild(ov);
+}
+
+document.querySelectorAll(".tabbar .tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabbar .tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const t = btn.dataset.tab;
+    document.getElementById("panel-list").style.display = t === "list" ? "" : "none";
+    document.getElementById("panel-stats").style.display = t === "stats" ? "" : "none";
+    if (t === "stats") loadStats();
+  });
+});
+
+loadBase().then(load);
+</script>
+</body>
+</html>

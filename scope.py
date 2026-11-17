@@ -36,6 +36,8 @@ OWNER_SCOPED_TABLES = (
     "driver",                    # M31 司机（owner_id NULL＝全系统共享，查询 allow_null=True）
     "vehicle",                   # M31 车辆（同上）
     "product_type",              # M32 产品类型字典（NULL＝全局字典，查询 allow_null=True）
+    "serial_no",                 # M33 序列号台账（NULL＝全系统台账，查询 allow_null=True）
+    "serial_transaction",        # M33 序列号流水（经 serial_id 关联父档案继承隔离）
     # dn_review_line 不带 owner_id，通过 review_id 关联父单继承隔离
 )
 # 公共表：不按货主隔离（仓库靠选库隔离，布局/权限表属于控制面）

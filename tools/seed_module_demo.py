@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M31 / M32 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M31 / M32 / M33 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -853,6 +853,49 @@ def m32_product_type():
             f"演示类型被 {used} 个货品引用；本次挂载 {touched} 个货品")
 
 
+def m33_serial():
+    """M33 序列号台账：把一个演示货品标成序列号货品并登记台账（含出库与冻结）。"""
+    prods = raw("SELECT id, sku, name FROM product WHERE is_serial = 0 ORDER BY id LIMIT 1")
+    if not prods:
+        return "跳过：演示库没有可用的普通货品"
+    pid = prods[0]["id"]
+    # 先标记为序列号货品（台账的业务前提）
+    put("/api/products/" + str(pid), {"is_serial": 1})
+
+    owners = raw("SELECT id FROM owner ORDER BY id LIMIT 1")
+    ow = owners[0]["id"] if owners else None
+
+    plan = [
+        ("DEMO-M33-S1", "B-DEMO", ow, "in_stock", "在库（演示）"),
+        ("DEMO-M33-S2", "B-DEMO", ow, "in_stock", "在库（演示）"),
+        ("DEMO-M33-S3", "B-DEMO2", ow, "out", "已出库（演示）"),
+        ("DEMO-M33-S4", "B-DEMO2", ow, "frozen", "冻结（演示）"),
+        ("DEMO-M33-S5", "B-DEMO3", None, "in_stock", "全系统台账（演示）"),
+    ]
+    made = []
+    for no, batch, oid, target, note in plan:
+        if count("serial_no", "WHERE serial_no=?", (no,)):
+            continue
+        s = post("/api/serials", {"serial_no": no, "product_id": pid,
+                                  "batch_no": batch, "owner_id": oid,
+                                  "note": note})["serial"]
+        made.append(no)
+        if target != "in_stock":
+            if target == "out":
+                post("/api/serials/" + str(s["id"]) + "/outbound",
+                     {"operator": "demo", "note": "演示：已发货出库"})
+            else:
+                post("/api/serials/" + str(s["id"]) + "/status",
+                     {"status": target, "operator": "demo", "note": "演示：质量冻结"})
+
+    st = get("/api/serials/stats")
+    items = st["items"]
+    one = items[0] if items else {}
+    return (f"新增 {len(made)} 个序列号（其余已存在）；货品 {prods[0]['sku']} 已标记 is_serial=1；"
+            f"台账 {st['total']} 条 / 在库 {one.get('in_stock', 0)} / 已出库 {one.get('out', 0)}"
+            f" / 冻结 {one.get('frozen', 0)}；台账不写库存账")
+
+
 def m40_workload():
     """M40 是纯只读统计：复用 M17–M39 已写入的留痕，不新增业务数据。
 
@@ -910,6 +953,8 @@ def main_cli():
         ("driver 司机档案(M31)", "driver"),
         ("vehicle 车辆档案(M31)", "vehicle"),
         ("product_type 产品类型字典(M32)", "product_type"),
+        ("serial_no 序列号档案(M33)", "serial_no"),
+        ("serial_transaction 序列号流水(M33)", "serial_transaction"),
     ]
     if args.check:
         print(f"库：{DB}\n")
@@ -947,6 +992,7 @@ def main_cli():
     module("M41 打印模板只读验证", m41_print)
     module("M31 司机车辆主数据", m31_fleet)
     module("M32 产品类型字典", m32_product_type)
+    module("M33 序列号台账", m33_serial)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:
