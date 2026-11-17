@@ -28,7 +28,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>条码</th><th>品牌</th><th>规格</th><th>分类</th><th>货主</th><th>推荐储区</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>条码</th><th>品牌</th><th>规格</th><th>分类</th><th>产品类型</th><th>货主</th><th>推荐储区</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -49,6 +49,7 @@
 let page = 1, pageSize = 20;
 let ownerOptions = [{ value: "", label: "自营" }];
 let zones = [];
+let typeOptions = [];   // M32：产品类型字典（code → 显示名）
 
 // 体积：未手填但填了长宽高时，前端先做 cm³ 估算（后端为权威口径，会再算一次）
 function autoVolume(p) {
@@ -71,7 +72,10 @@ function productFields() {
     { name: "barcode", label: "主条码" },
     { name: "brand", label: "品牌" },
     { name: "spec", label: "规格型号" },
-    { name: "product_type", label: "产品类型" },
+    { name: "product_type", label: "产品类型", type: "select",
+      placeholder: "未指定产品类型",
+      options: typeOptions.map(t => ({ value: t.code, label: t.code + " · " + t.name })),
+      help: "取自产品类型字典（M32）；填字典外的值会自动建一行" },
     { name: "main_category", label: "产品主分类" },
     { name: "category_l1", label: "一级分类" },
     { name: "category_l2", label: "二级分类" },
@@ -128,6 +132,14 @@ async function loadZones() {
   } catch (e) { /* 忽略 */ }
 }
 
+// M32：产品类型字典（下拉取 code；字典外的文本仍会被后端自动建行）
+async function loadTypes() {
+  try {
+    const d = await api("GET", "/api/product-types?page=1&page_size=100");
+    typeOptions = d.product_types || [];
+  } catch (e) { typeOptions = []; }
+}
+
 async function load() {
   const kw = document.getElementById("kw").value.trim();
   const oid = document.getElementById("ownerFilter").value;
@@ -141,6 +153,9 @@ async function load() {
         <td>${p.id}</td><td>${esc(p.sku)}</td><td>${esc(p.name)}</td>
         <td>${esc(p.barcode)}</td><td>${esc(p.brand)}</td><td>${esc(p.spec)}</td>
         <td>${esc(p.category)}</td>
+        <td>${p.product_type
+          ? esc(p.product_type_name || p.product_type)
+          : '<span class="muted">—</span>'}</td>
         <td>${p.owner_code ? esc(p.owner_code + " · " + p.owner_name) : '<span class="muted">自营</span>'}</td>
         <td>${p.default_zone_name ? esc(p.default_zone_name) : '<span class="muted">—</span>'}</td>
         <td>${p.purchase_price}</td><td>${p.sale_price}</td>
@@ -409,7 +424,7 @@ async function del(id) {
   }
 }
 
-Promise.all([loadOwners(), loadZones()]).then(load);
+Promise.all([loadOwners(), loadZones(), loadTypes()]).then(load);
 </script>
 </body>
 </html>

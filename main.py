@@ -1296,6 +1296,46 @@ def _migrate_m31(conn):
     )
 
 
+def _migrate_m32(conn):
+    """M32 产品类型字典：独立主数据 + 货品改引用 + 老数据回填。
+
+    `product.product_type` 文本列继续存在，但语义升级为「引用 product_type.code」。
+    回填时**老文本原样当 code**，货品上的引用值一个字符都不改，
+    因此历史盘点方案维度、报表分组继续匹配（Q47）。
+    层级最多两级，父级不能再挂父级（Q46）；删除仍被引用则拒绝（Q48）。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS product_type (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            code        TEXT    NOT NULL UNIQUE,
+            name        TEXT    NOT NULL,
+            parent_id   INTEGER REFERENCES product_type(id),
+            sort_no     INTEGER NOT NULL DEFAULT 0,
+            status      TEXT    NOT NULL DEFAULT 'active',
+            owner_id    INTEGER REFERENCES owner(id),
+            note        TEXT    NOT NULL DEFAULT '',
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_type_parent ON product_type(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_product_type_owner  ON product_type(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_product_type_sort   ON product_type(sort_no);
+        CREATE INDEX IF NOT EXISTS idx_product_ref         ON product(product_type);
+        """
+    )
+    # 种子类型：策略包式不复活 —— 用户删掉的行重启不回来
+    for code, name, sort_no in C.PT_SEED_TYPES:
+        conn.execute(
+            "INSERT OR IGNORE INTO product_type (code, name, parent_id, sort_no,"
+            " status, owner_id, note) VALUES (?, ?, NULL, ?, ?, NULL, ?)",
+            (code, name, sort_no, C.PT_STATUS_ACTIVE, "M32 预置类型"),
+        )    # 老数据回填：货品上的历史自由文本 → 字典行（老文本即 code，取值不变）
+    import product_type_service as PTS
+    PTS.backfill_from_products(conn)
+    conn.commit()
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -2025,6 +2065,7 @@ def init_db(path=None):
         _migrate_m38(conn)
         _migrate_m41(conn)
         _migrate_m31(conn)
+        _migrate_m32(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -2076,6 +2117,7 @@ else:
     from routes_workload import workload_bp  # noqa: E402  M40 工作量统计（纯只读）
     from routes_print import print_bp  # noqa: E402  M41 打印模板 + PDF/预览
     from routes_fleet import fleet_bp  # noqa: E402  M31 司机/车辆主数据（编号后移补做）
+    from routes_product_type import product_type_bp  # noqa: E402  M32 产品类型字典
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2109,3 +2151,4 @@ else:
     app.register_blueprint(workload_bp)
     app.register_blueprint(print_bp)
     app.register_blueprint(fleet_bp)
+    app.register_blueprint(product_type_bp)

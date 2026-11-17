@@ -758,3 +758,37 @@ FLEET_PAGE_SIZE_MAX = 100
 FLEET_PERM_VIEW = "fleet:view"
 FLEET_PERM_CONFIG = "fleet:config"
 FLEET_PERMISSIONS = (FLEET_PERM_VIEW, FLEET_PERM_CONFIG)
+
+# ── M32 产品类型字典（第 1 层基础资料）────────────────────────────────────
+# 细节未拍板项登记 OPEN_QUESTIONS Q45–Q48，按下列默认实现，答复后以答复为准。
+PT_STATUS_ACTIVE = "active"
+PT_STATUS_INACTIVE = "inactive"
+PT_STATUSES = (PT_STATUS_ACTIVE, PT_STATUS_INACTIVE)
+PT_STATUS_LABELS = {PT_STATUS_ACTIVE: "启用", PT_STATUS_INACTIVE: "停用"}
+
+# 预置种子类型：M32 建表时幂等播种（用户删行不复活，与 M25 规则种子同口径）
+PT_SEED_TYPES = (
+    ("PT-FG", "成品", 10),
+    ("PT-BF", "半成品", 20),
+    ("PT-RM", "原料", 30),
+    ("PT-PK", "包装材料", 40),
+    ("PT-AX", "辅料", 50),
+    ("PT-SP", "备品备件", 60),
+    ("PT-CS", "耗材", 70),
+    ("PT-OT", "其他", 999),
+)
+
+PT_CODE_MAXLEN = 32
+PT_NAME_MAXLEN = 64
+PT_NOTE_MAXLEN = 200
+PT_PAGE_SIZE_DEFAULT = 20
+PT_PAGE_SIZE_MAX = 100
+
+# 引用一致性口径：删除字典行时若仍有货品引用则拒绝（不静默改写货品）
+PT_DELETE_BLOCKED_CODE = "PT_IN_USE"
+PT_DELETE_BLOCKED_MSG = "该产品类型仍被货品引用，请先调整货品的产品类型"
+
+# 权限码：只落常量不挂装饰器（Q08 口径延续）
+PT_PERM_VIEW = "product_type:view"
+PT_PERM_CONFIG = "product_type:config"
+PT_PERMISSIONS = (PT_PERM_VIEW, PT_PERM_CONFIG)

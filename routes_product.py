@@ -9,6 +9,7 @@ import sqlite3
 import scope as S
 from flask import Blueprint, jsonify, request
 
+import product_type_service as PTS
 from main import get_db, request_payload
 
 product_bp = Blueprint("product", __name__, url_prefix="/api/products")
@@ -206,6 +207,11 @@ def _row_to_dict(row, db=None):
         if o is not None:
             d["owner_code"] = o["code"]
             d["owner_name"] = o["name"]
+    # M32：产品类型改为引用字典 code，这里补显示名；查不到字典时回落原值
+    if db is not None:
+        name, known = PTS.resolve_name(db, d.get("product_type"))
+        d["product_type_name"] = name
+        d["product_type_known"] = known
     return d
 
 
@@ -269,7 +275,8 @@ def create_product():
         "category_l2": cleaned.get("category_l2", ""),
         "category_l3": cleaned.get("category_l3", ""),
         "category_l4": cleaned.get("category_l4", ""),
-        "product_type": cleaned.get("product_type", ""),
+        "product_type": PTS.ensure_type(db, cleaned.get("product_type", ""),
+                                        owner_id=cleaned.get("owner_id")),
         "origin": cleaned.get("origin", ""),
         "business_scope": cleaned.get("business_scope", ""),
         "reg_cert_no": cleaned.get("reg_cert_no", ""),
@@ -415,6 +422,15 @@ def update_product(product_id):
 
     set_sql = ", ".join(f"{k} = :{k}" for k in cleaned)
     cleaned["id"] = product_id
+    # M32：产品类型改引用字典 —— 未命中字典则自动建行（继承该货品的归属）
+    if "product_type" in cleaned:
+        owner_ref = cleaned.get("owner_id")
+        if owner_ref is None:
+            owner_ref = db.execute(
+                "SELECT owner_id FROM product WHERE id = ?", (product_id,)
+            ).fetchone()["owner_id"]
+        cleaned["product_type"] = PTS.ensure_type(db, cleaned["product_type"],
+                                                  owner_id=owner_ref)
     db.execute(
         f"UPDATE product SET {set_sql}, updated_at = datetime('now', 'localtime') WHERE id = :id",
         cleaned,

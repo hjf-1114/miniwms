@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M31 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M31 / M32 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -814,6 +814,45 @@ def m31_fleet():
             f"分级 {stats}；只读预警不接派工、不改库存")
 
 
+def m32_product_type():
+    """M32 产品类型字典：播种两级类型树，并把演示货品的类型指向字典。"""
+    owners = raw("SELECT id FROM owner ORDER BY id LIMIT 1")
+    if not owners:
+        return "跳过：演示库没有货主"
+    ow = owners[0]["id"]
+
+    made = []
+    # 顶层类型 + 子类型（两级），码 DEMO- 前缀便于幂等判定
+    top = ("DEMO-M32-T1", "成品（演示）", 100, None)
+    sub = ("DEMO-M32-S1", "瓶装成品（演示）", 110, "DEMO-M32-T1")
+    for code, name, sort_no, parent_code in (top, sub):
+        if count("product_type", "WHERE code=?", (code,)):
+            continue
+        parent_id = None
+        if parent_code:
+            rows = raw("SELECT id FROM product_type WHERE code=?", (parent_code,))
+            parent_id = rows[0]["id"] if rows else None
+        post("/api/product-types", {"code": code, "name": name,
+                                    "sort_no": sort_no, "parent_id": parent_id,
+                                    "owner_id": None,
+                                    "note": "M32 演示类型（全局字典）"})
+        made.append(code)
+
+    # 给演示货品挂上类型（引用字典 code，不改库存）
+    prods = raw("SELECT id, sku FROM product ORDER BY id LIMIT 3")
+    touched = 0
+    for i, p in enumerate(prods):
+        if count("product_type", "WHERE code=?", (top[0],)) and \
+           not raw("SELECT id FROM product WHERE id=? AND product_type<>''", (p["id"],)):
+            put("/api/products/" + str(p["id"]), {"product_type": top[0]})
+            touched += 1
+    lst = get("/api/product-types?page_size=100")
+    refs = get("/api/product-types/refs")["refs"]
+    used = sum(n for c, n in refs.items() if c.startswith("DEMO-"))
+    return (f"新增 {len(made)} 个类型（其余已存在）；字典共 {lst['total']} 项，"
+            f"演示类型被 {used} 个货品引用；本次挂载 {touched} 个货品")
+
+
 def m40_workload():
     """M40 是纯只读统计：复用 M17–M39 已写入的留痕，不新增业务数据。
 
@@ -870,6 +909,7 @@ def main_cli():
         ("print_template 打印模板(M41)", "print_template"),
         ("driver 司机档案(M31)", "driver"),
         ("vehicle 车辆档案(M31)", "vehicle"),
+        ("product_type 产品类型字典(M32)", "product_type"),
     ]
     if args.check:
         print(f"库：{DB}\n")
@@ -906,6 +946,7 @@ def main_cli():
     module("M40 工作量统计只读验证", m40_workload)
     module("M41 打印模板只读验证", m41_print)
     module("M31 司机车辆主数据", m31_fleet)
+    module("M32 产品类型字典", m32_product_type)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:
