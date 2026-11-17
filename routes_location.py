@@ -347,7 +347,8 @@ def list_location_groups():
 
 @location_bp.route("/<int:location_id>", methods=["GET"])
 def get_location(location_id):
-    row = get_db().execute("SELECT * FROM location WHERE id = ?", (location_id,)).fetchone()
+    db = get_db()
+    row = db.execute("SELECT * FROM location WHERE id = ?", (location_id,)).fetchone()
     if row is None:
         return jsonify({"ok": False, "error": "库位不存在"}), 404
     return jsonify({"ok": True, "location": _row_to_dict(row, db)})

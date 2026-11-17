@@ -29,6 +29,7 @@ BASE = ""
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 ISSUES = []
 DEEP = False
+ROWS = False
 
 
 def note(kind, page, detail):
@@ -48,7 +49,9 @@ def http(method, path, payload=None, expect=(200, 201)):
         if e.code not in expect:
             raise RuntimeError(f"{method} {path} → HTTP {e.code}: {str(body)[:200]}")
         return body
-    except Exception:
+    except Exception as e:
+        # 不要静默吞掉异常：否则「种子数据没造上」会表现成后续莫名其妙的 400
+        print(f"  [请求异常] {method} {path} → {type(e).__name__}: {str(e)[:160]}")
         return {}
 
 
@@ -58,10 +61,13 @@ def wait_ready(proc, timeout=30):
         if proc.poll() is not None:
             raise RuntimeError("Flask 进程提前退出")
         try:
-            http("GET", "/api/owners?page_size=1")
-            return True
+            probe = http("GET", "/api/owners?page_size=1")
+            # 必须拿到真实响应才算就绪（http() 会把连接失败吞成 {}）
+            if probe.get("ok") is True:
+                return True
         except Exception:
-            time.sleep(0.4)
+            pass
+        time.sleep(0.4)
     raise RuntimeError("服务启动超时")
 
 
@@ -135,6 +141,14 @@ def fill_and_submit(pg, page):
     填法：select 取第一个非空选项；文本填 AUDIT；数字填 1；日期填今天；
     textarea 填 AUDIT。目的是把**必填缺失**排除掉，让后端校验真正跑起来。
     """
+    # 动态明细行：先点「+ 添加一行 / + 添加」把行加出来，否则必填的明细填不上
+    try:
+        add = pg.get_by_role("button", name=re.compile(r"^\+\s*添加"))
+        if add.count():
+            add.first.click(timeout=3000)
+            pg.wait_for_timeout(400)
+    except Exception:
+        pass
     pg.evaluate("""() => {
       const scope = document.querySelector('.modal-overlay .modal') || document;
       const today = new Date().toISOString().slice(0, 10);
@@ -143,7 +157,13 @@ def fill_and_submit(pg, page):
         const opt = Array.from(s.options).find(o => o.value !== '' && o.textContent.trim());
         if (opt) { s.value = opt.value; s.dispatchEvent(new Event('change', {bubbles:true})); }
       });
-      scope.querySelectorAll('input[required], textarea[required]').forEach(i => {
+      // 覆盖两类必填：带 required/name 的标准表单字段，
+      // 以及库存调整这类「动态明细行」用 class 标记的输入框
+      const inputs = scope.querySelectorAll(
+        'input[required], textarea[required], input[name], textarea[name], input.f-delta, input.f-owner, input.f-product, input.f-loc');
+      inputs.forEach(i => {
+        if (i.type === 'hidden') return;
+        if (i.value && String(i.value).trim()) return;   // 已有值不覆盖
         if (i.type === 'number') i.value = '1';
         else if (i.type === 'date') i.value = today;
         else if (i.type === 'email') i.value = 'audit@example.com';
@@ -239,11 +259,82 @@ def audit_deep(page, browser, api_fail):
     pg.close()
 
 
+
+# ── 行操作巡检：点表格第一行的每个按钮，看是否报错 ──────────────────────
+
+def audit_rows(page, browser):
+    """遍历表格第一行的所有操作按钮，逐个点击并收集错误。
+
+    行操作（编辑 / 启停 / 删除 / 审核 / 分配 …）是**状态机缺陷的高发区**，
+    既有 E2E 只覆盖了各里程碑的重点按钮，没有全页面覆盖。
+    每个按钮点击前重新加载页面，避免前一个操作的状态污染判断。
+    """
+    from playwright.sync_api import sync_playwright
+    try:
+        pg0 = browser.new_page()
+        pg0.goto(BASE + "/" + page, wait_until="networkidle")
+        pg0.wait_for_timeout(600)
+        n = pg0.evaluate("""() => {
+          const tb = document.querySelector('table');
+          if (!tb) return 0;
+          const tr = tb.querySelector('tbody tr');
+          if (!tr) return 0;
+          return tr.querySelectorAll('button.btn').length;
+        }""")
+        pg0.close()
+    except Exception:
+        return
+    if not n:
+        return
+    for idx in range(n):
+        errors, responses = [], []
+        pg = browser.new_page()
+        pg.on("pageerror", lambda e: errors.append("pageerror: " + str(e)))
+        pg.on("response", lambda r: responses.append((r.status, r.url))
+              if "/api/" in r.url and r.status >= 400 else None)
+        try:
+            pg.goto(BASE + "/" + page, wait_until="networkidle")
+            pg.wait_for_timeout(600)
+            btn = pg.locator("table tbody tr").first.locator("button.btn").nth(idx)
+            if btn.count() == 0:
+                pg.close()
+                continue
+            label = (btn.inner_text() or "").strip()[:12]
+            try:
+                btn.click(timeout=4000)
+            except Exception as e:
+                note("行操作点击失败", page, f"#{idx} {label} → {str(e)[:100]}")
+                pg.close()
+                continue
+            pg.wait_for_timeout(800)
+            # 确认弹窗：接受
+            try:
+                if pg.locator(".modal-overlay .modal").count():
+                    pg.locator(".modal-overlay .modal-foot button.btn").first.click(timeout=3000)
+                    pg.wait_for_timeout(600)
+            except Exception:
+                pass
+            for status, url in responses:
+                if status >= 500:
+                    note("行操作服务端错误", page, f"{label} → {status} {url}")
+                elif status >= 400:
+                    note("行操作被拒", page, f"{label} → {status} {url}")
+            for e in list(errors):
+                note("行操作 JS 错误", page, f"{label} → {e[:180]}")
+        finally:
+            try:
+                pg.close()
+            except Exception:
+                pass
+
+
 # 页面路径 → 需要先造的数据（通过真实 API）
 def seed():
     """造足够的演示数据，让「下拉为空」不再是因为缺数据造成的噪声。"""
     ow = http("POST", "/api/owners", {"code": "AUDIT-OW", "name": "巡检货主"})
     oid = ow.get("owner", {}).get("id")
+    if not oid:
+        raise RuntimeError(f"巡检种子创建货主失败：{str(ow)[:200]}")
     http("POST", "/api/products", {"sku": "AUDIT-P1", "name": "巡检物料", "owner_id": oid})
     wh = http("POST", "/api/warehouses", {"code": "AUDIT-WH", "name": "巡检仓库"})
     wid = wh.get("warehouse", {}).get("id")
@@ -391,6 +482,10 @@ def run(port, keep):
                 print("\n--- 深度巡检（填必填项 → 提交）---")
                 for page, _btn in PAGE_BUTTONS:
                     audit_deep(page, browser, None)
+            if ROWS:
+                print("\n--- 行操作巡检（点第一行的每个按钮）---")
+                for page, _btn in PAGE_BUTTONS:
+                    audit_rows(page, browser)
     finally:
         if browser:
             try:
@@ -418,6 +513,8 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--deep", action="store_true", help="额外做「填必填项 → 提交」的深度巡检")
+    ap.add_argument("--rows", action="store_true", help="额外做「行操作」巡检（逐个点第一行的按钮）")
     a = ap.parse_args()
     globals()["DEEP"] = a.deep
+    globals()["ROWS"] = a.rows
     sys.exit(run(a.port, a.keep))

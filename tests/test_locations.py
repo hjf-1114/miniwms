@@ -189,6 +189,27 @@ class LocationApiTest(unittest.TestCase):
         g_total = self.client.get("/api/locations?location_group=G").get_json()["total"]
         self.assertEqual(g_total, 2)
 
+    def test_detail_endpoint_returns_200(self):
+        """库位详情端点必须 200。
+
+        回归锁：M20-A 起 `get_location()` 用了未定义的 `db`（`_row_to_dict(row, db)`），
+        运行时 NameError → 500，**编辑弹窗（靠详情回填）因此一直不可用**，
+        直到 M32 的前端巡检工具逐个点「编辑」才暴露。此用例锁住该路径。
+        """
+        loc = self._create(code="DETAIL-1", name="详情库位").get_json()["location"]
+        lid = loc["id"]
+        r = self.client.get(f"/api/locations/{lid}")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:200])
+        d = r.get_json()["location"]
+        self.assertEqual(d["code"], "DETAIL-1")
+        # 详情要带出关联展示字段（前端列表与弹窗都读它们）
+        self.assertIn("location_group_name", d)
+        self.assertIn("location_group_known", d)
+        self.assertIn("effective_mix", d)
+        # 不存在的库位仍应 404 而不是 500
+        miss = self.client.get("/api/locations/999999")
+        self.assertEqual(miss.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
