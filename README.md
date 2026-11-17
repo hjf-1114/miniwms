@@ -292,7 +292,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 > 本轮先交付 M25 后端，**M26 编辑器页面另起提交**。
 
 - **三张表**（`main.py::_migrate_m25()`，幂等、老库零迁移）：`putaway_rule_set`（策略包，
-  货主+仓库精确 > 仓库默认 > 系统默认）、`putaway_rule`（规则行，13 维 `condition` /
+  货主+仓库精确 > 仓库默认 > 系统默认）、`putaway_rule`（规则行，14 维 `condition` /
   `steps` fallback 链 / `limits` 硬约束 / `score` 权重 / `priority` / `enabled` / `rule_type`）、
   `putaway_recommendation`（推荐日志，供 M26 统计命中率与驳回率）。
 - **规则引擎**（`putaway_rules.py`）：按 `priority` 升序第一行命中即停；fallback 链按步骤
@@ -327,7 +327,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 > 多规则增删改排序、试算面板可用、改位必填原因码、E2E 覆盖推荐 → 采纳 → 上架。
 
 - **编辑器页** `web_app/putaway_rules.html`（三级导航 23 → 24 页，路径「仓储作业 → 入库单据与作业 → 上架规则配置」）：
-  策略包切换 / 新建 / 删除、规则类型（上架 / 出库）切换、**13 维条件组**（布尔维度是/否、多值逗号分隔、留空通配）、
+  策略包切换 / 新建 / 删除、规则类型（上架 / 出库）切换、**14 维条件组**（布尔维度是/否、多值逗号分隔、留空通配）、
   fallback 链增删与上下移（附加参数保留原 JSON）、8 项 limits 三态勾选、9 条 R07–R15 扩展评分权重、
   行拖拽与 ↑/↓ 排序、规则行增删改与启停、只读条件组试算面板。
 - **后端增量**（`routes_putaway_rules.py` / `putaway_rules.py` / `main.py::_migrate_m26()`）：
@@ -558,7 +558,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
   全量 unittest **622/622**、历史 E2E M41 / M40 / M39 / M38 / M37 / M36 / M35 复跑全绿；
   I1/I2/I3 一致，字典操作对库存四表零副作用。
 - **边界**：不拆 `product` 表加外键列（避免两套真值源）；编码全局唯一（跨货主同名共用一行）；
-  产品类型暂不参与上架规则引擎的 13 维条件组。
+  产品类型已接入上架规则引擎（条件组第 14 维，取值是产品类型字典编码）。
 
 ### M33 序列号台账（2026-11-17 里程碑 ✅）
 
@@ -750,7 +750,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | POST | `/api/inventory-transfers/<id>/unallocate` | M24 取消分配（对称释放，回 draft） |
 | POST | `/api/inventory-transfers/<id>/approve` | M24 审核生效（净零成对流水 + 变更文档，`approved` 终态） |
 | POST | `/api/inventory-transfers/<id>/close`、`/delete`、`/reverse` | M24 关闭空单 / 删除空单 / 生成冲销单（反向 draft 仍需分配 + 审核） |
-| GET | `/api/putaway-rule-types` | M25 编辑器数据字典：2 类 `rule_type` / 13 维条件 / 9 种寻址 / 8 项 limits / 9 条评分 |
+| GET | `/api/putaway-rule-types` | M25 编辑器数据字典：2 类 `rule_type` / 14 维条件 / 9 种寻址 / 8 项 limits / 9 条评分 |
 | GET/POST | `/api/putaway-rule-sets` | M25 策略包列表 / 新建 |
 | PUT | `/api/putaway-rule-sets/<id>` | M25 修改策略包 |
 | GET/POST | `/api/putaway-rules` | M25 规则行列表（可按 `set_id` / `rule_type` 过滤）/ 新建；校验条件维度与寻址类型 |
