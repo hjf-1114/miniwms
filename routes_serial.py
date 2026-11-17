@@ -41,6 +41,22 @@ def stats():
     return jsonify({"ok": True, **data})
 
 
+@serial_bp.get("/stats/batch")
+def stats_batch():
+    """批量取多个货品的台账摘要（货品列表页一次拿当前页，避免 N+1 查询）。
+
+    参数 ``product_ids`` 用英文逗号分隔的货品 ID 列表。
+    """
+    db = get_db()
+    raw = request.args.get("product_ids") or ""
+    ids = [x for x in raw.split(",") if x.strip()]
+    try:
+        data = SS.stats_batch(db, ids)
+    except SS.SerialError as e:
+        return _error(e)
+    return jsonify({"ok": True, "stats": {str(k): v for k, v in data.items()}})
+
+
 @serial_bp.route("", methods=["GET"])
 def list_serials():
     db = get_db()

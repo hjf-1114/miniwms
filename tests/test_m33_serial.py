@@ -223,15 +223,18 @@ class M33SerialTest(unittest.TestCase):
         self.assertEqual(item["stock_qty"], 0)
         self.assertEqual(item["gap"], -1)
 
-    def test_15_product_summary(self):
+    def test_15_stats_batch(self):
+        """批量台账统计（货品页一次拿当前页，避免 N+1 查询）。"""
         self._serial("M33-PS")
         with main.app.test_request_context():
             g.scope = {"owner_all": True, "owner_ids": []}
-            s = SS.product_summary(main.get_db(), self.product)
-            self.assertEqual(s["total"], 1)
-            self.assertEqual(s["in_stock"], 1)
-            s2 = SS.product_summary(main.get_db(), self.plain)
-            self.assertEqual(s2["total"], 0)
+            data = SS.stats_batch(main.get_db(), [self.product, self.plain])
+            self.assertEqual(data[self.product]["total"], 1)
+            self.assertEqual(data[self.product]["in_stock"], 1)
+            # 没有台账的货品不出现在结果里（调用方按缺省值渲染）
+            self.assertNotIn(self.plain, data)
+            # 非法 id 被忽略，不报错
+            self.assertEqual(SS.stats_batch(main.get_db(), ["x", "0", -1]), {})
 
     def test_16_detail_includes_transactions(self):
         s = self._serial("M33-DET")

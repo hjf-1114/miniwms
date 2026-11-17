@@ -445,12 +445,32 @@ def stats(db, args):
             "total": sum(i["total"] for i in agg.values())}
 
 
-def product_summary(db, product_id):
-    """单个货品的台账摘要（货品页联动用，只读）。"""
-    item = stats(db, {"product_id": str(product_id)})
-    rows = item["items"]
-    if not rows:
-        return {"product_id": int(product_id), "total": 0, "in_stock": 0,
-                "out": 0, "frozen": 0, "scrapped": 0, "stock_qty": 0, "gap": 0,
-                "sku": "", "name": ""}
-    return rows[0]
+def stats_batch(db, product_ids):
+    """批量取多个货品的台账摘要（货品列表页一次拿当前页，避免 N+1 查询）。
+
+    返回 ``{product_id: 摘要}``；没有台账的货品不出现在结果里（由调用方按缺省值渲染）。
+    """
+    ids = []
+    for raw in product_ids or []:
+        try:
+            rid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if rid > 0 and rid not in ids:
+            ids.append(rid)
+    if not ids:
+        return {}
+    ph = ",".join("?" for _ in ids)
+    rows = db.execute(
+        f"SELECT product_id, status, COUNT(*) AS n FROM serial_no"
+        f" WHERE product_id IN ({ph}) GROUP BY product_id, status", ids,
+    ).fetchall()
+    out = {}
+    for r in rows:
+        item = out.setdefault(r["product_id"], {
+            "product_id": r["product_id"], "total": 0, "in_stock": 0,
+            "out": 0, "frozen": 0, "scrapped": 0,
+        })
+        item[r["status"]] = r["n"]
+        item["total"] += r["n"]
+    return out

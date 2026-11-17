@@ -32,26 +32,6 @@ class StockError(Exception):
     """库存操作失败（数量不足/库位不可用等），由路由层转成 4xx 响应。"""
 
 
-def ensure_stock_schema(db):
-    """确保 stock 表存在并具备 allocated_qty 列（M3 建表，M4 加列）。"""
-    db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS stock (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id      INTEGER NOT NULL REFERENCES owner(id),
-            product_id    INTEGER NOT NULL REFERENCES product(id),
-            location_id   INTEGER NOT NULL REFERENCES location(id),
-            qty           REAL    NOT NULL DEFAULT 0,
-            allocated_qty REAL    NOT NULL DEFAULT 0,
-            updated_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-            UNIQUE(owner_id, product_id, location_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_stock_location ON stock(location_id);
-        CREATE INDEX IF NOT EXISTS idx_stock_owner ON stock(owner_id);
-        """
-    )
-
-
 def legacy_dims(operator=""):
     """兜底维度：可追溯到具体批次时必须显式传 batches，否则统一归到占位明细。
 

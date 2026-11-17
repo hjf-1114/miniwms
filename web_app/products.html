@@ -28,7 +28,7 @@
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>条码</th><th>品牌</th><th>规格</th><th>分类</th><th>产品类型</th><th>货主</th><th>推荐储区</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>条码</th><th>品牌</th><th>规格</th><th>分类</th><th>产品类型</th><th>序列号台账</th><th>货主</th><th>推荐储区</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -148,14 +148,28 @@ async function load() {
   if (oid) qs.set("owner_id", oid);
   try {
     const data = await api("GET", "/api/products?" + qs);
-    document.getElementById("tbody").innerHTML = data.products.map((p) =>
-      `<tr>
+    // M33：一次批量取本页货品的序列号台账统计（避免每行一次请求）
+    let serialStats = {};
+    try {
+      const ids = data.products.map((p) => p.id).join(",");
+      if (ids) {
+        const sd = await api("GET", "/api/serials/stats/batch?product_ids=" + ids);
+        serialStats = sd.stats || {};
+      }
+    } catch (e) { serialStats = {}; }
+    document.getElementById("tbody").innerHTML = data.products.map((p) => {
+      return `<tr>
         <td>${p.id}</td><td>${esc(p.sku)}</td><td>${esc(p.name)}</td>
         <td>${esc(p.barcode)}</td><td>${esc(p.brand)}</td><td>${esc(p.spec)}</td>
         <td>${esc(p.category)}</td>
         <td>${p.product_type
           ? esc(p.product_type_name || p.product_type)
           : '<span class="muted">—</span>'}</td>
+        <td>${(() => {
+          const s = serialStats[p.id];
+          if (!s || !s.total) return '<span class="muted">—</span>';
+          return `<span title="台账 ${s.total} 件">${s.in_stock}/${s.total}</span>`;
+        })()}</td>
         <td>${p.owner_code ? esc(p.owner_code + " · " + p.owner_name) : '<span class="muted">自营</span>'}</td>
         <td>${p.default_zone_name ? esc(p.default_zone_name) : '<span class="muted">—</span>'}</td>
         <td>${p.purchase_price}</td><td>${p.sale_price}</td>
@@ -167,7 +181,7 @@ async function load() {
           <button class="btn secondary sm" onclick="manageProductAttrs(${p.id})">条码/包装</button>
           <button class="btn danger sm" onclick="del(${p.id})">删除</button>
         </td>
-      </tr>`).join("");
+      </tr>`;}).join("");
     document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
     document.getElementById("prevBtn").disabled = page <= 1;
     document.getElementById("nextBtn").disabled = page * pageSize >= data.total;

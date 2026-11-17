@@ -429,15 +429,6 @@ def filter_location(db, loc, info, limits, occ, qty, for_post=False):
 
 
 # ── 9 条评分（只用于同一步骤内候选排序） ─────────────────────────────────
-def _default_weights():
-    """v3.3 §10.4 九条评分的**建议权重**（供 M26 编辑器展示）。
-
-    默认不叠加到推荐结果上：规则行 score 显式配置才启用，避免 M25 上线
-    就改变 M20 已验证的排序口径（老测试与演示数据都依赖它）。
-    """
-    return {k: v[1] for k, v in C.PUTAWAY_SCORE_RULES.items()}
-
-
 def _extension_hit(rule, db, loc, info, occ, used):
     """R07–R15 命中判定；取不到数据的规则一律返回 False（不臆造分数）。"""
     held = occ["stock"].get(loc["id"], [])
