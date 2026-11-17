@@ -72,6 +72,10 @@
 | Q50 | 序列号状态机怎么定？报废后还能复活吗？ | M33 状态机 | 四态：在库 / 已出库 / 冻结 / 报废；允许 在库→已出库·冻结·报废、冻结→在库·报废；**报废是终态**，不可再流转；非法流转 400 `SERIAL_BAD_TRANSITION` | 待答复（M33 已按默认落地） |
 | Q51 | 序列号要不要与 ASN 收货 / DN 发货强制绑定校验？ | M33 与单据关系 | M33 **不接发货硬拦截**：出入库主流程完全不变，序列号只做**手工台账 + 与单据的只读关联**（流水可记 `ref_type=asn/dn` + `ref_id`）；原因是为序列号硬拦截会推翻 M1–M41 已稳定的库存链路 | 待答复（M33 已按默认落地） |
 | Q52 | 序列号数量要不要参与库存计算？台账与库存账怎么对齐？ | M33 与库存关系 | **不参与**：序列号台账独立于 `stock` 主账，登记/出库/状态变更**不写 `stock`、不写 `stock_movement`**；只提供只读「待登记缺口」＝当前库存 − 在库台账数，供人工核对，不做任何自动对齐 | 待答复（M33 已按默认落地） |
+| Q53 | 货位组按货主隔离还是仓库布局控制面？唯一范围？ | M34 归属与唯一键 | 货位组属**仓库布局控制面**（与 `zone` / `location` 一致），**不按货主隔离**；`code` 全系统唯一；归属仓库 / 储区为可空外键（`warehouse_id` / `zone_id`） | 待答复（M34 已按默认落地） |
+| Q54 | 组级混放标志与容积是「默认提示」还是「强制覆盖」库位自身的值？ | M34 组级属性口径 | **默认提示**：库位自身的 `allow_mix_*` 优先，组级值只作兜底与展示；容积 / 重量上限（0＝不限）同样只登记在组上，**不参与上架过账判定**，不覆盖 M20/M25 已有的混放规则引擎口径 | 待答复（M34 已按默认落地） |
+| Q55 | 库位上的历史分组文本怎么迁移？改引用会不会打断历史盘点方案？ | M34 老数据回填 | **老文本原样当字典 code**，库位取值一个字符都不改；迁移 `main._migrate_m34()` 自动回填，另有 `backfill_from_locations()` 可重复执行 | 待答复（M34 已按默认落地） |
+| Q56 | 盘点方案的 `location_group` 维度在 M34 后按什么取值？ | M34 盘点维度口径 | 改为 **「优先取真实货位组（`l.location_group`），为空回落 `l.zone` 文本」**：存量库位（分组非空）的老方案取值仍能命中，空分组的库位沿用旧口径，历史方案零失配 | 待答复（M34 已按默认落地） |
 
 ## 三、M35 落地复核（2026-11-13）
 
@@ -190,6 +194,18 @@
 | Q50 状态机 | `constants.SERIAL_TRANSITIONS` / `serial_service.change_status()` / `outbound()` | 四态 + 终态；单测覆盖 在库→出库、冻结↔在库、报废后三种流转全被拒、重复出库被拒、目标状态相同被拒；非法流转统一 400 `SERIAL_BAD_TRANSITION` |
 | Q51 与单据关系 | `serial_service.outbound()` 的 `ref_type` / `ref_id` / `constants.SERIAL_REF_TYPES` | 出库流水可记 `asn` / `dn` / `manual` 来源与单据 id；**不改 ASN/DN 收发主流程**；`/api/serials/dict` 显式声明 `dn_binding=false`；E2E 验证台账操作后 stock 四表不变 |
 | Q52 与库存关系 | `serial_service.stats()` 的 `stock_qty` / `gap` | 台账不写 `stock` / `stock_movement`；只读统计出「当前库存 − 在库台账数」的待登记缺口；单测与 E2E 均验证四表计数前后一致、I1/I2/I3 一致 |
+
+## 三·续 M34 落地复核（2026-11-17）
+
+> 按「不明确的先登记、明确的一直做」，M34 已按上表 Q53–Q56「当前默认」全部落地，
+> **没有中途打断用户**。以下是实现与登记的对照，便于统一答复时逐条比对。
+
+| 登记项 | 落地位置 | 实测 |
+|---|---|---|
+| Q53 归属与唯一键 | `main._migrate_m34()` / `location_group_service.list_records()` / `constants.LOC_GROUP_*` | 仓库布局控制面，**不注入货主条件**（`scope.PUBLIC_TABLES` 口径，`location_group` 未进 `OWNER_SCOPED_TABLES`）；`code` 全局唯一；归属仓库 / 储区为可空外键，单测验证不存在的 warehouse_id / zone_id 返回 400 |
+| Q54 组级属性口径 | `constants.LOC_GROUP_MIX_FIELDS` / `location_group_service._validate()` | 组级混放三档与容积 / 重量上限只登记在组上；**不参与上架过账判定**，不覆盖库位自身 `allow_mix_*` 与 M25 规则引擎口径；`0` 表示不限（`volume_unlimited` / `weight_unlimited` 标记） |
+| Q55 老数据回填 | `main._migrate_m34()` / `location_group_service.backfill_from_locations()` | 老文本原样当 code，库位取值一个字符不改；单测验证「老分组文本 → 建行后库位仍为老分组文本」；库位建档 / 编辑时未命中的分组自动建行（`ensure_group()`） |
+| Q56 盘点维度口径 | `stocktake_service.SCOPE_COLUMNS["location_group"]` | 改为 `COALESCE(NULLIF(l.location_group, ''), l.zone)`：优先真实货位组、为空回落 zone 文本；单测断言 SQL 表达式；历史盘点方案取值口径不变 |
 
 ## 四、登记约定
 

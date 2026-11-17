@@ -1,6 +1,6 @@
 # MiniWMS PRD 素材库（回溯 M1–M20 · 逐页详细记录）
 
-> 版本 **v1.11** · 2026-11-17 · 状态：**回溯进行中**（第 1 批 2 页；M21 起追加页已续编至 #38）。
+> 版本 **v1.12** · 2026-11-17 · 状态：**回溯进行中**（第 1 批 2 页；M21 起追加页已续编至 #39）。
 > v0.2 时点原文见 §5 变更日志，历史版本与历史章节一律保留用于追溯。
 > v0.2 时点原文见 §5 变更日志，历史版本与历史章节一律保留用于追溯。
 > **定位**：后续生成完整 PRD 的**唯一素材来源**。每页按 `docs/PRD_TEMPLATE.md` 的 11 项模板详细记录，
@@ -40,7 +40,7 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 
 | 层 | 已交付页面 | 缺口（后续里程碑） |
 |---|---|---|
-| ① 基础资料 | 货主、物料、库位、客户、供应商、承运商、仓库、储区、批次、司机、车辆、产品类型、序列号 | 货位组 M34 |
+| ① 基础资料 | 货主、物料、库位、客户、供应商、承运商、仓库、储区、批次、司机、车辆、产品类型、序列号、货位组 | 基础资料新域 M31–M34 已收口 |
 | ② 仓储作业 | 收货、验收作业、上架作业、出库、移库、盘点、库存账 | 库存转移 M24 / 调整单 M22 / 波次 FEFO M35 / 复核 M36 / 养护 M37 / 拆单合单 M38 |
 | ③ 用户角色 | 角色、用户 | 作业节点级细粒度权限（细节层再定） |
 | ④ 报表 | 库存账（只读查询） | 经营报表 M28 / GSP 报表 M39 / 工作量统计 M40 |
@@ -105,6 +105,7 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 | 36 | M31 追加页 | 车辆管理 | `vehicles.html` | M31 | **已记录** | §15（文件末尾增量章） |
 | 37 | M32 追加页 | 产品类型字典 | `product_types.html` | M32 | **已记录** | §16（文件末尾增量章） |
 | 38 | M33 追加页 | 序列号台账 | `serials.html` | M33 | **已记录** | §17（文件末尾增量章） |
+| 39 | M34 追加页 | 货位组主数据 | `location_groups.html` | M34 | **已记录** | §18（文件末尾增量章） |
 
 > **追加页计数说明（v0.6）**：#1–#21 是用户规格 2A 定义的「回溯 M1–M20」固定范围，
 > 分母恒为 21；M21 起新增页面按规格「随里程碑逐次追加」续编，**不计入回溯分母**。
@@ -180,6 +181,12 @@ M20 引入储区、温区、库位混放策略与上架货位推荐，解决「�
 > **2/21（回溯）+ 17/17（#22–#38 追加页）**，回溯分母仍恒为 21。§1 原有 21 行与
 > #22–#37 原行一律不改；§16 第 7 点「下一棒 M33–M34」是 v1.10 时点事实，保留追溯，
 > 已由本次 §17 覆盖（M33 已交付，下一棒 M34）。
+>
+> **追加页计数说明（v1.12 增量，不覆盖上方 v0.6 / v0.9 / v1.1–v1.11 原文）**：M34 新增
+> **一张**独立页面 `location_groups.html`，按规格续编 **#39**，因此当前逐页记录进度更新为
+> **2/21（回溯）+ 18/18（#22–#39 追加页）**，回溯分母仍恒为 21。§1 原有 21 行与
+> #22–#38 原行一律不改；§17 第 7 点「下一棒 M34 货位组主数据」是 v1.11 时点事实，
+> 保留追溯，已由本次 §18 覆盖（**基础资料新域 M31–M34 收口**，下一棒 M28 经营报表）。
 
 ---
 
@@ -3128,3 +3135,106 @@ python tools/seed_module_demo.py           # 幂等补演示数据，不覆盖�
 6. 权限码 `SERIAL_PERM_VIEW / SERIAL_PERM_CONFIG` 只落常量、未挂装饰器（Q08 口径延续）。
 7. `docs/OPEN_QUESTIONS.md` Q01–Q52 待统一答复；PRD 回溯 #3–#21 共 19 页仍另起独立提交；
    下一棒 M34 货位组主数据。
+
+---
+
+## 18. M34 追加页 #39：货位组主数据（`location_groups.html`）（2026-11-17 追加）
+
+> 本章为 v1.12 增量章。按「增量追加不重写」原则，§1–§17 全部历史原文保留；
+> §17 第 7 点「下一棒 M34 货位组主数据」是 v1.11 时点事实，保留追溯，以本章为准。
+> 取证自当前代码，不把蓝图规划写成现状。
+> **至此基础资料新域 M31–M34 全部收口。**
+
+### 18.1 [业务] 页面用途与使用场景
+
+库位上的「货位组」原先只是一个手工填写的文本框（建库位留空时按编码前缀自动生成），
+既没有拣货顺序，也没有组级容量与混放口径。M34 把它升级为**独立主数据**：
+- **货位组主数据页**（#39）：维护货位组及其**拣货顺序**、**容积 / 重量上限**、
+  三档混放默认与归属仓库 / 储区；每组显示名下库位数，避免误删正在用的组。
+- **拣货顺序视图**：按 `pick_seq` 排序列出货位组与组内库位，拣货可按组走
+  （当前为只读视图，不改 M35 的 FEFO 分配算法）。
+
+老数据不迁移取值：**历史分组文本原样当字典编码**，库位上的值一个字符都不改，
+历史盘点方案维度继续匹配（Q55–Q56）。
+
+### 18.2 [功能] 页面行为
+
+1. 两个 tab：**货位组列表**（按 `pick_seq` 升序，20 条分页，关键词 / 状态 / 仓库筛选）
+   与**拣货顺序**（按组分卡片列出组内库位）。
+2. 列表列：ID、编码、名称、仓库、储区、拣货顺序、容积(cm³)、重量(kg)、
+   混放(品/批/主)、库位数、状态、备注。
+3. 新建 / 编辑弹窗字段：编码 *、名称 *、所属仓库、所属储区、拣货顺序、
+   容积上限、重量上限、三档混放、状态、备注；容积 / 重量填 0 表示不限。
+4. 表格操作含编辑、启停、删除；删除需二次确认；仍被库位引用时后端拒绝并返回
+   `LOC_GROUP_IN_USE`，页面顶部消息区提示「该货位组仍被库位引用，请先调整库位的货位组」。
+5. 页面底部「使用说明」卡写明引用口径、老数据回填、默认提示、删除保护、
+   不按货主隔离五条口径。
+6. 导航在「基础主数据 / 仓储布局」下新增「货位组」页（36→37 页）。
+
+### 18.3 [实现] 代码落点
+
+- 迁移 `main._migrate_m34()`：新表 `location_group`（编码 UNIQUE / 名称 /
+  可空 `warehouse_id`·`zone_id` / `pick_seq` / `capacity_volume`·`capacity_weight` /
+  三档混放 / 状态 / 备注 / 时间戳）+ 4 索引；末尾调
+  `location_group_service.backfill_from_locations(conn)` 做老数据回填。
+- 服务层 `location_group_service.py`：
+  `_validate()` 字段校验、`_check_unique()` 编码唯一、`ensure_group()` 自动建行、
+  `backfill_from_locations()` 老数据回填、`create()` / `update()` / `delete()`
+  （被库位引用拒绝 `LOC_GROUP_IN_USE`）、`list_records()`（含 `location_count`）、
+  `pick_order()`（按 `pick_seq` 的组 + 组内库位视图）、`resolve_name()`。
+- 路由 `routes_location_group.py`：`location_group_bp` 7 端点，
+  `LocationGroupError → 400`；无库存写端点。
+- 库位侧 `routes_location.py`：写入时改走 `LGS.ensure_group()`（自动建行并继承
+  该库位的仓库 / 储区）；`_row_to_dict()` 追加 `location_group_name` /
+  `location_group_known`；`/api/locations/groups` 改读字典表并并入字典外历史取值。
+- 盘点维度 `stocktake_service.SCOPE_COLUMNS["location_group"]`：
+  `COALESCE(NULLIF(l.location_group, ''), l.zone)`（Q56）。
+- 常量 `constants.py`：`LOC_GROUP_*` 状态 / 混放字段 / 长度 / 分页 /
+  `LOC_GROUP_CAPACITY_UNLIMITED` / `LOC_GROUP_PERM_*`；权限码只落常量未挂装饰器。
+- 前端 `web_app/location_groups.html`（零依赖，含拣货顺序 tab）；
+  `web_app/js/layout.js` 导航 36→37 页。
+- 演示 `tools/seed_module_demo.py::m34_location_group()`：给前 3 个组补上
+  拣货顺序 / 容积 / 重量 / 混放默认。
+
+### 18.4 API 端点（单列）
+
+| 方法 | 路径 | 说明 | 关键参数 |
+|---|---|---|---|
+| GET | `/api/location-groups/dict` | 字典（状态 / 混放字段 / 容积语义 + 不按货主隔离声明） | — |
+| GET | `/api/location-groups/pick-order` | 拣货顺序视图（组 + 组内库位，只读） | warehouse_id |
+| GET | `/api/location-groups` | 列表（含 location_count） | keyword / status / warehouse_id / page / page_size |
+| POST | `/api/location-groups` | 新建（201） | code / name / warehouse_id / zone_id / pick_seq / capacity_volume / capacity_weight / 三档混放 / status / note |
+| GET | `/api/location-groups/<id>` | 详情（含所属库位） | — |
+| PUT | `/api/location-groups/<id>` | 编辑（可部分） | 同上 |
+| DELETE | `/api/location-groups/<id>` | 删除（被库位引用时 400） | — |
+
+### 18.5 数据模型（单列）
+
+| 表 | 用途 | 关键字段 |
+|---|---|---|
+| `location_group`（**M34 新增**） | 货位组主数据 | code(UNIQUE，全局) / name / warehouse_id(可空) / zone_id(可空) / pick_seq / capacity_volume(cm³，0=不限) / capacity_weight(kg，0=不限) / allow_mix_product·batch·owner / status / note |
+| `location`（既有，M34 改语义） | 库位主数据 | `location_group` 仍是 TEXT 列，语义由「自由文本」升级为「引用 location_group.code」 |
+
+`location` 表结构**未改动**；老数据回填时**老文本即 code**，库位取值不变（Q55）。
+
+### 18.6 演示数据 / 验收
+
+- 本地库播种后 `location_group` 5 行（由老库位分组文本回填 + 属性更新），
+  拣货顺序视图覆盖 9 个库位；`--check` 两核对 OK，重跑不重复插入。
+- 验收：M34 单测 **18/18**、真实 Chrome E2E `tools/e2e_m34.py` **37/37**、
+  全量 unittest **661/661**、历史 E2E M33 34/34 + M32 48/48 + M31 44/44 + M40 36/36 +
+  M39 34/34 + M38 29/29 + M37 30/30 + M36 26/26 + M35 27/27 + M26 23/23；
+  E2E 验证七端点、库位自动建组、引用保护提示、弹窗 CRUD、拣货顺序 tab、
+  stock/movement/adjustment/stock_batch 四表不变 + I1/I2/I3 一致。
+
+### 18.7 已知边界（如实记录，不把规划写成现状）
+
+1. **拣货顺序未接入出库分配**：M35 的 FEFO / 波次分配仍按既有规则跑，
+   `pick_order()` 只是只读视图。
+2. 组级混放与容积 / 重量**不参与上架过账判定**，也不做库存占用校验；
+   库位自身的 `allow_mix_*` 优先。
+3. 货位组**不按货主隔离**（与储区 / 库位一致，属仓库布局控制面）。
+4. `location` 表未拆 `location_group_id` 外键列，引用靠 code 文本关联。
+5. 权限码 `LOC_GROUP_PERM_VIEW / LOC_GROUP_PERM_CONFIG` 只落常量、未挂装饰器（Q08 口径延续）。
+6. `docs/OPEN_QUESTIONS.md` Q01–Q56 待统一答复；PRD 回溯 #3–#21 共 19 页仍另起独立提交；
+   **基础资料新域 M31–M34 已收口**，下一棒 M28 经营报表。
