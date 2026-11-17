@@ -69,6 +69,19 @@ def _role_out(db, rid):
     return d
 
 
+@user_bp.route("/permissions", methods=["GET"])
+@require_permission("user:manage")
+def list_permissions():
+    """权限码目录（带分组与中文标签），供角色页做勾选式配置。
+
+    目录只是**可选项清单**，不改变任何路由的鉴权行为（Q08 口径延续）：
+    当前真正挂 ``@require_permission`` 的只有 ``user:manage``。
+    附带岗位角色模板，前端可一键套用。
+    """
+    import permission_catalog as PC
+    return jsonify(ok=True, **PC.dictionary(), templates=PC.ROLE_TEMPLATES)
+
+
 @user_bp.route("/roles", methods=["GET"])
 @require_permission("user:manage")
 def list_roles():

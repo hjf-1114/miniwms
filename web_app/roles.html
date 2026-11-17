@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>角色管理 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
+<style>
+.perm-groups { max-height: 46vh; overflow-y: auto; }
+.perm-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg); }
+.perm-group-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.perm-group-name { font-size: 12.5px; font-weight: 700; }
+.perm-group-sub { font-size: 11.5px; color: var(--muted); }
+.perm-items { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.perm-item { display: flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
+.perm-item input { width: auto; margin: 0; }
+.perm-tpl { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.perm-tpl button { font-size: 12px; padding: 4px 10px; }
+.perm-count { font-size: 11.5px; color: var(--muted); }
+</style>
 </head>
 <body>
 <div class="app">
@@ -16,21 +29,25 @@
     </header>
     <div class="content">
       <div id="msg" class="msg"></div>
-  <div class="card">
-    <div class="card-head">
-      <h2>角色列表</h2>
-      <button class="btn" onclick="openCreate()">+ 新建角色</button>
-    </div>
-    <div class="table-wrap">
-      <table>
-      <thead><tr><th>ID</th><th>角色名</th><th>权限</th><th>用户数</th><th>操作</th></tr></thead>
-      <tbody id="tbody"></tbody>
-    </table>
+      <div class="card">
+        <div class="card-head">
+          <h2>角色列表</h2>
+          <button class="btn" onclick="openCreate()">+ 新建角色</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+          <thead><tr><th>ID</th><th>角色名</th><th>权限</th><th>用户数</th><th>操作</th></tr></thead>
+          <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="muted text-sm" style="margin-top:10px">
+          权限码目录共 <b id="codeTotal">–</b> 项 / <b id="groupTotal">–</b> 个分组。
+          勾选采用「资源:动作」形式，<code>资源:*</code> 表示该资源整组通配，<code>*</code> 表示全部权限。
+        </div>
+      </div>
     </div>
   </div>
 </div>
-      </div>
-    </div>
 
     <script src="/js/api.js"></script>
     <script src="/js/modal.js"></script>
@@ -38,11 +55,23 @@
 <script>
 requireLogin();
 
-const FIELDS = [
-  { name: "name", label: "角色名 *", required: true },
-  { name: "permissions", label: "权限（JSON 数组，如 [\"product:read\",\"product:write\"]，管理员用 [\"*\"]）",
-    type: "textarea", full: true },
-];
+/** 权限目录（GET /api/permissions）与岗位模板 */
+let PERM = { groups: [], codes: [], templates: [] };
+
+/** 权限码是否命中：精确码或资源级通配（资源:*）都算命中 */
+function permHit(perms, code) {
+  if (!code) return false;
+  if (perms.indexOf(code) >= 0) return true;
+  const res = code.split(":")[0];
+  return perms.indexOf(res + ":*") >= 0 || perms.indexOf("*") >= 0;
+}
+
+async function loadCatalog() {
+  const d = await api("GET", "/api/permissions");
+  PERM = d;
+  document.getElementById("codeTotal").textContent = (d.codes || []).length;
+  document.getElementById("groupTotal").textContent = (d.groups || []).length;
+}
 
 async function load() {
   try {
@@ -51,7 +80,7 @@ async function load() {
       `<tr>
         <td>${r.id}</td>
         <td>${esc(r.name)}</td>
-        <td><code class="muted">${esc(JSON.stringify(r.permissions))}</code></td>
+        <td><code class="muted">${esc(permsBrief(r.permissions))}</code></td>
         <td>${r.user_count}</td>
         <td>
           <button class="btn secondary sm" onclick="openEdit(${r.id})">编辑</button>
@@ -63,31 +92,156 @@ async function load() {
   }
 }
 
-function openCreate() {
-  openForm({
-    title: "新建角色", submitText: "创建", fields: FIELDS, width: 560,
+/** 权限清单摘要：超过 4 项显示前 4 项 + 「等 N 项」 */
+function permsBrief(perms) {
+  if (!perms || !perms.length) return "（无）";
+  if (perms.length <= 4) return perms.join("  ");
+  return perms.slice(0, 4).join("  ") + `  等 ${perms.length} 项`;
+}
+
+/** 渲染勾选面板（按分组），返回 {html, collect} */
+function buildPermPanel(current) {
+  const cur = current || [];
+  const groups = PERM.groups || [];
+  const byGroup = {};
+  groups.forEach((g) => { byGroup[g.name] = []; });
+
+  let html = '<div class="perm-tpl"><span class="muted" style="font-size:12px;align-self:center">套用岗位模板：</span>';
+  (PERM.templates || []).forEach((t, i) => {
+    html += `<button type="button" class="btn secondary" data-tpl="${i}">${esc(t.name)}</button>`;
+  });
+  html += '<button type="button" class="btn secondary" data-tpl="__all">全选</button>' +
+          '<button type="button" class="btn secondary" data-tpl="__none">清空</button>' +
+          '<span class="perm-count" id="permCount"></span></div>';
+
+  html += '<div class="perm-groups">';
+  groups.forEach((g) => {
+    html += `<div class="perm-group" data-gname="${esc(g.name)}">
+      <div class="perm-group-head">
+        <span class="perm-group-name">${esc(g.name)}</span>
+        <span class="perm-group-sub">${esc(g.label)}</span>
+      </div>
+      <div class="perm-items">`;
+    g.items.forEach((it) => {
+      const checked = permHit(cur, it.code) ? " checked" : "";
+      html += `<label class="perm-item"><input type="checkbox" data-code="${esc(it.code)}"${checked}>` +
+              `<span>${esc(it.label)}</span></label>`;
+    });
+    html += "</div></div>";
+  });
+  html += "</div>";
+
+  return { html: html, byGroup: byGroup };
+}
+
+/** 收集面板勾选 → 权限码数组（含通配归并） */
+function collectPerms(root) {
+  const picked = Array.from(root.querySelectorAll("[data-code]:checked"))
+    .map((x) => x.getAttribute("data-code"));
+  // 若某资源的所有具体码都被勾上，就归并成「资源:*」，清单更干净
+  const byRes = {};
+  (PERM.groups || []).forEach((g) => {
+    byRes[g.resource] = (byRes[g.resource] || []).concat(
+      g.items.filter((it) => !it.wildcard).map((it) => it.code));
+  });
+  const out = [];
+  Object.keys(byRes).forEach((res) => {
+    const all = byRes[res];
+    const hit = all.filter((c) => picked.indexOf(c) >= 0);
+    if (all.length && hit.length === all.length) out.push(res + ":*");
+    else out.push.apply(out, hit);
+  });
+  // 通配项与其它不在资源清单里的码（例如 user:manage 之类）原样保留
+  picked.forEach((c) => {
+    const res = c.split(":")[0];
+    const known = Object.keys(byRes).indexOf(res) >= 0;
+    const isWild = (PERM.groups || []).some((g) => g.items.some((it) => it.wildcard && it.code === c));
+    if (!known || isWild) {
+      if (out.indexOf(c) < 0 && c.slice(-2) !== ":*") out.push(c);
+    }
+  });
+  return out;
+}
+
+function updateCount(root) {
+  const n = root.querySelectorAll("[data-code]:checked").length;
+  const el = root.querySelector("#permCount");
+  if (el) el.textContent = `已勾选 ${n} 项`;
+}
+
+/**
+ * 打开角色表单（新建 / 编辑共用）。
+ * @param {number|null} id 传入 id 为编辑，否则新建
+ * @param {object} preset 预填（编辑时为现有角色）
+ */
+function openRoleForm(id, preset) {
+  const isEdit = !!id;
+  const cur = preset ? (preset.permissions || []) : [];
+  const panel = buildPermPanel(cur);
+
+  const ov = openForm({
+    title: isEdit ? "编辑角色 · " + preset.name : "新建角色",
+    submitText: isEdit ? "保存" : "创建", width: 760,
+    fields: [{ name: "name", label: "角色名 *", required: true }],
+    values: { name: preset ? preset.name : "" },
     onSubmit: async (p) => {
-      if (typeof p.permissions === "string") p.permissions = JSON.parse(p.permissions);
-      await api("POST", "/api/roles", p);
-      showMsg(document.getElementById("msg"), "创建成功", "success");
+      const perms = collectPerms(ov);
+      const body = { name: p.name, permissions: perms };
+      if (isEdit) await api("PUT", "/api/roles/" + id, body);
+      else await api("POST", "/api/roles", body);
+      showMsg(document.getElementById("msg"), isEdit ? "已保存" : "创建成功", "success");
       load();
     },
   });
+
+  const form = ov.querySelector("#modalForm");
+  const block = document.createElement("div");
+  block.className = "full";
+  block.innerHTML = panel.html;
+  // 权限区放到「保存 / 取消」之前
+  form.insertBefore(block, form.querySelector(".modal-foot"));
+
+  updateCount(ov);
+
+  // 模板按钮：套用即勾选对应码
+  block.querySelectorAll("[data-tpl]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.getAttribute("data-tpl");
+      let codes = [];
+      if (key === "__all") codes = (PERM.codes || []).slice();
+      else if (key === "__none") codes = [];
+      else {
+        const tpl = (PERM.templates || [])[Number(key)];
+        codes = tpl ? (tpl.permissions || []) : [];
+        if (tpl && tpl.permissions && tpl.permissions.indexOf("*") >= 0) {
+          // 「系统管理员」模板：勾全部具体码即可，等价于 *
+          codes = (PERM.codes || []).slice();
+        }
+      }
+      ov.querySelectorAll("[data-code]").forEach((c) => {
+        const code = c.getAttribute("data-code");
+        const res = code.split(":")[0];
+        const on = codes.indexOf(code) >= 0 ||
+                   codes.indexOf(res + ":*") >= 0 ||
+                   codes.indexOf("*") >= 0;
+        c.checked = on;
+      });
+      updateCount(ov);
+    });
+  });
+
+  ov.querySelectorAll("[data-code]").forEach((c) => {
+    c.addEventListener("change", () => updateCount(ov));
+  });
+}
+
+function openCreate() {
+  openRoleForm(null, null);
 }
 
 async function openEdit(id) {
   const data = await api("GET", "/api/roles/" + id);
-  const r = data.role;
-  openForm({
-    title: "编辑角色", submitText: "保存", fields: FIELDS, width: 560,
-    values: { name: r.name, permissions: JSON.stringify(r.permissions, null, 0) },
-    onSubmit: async (p) => {
-      if (typeof p.permissions === "string") p.permissions = JSON.parse(p.permissions);
-      await api("PUT", "/api/roles/" + id, p);
-      showMsg(document.getElementById("msg"), "已保存", "success");
-      load();
-    },
-  });
+  openRoleForm(id, data.role);
 }
 
 async function del(id) {
@@ -101,7 +255,7 @@ async function del(id) {
   }
 }
 
-load();
+loadCatalog().then(load);
 </script>
 </body>
 </html>
