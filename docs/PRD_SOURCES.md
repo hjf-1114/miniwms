@@ -2633,8 +2633,10 @@ M22 做了关键修正：**差异不再直接改账**，而是生成**库存调�
    「解冻结案」→ `closed`。
 2. **方案实际只有三类**：`stocktake_plan.scope_type` 为 `full` / `partial` / `dynamic`；
    「盲盘」是**正交维度** `blind_mode`：`none` / `hide_book` / `hide_diff`。
-   方案默认 `blind_mode = hide_book`、`dynamic_baseline = last_closed`、
-   `lookback_days = 7`、`auto_adjust = 0`、`include_zero = 0`。
+   代码层面的方案默认值（`stocktake_service.effective_config()`）为
+   `scope_type = full`、`blind_mode = none`（**明盘**）、`dynamic_baseline = last_closed`、
+   `lookback_days = 7`、`auto_adjust = 0`、`include_zero = 0`；
+   演示库的四个方案是**显式设为 `hide_book`**（盲盘）并各自配了不同的 `lookback_days`。
    **页面的方案下拉只映射 `scope_type`，未显示盲盘标签**（如实记录）。
 3. **冻结生成行**：`collect_lines()` 按生效配置生成行，并把范围写入
    `stocktake.scope_snapshot`（方案后改不影响历史单）；`full` 从 `stock` 取数；
