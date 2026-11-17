@@ -870,3 +870,27 @@ LOC_GROUP_CAPACITY_UNLIMITED = 0
 LOC_GROUP_PERM_VIEW = "location_group:view"
 LOC_GROUP_PERM_CONFIG = "location_group:config"
 LOC_GROUP_PERMISSIONS = (LOC_GROUP_PERM_VIEW, LOC_GROUP_PERM_CONFIG)
+
+# ── M28 经营报表（第 4 层报表，编号保留本轮插入）──────────────────────────
+# 细节未拍板项登记 OPEN_QUESTIONS Q57–Q60，按下列默认实现，答复后以答复为准。
+# 成本口径：默认用**采购价**（成本视角），货品未填采购价时按 0 计并标注（Q57）。
+OP_REPORT_COST_FIELD = "purchase_price"
+OP_REPORT_COST_FIELD_LABELS = {"purchase_price": "采购价", "sale_price": "销售价"}
+
+# 库位间转移类流水：只搬运、不进出仓库，**不计入收发汇总**，
+# 否则上架 / 移库会让收货量翻倍（Q57）。
+OP_REPORT_TRANSFER_REF_TYPES = (
+    "asn_putaway_in", "asn_putaway_out",
+    "move_in", "move_out",
+    "it_transfer",
+)
+
+OP_REPORT_PERIODS = ("day", "week", "month")
+OP_REPORT_DEFAULT_DAYS = 30
+
+# 库位利用率维度（Q59）
+OP_REPORT_UTIL_DIMENSIONS = ("warehouse", "zone", "location_group", "all")
+
+# 权限码：只落常量不挂装饰器（Q08 口径延续）
+OP_REPORT_PERM_VIEW = "operation_report:view"
+OP_REPORT_PERMISSIONS = (OP_REPORT_PERM_VIEW,)

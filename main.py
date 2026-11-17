@@ -2207,6 +2207,7 @@ else:
     from routes_product_type import product_type_bp  # noqa: E402  M32 产品类型字典
     from routes_serial import serial_bp  # noqa: E402  M33 序列号台账
     from routes_location_group import location_group_bp  # noqa: E402  M34 货位组主数据
+    from routes_operation_report import operation_report_bp  # noqa: E402  M28 经营报表
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2243,3 +2244,4 @@ else:
     app.register_blueprint(product_type_bp)
     app.register_blueprint(serial_bp)
     app.register_blueprint(location_group_bp)
+    app.register_blueprint(operation_report_bp)

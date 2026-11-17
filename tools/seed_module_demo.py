@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M31 / M32 / M33 / M34 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M28 / M31 / M32 / M33 / M34 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -922,6 +922,25 @@ def m34_location_group():
             f"拣货顺序视图覆盖库位 {locs} 个；库位取值不变、不写库存账")
 
 
+def m28_operation_report():
+    """M28 经营报表：给演示货品补价格（让周转率有数）+ 只读验证三张报表。"""
+    # 1) 前 5 个演示货品补采购价 / 销售价（只改价格，不动库存数量）
+    priced = 0
+    for p in raw("SELECT id, sku FROM product WHERE sku LIKE 'SKU-%' ORDER BY id LIMIT 5"):
+        put("/api/products/" + str(p["id"]),
+            {"purchase_price": 12.5 + priced * 2.5, "sale_price": 20 + priced * 3})
+        priced += 1
+    # 2) 只读验证三张报表
+    io = get("/api/operation-report/io-summary?period=month")
+    tv = get("/api/operation-report/turnover?period=month")
+    lu = get("/api/operation-report/location-utilization?dimension=all")
+    ov = get("/api/operation-report/overview?period=month")
+    return (f"补价 {priced} 个货品；近 30 天入库 {io['total']['in_qty']} / 出库 {io['total']['out_qty']}；"
+            f"周转次数 {tv['total_turn_count']}（成本口径 {tv['cost_field']}，缺价行 {tv['no_price_items']}）；"
+            f"库位利用率 {lu['used_locations']}/{lu['total_locations']} = "
+            f"{lu['utilization'] * 100:.1f}%；报表只读不改库存")
+
+
 def m40_workload():
     """M40 是纯只读统计：复用 M17–M39 已写入的留痕，不新增业务数据。
 
@@ -1021,6 +1040,7 @@ def main_cli():
     module("M32 产品类型字典", m32_product_type)
     module("M33 序列号台账", m33_serial)
     module("M34 货位组主数据", m34_location_group)
+    module("M28 经营报表", m28_operation_report)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:
