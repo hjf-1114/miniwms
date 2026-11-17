@@ -1,4 +1,4 @@
-"""给 M17 / M20 / M21–M26 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
+"""给 M17 / M20 / M21–M26 / M31 / M35–M41 新增模块补充演示数据（幂等、通过真实 API 写入）。
 
 背景：`tools/seed_demo.py` 只播种 M1–M20 基础主数据与「收货上架→拣货发货」动线，
 M21 起的库存调整单 / 盘点方案 / 库存转移单 / 移库单 / 货主仓库格子 / 风险放行日志 /
@@ -768,6 +768,52 @@ def m41_print():
             f"PDF 按需用系统 Chrome headless 生成，不预置打印快照")
 
 
+def m31_fleet():
+    """司机 / 车辆主数据：幂等播种共享 + 货主专属两类档案与三类证照效期。"""
+    owners = raw("SELECT id FROM owner ORDER BY id LIMIT 1")
+    carriers = raw("SELECT id FROM carrier ORDER BY id LIMIT 1")
+    if not owners:
+        return "跳过：演示库没有货主"
+    ow = owners[0]["id"]
+    car = carriers[0]["id"] if carriers else None
+    today = datetime.date.today()
+
+    def d(offset):
+        return (today + datetime.timedelta(days=offset)).isoformat() if offset is not None else ""
+
+    drivers = [
+        ("DEMO-M31-D1", "王师傅", "M31LIC001", d(-5), ow, car, "驾驶证已过期（只读预警）"),
+        ("DEMO-M31-D2", "李师傅", "M31LIC002", d(12), ow, car, "驾驶证临近到期"),
+        ("DEMO-M31-D3", "共享司机", "M31LIC003", d(180), None, None, "全系统共享运力"),
+    ]
+    vehicles = [
+        ("DEMO-M31-V1", "沪M31111", d(9), d(120), ow, car, "厢式货车 / 保险临近到期"),
+        ("DEMO-M31-V2", "沪M32222", d(-3), d(-8), ow, car, "冷藏车 / 两证已过期"),
+        ("DEMO-M31-V3", "沪M33333", "", "", None, None, "全系统共享车辆"),
+    ]
+    made = []
+    for code, name, lic, exp, oid, cid, note in drivers:
+        if count("driver", "WHERE code=?", (code,)):
+            continue
+        post("/api/drivers", {"code": code, "name": name, "license_no": lic,
+                              "license_expiry": exp, "owner_id": oid,
+                              "carrier_id": cid, "note": note})
+        made.append(code)
+    for code, plate, ins, trans, oid, cid, note in vehicles:
+        if count("vehicle", "WHERE code=?", (code,)):
+            continue
+        post("/api/vehicles", {"code": code, "plate_no": plate,
+                               "vehicle_type": "冷藏车" if "冷藏" in note else "厢式货车",
+                               "max_load_kg": 1200 if "厢式" in note else 800,
+                               "insurance_expiry": ins, "transport_expiry": trans,
+                               "owner_id": oid, "carrier_id": cid, "note": note})
+        made.append(code)
+    rep = get("/api/fleet/expiry")
+    stats = {s["level"]: s["count"] for s in rep["stats"]}
+    return (f"新增 {len(made)} 条运力档案（其余已存在）；证照 {rep['total']} 条，"
+            f"分级 {stats}；只读预警不接派工、不改库存")
+
+
 def m40_workload():
     """M40 是纯只读统计：复用 M17–M39 已写入的留痕，不新增业务数据。
 
@@ -822,6 +868,8 @@ def main_cli():
         ("stocktake 盘点单", "stocktake"),
         ("stock_batch 批次明细(M21)", "stock_batch"),
         ("print_template 打印模板(M41)", "print_template"),
+        ("driver 司机档案(M31)", "driver"),
+        ("vehicle 车辆档案(M31)", "vehicle"),
     ]
     if args.check:
         print(f"库：{DB}\n")
@@ -857,6 +905,7 @@ def main_cli():
     module("M39 GSP 合规报表演示数据", m39_gsp)
     module("M40 工作量统计只读验证", m40_workload)
     module("M41 打印模板只读验证", m41_print)
+    module("M31 司机车辆主数据", m31_fleet)
 
     print("── 执行结果 ──")
     for name, status, detail in RESULTS:

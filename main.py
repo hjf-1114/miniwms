@@ -39,6 +39,9 @@ RESOURCE_OWNER_TABLES = {
     "customers": ("customer", "owner_id", False),
     "suppliers": ("supplier", "owner_id", False),
     "carriers": ("carrier", "owner_id", True),
+    # M31 司机 / 车辆：owner_id NULL＝全系统共享，按 ID 访问同样受货主守门
+    "drivers": ("driver", "owner_id", True),
+    "vehicles": ("vehicle", "owner_id", True),
     "asns": ("asn", "owner_id", False),
     "dns": ("dn", "owner_id", False),
     "transfers": ("transfer", "owner_id", False),
@@ -1240,6 +1243,59 @@ def _migrate_m41(conn):
     seed_templates(conn)
 
 
+def _migrate_m31(conn):
+    """M31 司机与车辆主数据：两张独立表，均按货主隔离（NULL＝全系统共享）。
+
+    承运商关联用 carrier_id（可空），一名司机/一辆车最多挂一个承运商（Q42）；
+    证照效期只存日期字段，预警由 fleet_service 只读计算，不做硬拦截（Q43）。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS driver (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code            TEXT    NOT NULL UNIQUE,
+            name            TEXT    NOT NULL,
+            phone           TEXT    NOT NULL DEFAULT '',
+            id_no           TEXT    NOT NULL DEFAULT '',
+            license_no      TEXT    NOT NULL DEFAULT '',
+            license_type    TEXT    NOT NULL DEFAULT 'C1',
+            license_expiry  TEXT    NOT NULL DEFAULT '',
+            carrier_id      INTEGER REFERENCES carrier(id),
+            owner_id        INTEGER REFERENCES owner(id),
+            status          TEXT    NOT NULL DEFAULT 'active',
+            note            TEXT    NOT NULL DEFAULT '',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_driver_carrier ON driver(carrier_id);
+        CREATE INDEX IF NOT EXISTS idx_driver_owner   ON driver(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_driver_expiry  ON driver(license_expiry);
+
+        CREATE TABLE IF NOT EXISTS vehicle (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            code                  TEXT    NOT NULL UNIQUE,
+            plate_no              TEXT    NOT NULL DEFAULT '',
+            vehicle_type          TEXT    NOT NULL DEFAULT '厢式货车',
+            max_load_kg           REAL    NOT NULL DEFAULT 0,
+            length_cm             REAL    NOT NULL DEFAULT 0,
+            width_cm              REAL    NOT NULL DEFAULT 0,
+            height_cm             REAL    NOT NULL DEFAULT 0,
+            insurance_expiry      TEXT    NOT NULL DEFAULT '',
+            transport_expiry      TEXT    NOT NULL DEFAULT '',
+            carrier_id            INTEGER REFERENCES carrier(id),
+            owner_id              INTEGER REFERENCES owner(id),
+            status                TEXT    NOT NULL DEFAULT 'active',
+            note                  TEXT    NOT NULL DEFAULT '',
+            created_at            TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at            TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_vehicle_carrier ON vehicle(carrier_id);
+        CREATE INDEX IF NOT EXISTS idx_vehicle_owner   ON vehicle(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_vehicle_plate   ON vehicle(plate_no);
+        """
+    )
+
+
 def init_db(path=None):
     """初始化数据库：建表与列迁移（幂等，可重复执行）。
 
@@ -1968,6 +2024,7 @@ def init_db(path=None):
         _migrate_m37(conn)
         _migrate_m38(conn)
         _migrate_m41(conn)
+        _migrate_m31(conn)
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)
@@ -2018,6 +2075,7 @@ else:
     from routes_gsp import gsp_bp  # noqa: E402  M39 GSP 合规报表（纯只读）
     from routes_workload import workload_bp  # noqa: E402  M40 工作量统计（纯只读）
     from routes_print import print_bp  # noqa: E402  M41 打印模板 + PDF/预览
+    from routes_fleet import fleet_bp  # noqa: E402  M31 司机/车辆主数据（编号后移补做）
 
     app.register_blueprint(owner_bp)
     app.register_blueprint(product_bp)
@@ -2050,3 +2108,4 @@ else:
     app.register_blueprint(gsp_bp)
     app.register_blueprint(workload_bp)
     app.register_blueprint(print_bp)
+    app.register_blueprint(fleet_bp)

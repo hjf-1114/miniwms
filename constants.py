@@ -718,3 +718,43 @@ PRINT_PERM_CONFIG = "print:template_config"
 PRINT_PERM_VIEW = "print:view"
 PRINT_PERM_PDF = "print:pdf"
 PRINT_PERMISSIONS = (PRINT_PERM_CONFIG, PRINT_PERM_VIEW, PRINT_PERM_PDF)
+
+# ── M31 司机与车辆主数据（第 1 层基础资料，编号后移、本轮补做）────────────
+# 细节未拍板项登记 OPEN_QUESTIONS Q41–Q44，按下列默认实现，答复后以答复为准。
+FLEET_STATUS_ACTIVE = "active"
+FLEET_STATUS_INACTIVE = "inactive"
+FLEET_STATUSES = (FLEET_STATUS_ACTIVE, FLEET_STATUS_INACTIVE)
+FLEET_STATUS_LABELS = {FLEET_STATUS_ACTIVE: "启用", FLEET_STATUS_INACTIVE: "停用"}
+
+DRIVER_LICENSE_TYPES = ("A1", "A2", "B1", "B2", "C1", "C2", "D", "E")
+DRIVER_LICENSE_TYPE_LABELS = {
+    "A1": "大型客车", "A2": "牵引车", "B1": "中型客车", "B2": "大型货车",
+    "C1": "小型汽车", "C2": "小型自动挡", "D": "普通三轮摩托车", "E": "普通二轮摩托车",
+}
+VEHICLE_TYPES = ("厢式货车", "平板货车", "冷藏车", "集装箱车", "高栏车", "其他")
+
+FLEET_EXPIRY_EXPIRED = "expired"
+FLEET_EXPIRY_SOON = "soon"
+FLEET_EXPIRY_NORMAL = "normal"
+FLEET_EXPIRY_NONE = "none"
+FLEET_EXPIRY_LEVELS = (FLEET_EXPIRY_EXPIRED, FLEET_EXPIRY_SOON,
+                       FLEET_EXPIRY_NORMAL, FLEET_EXPIRY_NONE)
+FLEET_EXPIRY_LABELS = {
+    FLEET_EXPIRY_EXPIRED: "已过期", FLEET_EXPIRY_SOON: "临近到期",
+    FLEET_EXPIRY_NORMAL: "正常", FLEET_EXPIRY_NONE: "未登记日期",
+}
+FLEET_EXPIRY_SOON_DAYS_DEFAULT = 30
+FLEET_EXPIRY_SOON_DAYS_MAX = 365
+FLEET_EXPIRY_KINDS = ("driver_license", "vehicle_insurance", "vehicle_transport")
+FLEET_EXPIRY_KIND_LABELS = {
+    "driver_license": "驾驶证", "vehicle_insurance": "车辆保险",
+    "vehicle_transport": "道路运输证",
+}
+FLEET_CODE_MAXLEN = 32
+FLEET_PAGE_SIZE_DEFAULT = 20
+FLEET_PAGE_SIZE_MAX = 100
+
+# 权限码：只落常量不挂装饰器（Q08 口径延续）
+FLEET_PERM_VIEW = "fleet:view"
+FLEET_PERM_CONFIG = "fleet:config"
+FLEET_PERMISSIONS = (FLEET_PERM_VIEW, FLEET_PERM_CONFIG)
