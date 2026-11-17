@@ -30,6 +30,7 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 ```bash
 python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货全链路
 python tools/seed_module_demo.py    # 再补 M17–M26 / M28 / M31 / M32 / M33 / M34 / M35–M41 各模块可查数据（幂等、走真实 API，不覆盖现有数据）
+python tools/seed_initial_data.py   # 再补「角色 + 账号 + 基础主数据」初始集（7 岗位角色 / 7 演示账号 / 2 货主 / 2 仓库 / 5 储区 / 12 库位 / 10 货品 / 5 客户 / 4 供应商 / 3 司机 / 3 车辆）
 python main.py                      # 浏览器打开 http://localhost:5100 即可操作
 ```
 
@@ -37,15 +38,35 @@ python main.py                      # 浏览器打开 http://localhost:5100 即�
 
 ```bash
 python tools/seed_module_demo.py --check   # 各模块表行数 + /api/stock/reconcile 与 batch-reconcile 一致性体检
+python tools/seed_initial_data.py --check  # 角色 / 账号 / 授权状态 + 基础主数据行数盘点
 cp miniwms.db miniwms_backup_$(date +%Y%m%d).db   # 改动前先备份
 ```
 
-> `miniwms.db` 及备份文件被 `.gitignore`（`*.db`）忽略，**不入库**；换机器或重建库后按上面两条命令即可复现同一套演示数据。
+> `miniwms.db` 及备份文件被 `.gitignore`（`*.db`）忽略，**不入库**；换机器或重建库后按上面三条命令即可复现同一套演示数据。
 > 2026-11-13 播种前的备份为 `miniwms_backup_20261113.db`，M35 播种前另有
 > `miniwms_backup_20261113_m35.db`（均仅本地，不入库）。
 
-> 用户与角色管理（M9）已内置：默认管理员账号 **admin / admin123**（首次使用请到「系统管理 → 用户」修改密码）。
-> 受保护页面（角色/用户）需先访问 `http://localhost:5100/login.html` 登录，令牌存于浏览器 localStorage。
+### 角色与账号（初始数据）
+
+用户与角色管理（M9）已内置：默认管理员账号 **admin / admin123**（首次使用请到「系统管理 → 用户」修改密码）。
+受保护页面（角色/用户）需先访问 `http://localhost:5100/login.html` 登录，令牌存于浏览器 localStorage。
+
+`tools/seed_initial_data.py` 会额外播一套**按岗位划分**的角色与账号，并写入数据授权
+（授权表为空 + scope=grant 的账号登录后做任何业务都会 403，播种脚本会把这步补上）：
+
+| 账号 | 密码 | 角色 | 权限项 | 数据范围 |
+|---|---|---|---|---|
+| `init.admin` | `init123456` | 系统管理员 | 全部（`*`） | 全部仓库 + 全部货主 |
+| `init.wh` | `init123456` | 仓储主管 | 53 | 全部仓库 + 全部货主 |
+| `init.receive` | `init123456` | 收货员 | 13 | 全部仓库 + 指定货主 |
+| `init.pick` | `init123456` | 拣货发货员 | 17 | 全部仓库 + 指定货主 |
+| `init.stock` | `init123456` | 库存管理员 | 18 | 全部仓库 + 指定货主 |
+| `init.report` | `init123456` | 报表与质量员 | 10 | 全部仓库 + 全部货主 |
+| `init.audit` | `init123456` | 只读审计 | 15 | 全部仓库 + 全部货主 |
+
+角色页（`/roles.html`）的权限配置已从**手填 JSON** 改为**分组勾选面板**：
+权限码目录共 77 项 / 28 个分组（来源 `permission_catalog.py`，与各模块常量单一真源），
+并提供 7 个岗位模板可一键套用。目录只作可选项清单，**不改变路由鉴权行为**。
 
 运行测试：
 
@@ -856,6 +877,12 @@ routes_operation_report.py  M28 Blueprint（5 端点，OperationReportError → 
 web_app/operation_report.html M28 经营报表页（总览卡片 + 收发/周转/利用率三 tab）
 tools/e2e_m28.py      M28 可复跑 Playwright 端到端回归（独立端口 + 临时库）
 tools/seed_module_demo.py M17–M26 / M28 / M31 / M32 / M33 / M34 / M35–M41 模块演示数据幂等播种（走真实 API，不直接写业务表）
+permission_catalog.py 权限码目录单一真源（28 分组 / 77 码 / 7 个岗位角色模板），角色页勾选面板的数据源
+tools/seed_initial_data.py 初始数据播种：7 岗位角色 + 7 演示账号（含仓库/货主授权）+ 基础主数据；--check 只读盘点、--reset 精确清理
+tools/audit_ui.py      全页面真实浏览器交互巡检（--deep 填必填项提交 / --rows 点第一行每个按钮）
+tools/scan_undefined.py 用 symtable 扫「引用为全局但模块级未定义」的名字（运行时 NameError → 500）
+tools/probe_detail_endpoints.py 探测全部「带整数 id 的 GET 详情端点」是否 5xx
+tools/scan_optimize.py 死代码 / 未用导入 / 缺失索引 / 重复代码块扫描
 batch_fields.py       批次信息字段字典（配置播种、关键批次信息指纹）
 batch_service.py      批次服务层（验收入库时写批次档案 + 唯一批次流水、内部批次号规则；M23 销退外部批次号校验）
 reservation_rules.py  M23 规则层（纯函数）：指定客户出库校验规则表、先专属后通用建议、质量状态转换矩阵；不接路由
