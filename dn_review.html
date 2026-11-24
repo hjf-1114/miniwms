@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>出库复核 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#666); margin:0 0 12px; }
+.dim { font-size:12px; color:#64748b; }
+.stat { display:inline-block; min-width:110px; padding:8px 12px; margin:0 8px 8px 0;
+  border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; font-size:12px; color:#475569; }
+.stat b { display:block; font-size:18px; color:#0f172a; margin-top:3px; }
+.tag.ok { background:#e6f6ec; color:#1d7a4d; }
+.tag.warn { background:#fff7ed; color:#9a3412; }
+.tag.off { background:#f1f5f9; color:#64748b; }
+.tag.info { background:#e0f2fe; color:#075985; }
+.sub h3 { font-size:14px; font-weight:500; margin:16px 0 8px; }
+.review-line td { vertical-align: middle; }
+.review-line input[type=number] { width:82px; padding:5px 7px; border:1px solid #d5dbe4; border-radius:6px; }
+.review-line select { padding:5px 6px; border:1px solid #d5dbe4; border-radius:6px; }
+.batch-cell { font-family:monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>出库复核</h1><div class="crumb">MiniWMS / 仓储作业 / 出库单据 / 出库复核</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>复核单列表 <span id="rvCount" class="dim"></span></h2>
+          <div class="toolbar" style="margin:0">
+            <select id="statusFilter" style="min-width:130px">
+              <option value="">全部状态</option>
+            </select>
+            <input id="keyword" placeholder="单号 / 出库单号" style="min-width:180px">
+            <button class="btn secondary sm" onclick="loadReviews(1)">查询</button>
+          </div>
+        </div>
+        <p class="hint">
+          独立复核单：从已拣货的出库单生成，按 <b>拣货明细逐条复核</b>（快照批号 / 效期 / 库位）。
+          登记差异 <b>只写留痕日志、不生成调整单、不改库存</b>（数量纠偏仍走库存调整单）。
+          复核<b>不拦截发货</b>，与出库流程完全独立。
+        </p>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th>复核单号</th><th>出库单</th><th>货主</th><th>波次</th><th>状态</th>
+            <th>复核进度</th><th>差异行</th><th>创建人</th><th>创建时间</th><th style="width:110px">操作</th>
+          </tr></thead>
+          <tbody id="rvBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn secondary sm" onclick="loadReviews(rvPage - 1)">上一页</button>
+          <span id="rvPageInfo" class="dim"></span>
+          <button class="btn secondary sm" onclick="loadReviews(rvPage + 1)">下一页</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>生成复核单</h2>
+          <button class="btn secondary sm" onclick="loadDns()">刷新待复核出库单</button>
+        </div>
+        <div class="toolbar">
+          <label class="muted text-sm">已拣货出库单</label>
+          <select id="dnSel" style="min-width:280px"></select>
+          <input id="rvNote" placeholder="备注（选填）" style="min-width:220px">
+          <button class="btn" onclick="createReview()">生成复核单（快照拣货明细）</button>
+        </div>
+        <div class="dim" style="margin-top:6px">只列出有拣货记录、且无进行中复核单的出库单。</div>
+      </div>
+
+      <div class="card sub" id="detailCard" style="display:none">
+        <div class="card-head">
+          <h2>复核作业 <span id="detailCode" class="dim"></span></h2>
+          <span id="detailStatus" class="dim"></span>
+        </div>
+        <div id="detailStats"></div>
+        <div class="toolbar" style="margin-top:6px">
+          <button class="btn secondary sm" onclick="loadDetail(currentReview.id)">刷新明细</button>
+          <button class="btn" onclick="completeReview()">完成复核</button>
+          <button class="btn secondary sm" onclick="cancelReview()">取消复核单</button>
+        </div>
+        <h3>拣货明细（逐条复核）</h3>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th>SKU / 物料</th><th>库位</th><th>批号</th><th>效期</th><th>质量 / 状态</th>
+            <th>应拣</th><th>实拣</th><th>判定</th><th>原因码</th><th>备注</th><th style="width:80px">操作</th>
+          </tr></thead>
+          <tbody id="lineBody"></tbody>
+        </table></div>
+        <h3>差异留痕 <span class="dim">（只留痕，不改库存 / 不生成调整单）</span></h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>时间</th><th>库位</th><th>批号</th><th>应拣</th><th>实拣</th>
+            <th>差异</th><th>原因</th><th>动作</th><th>操作人</th></tr></thead>
+          <tbody id="diffBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>差异留痕查询 <span id="logStats" class="dim"></span></h2>
+          <button class="btn secondary sm" onclick="loadLogs(1)">查询</button>
+        </div>
+        <div class="toolbar">
+          <label class="muted text-sm">复核单 ID</label><input id="logRv" style="width:90px" placeholder="ID">
+          <label class="muted text-sm">出库单 ID</label><input id="logDn" style="width:90px" placeholder="ID">
+          <label class="muted text-sm">动作</label><select id="logAction"></select>
+          <label class="muted text-sm">原因码</label><select id="logReason"></select>
+          <button class="btn secondary sm" onclick="clearLogFilter()">清空条件</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>时间</th><th>复核单</th><th>出库单</th><th>SKU</th><th>库位</th>
+            <th>批号</th><th>效期</th><th>差异量</th><th>原因</th><th>动作</th><th>操作人</th></tr></thead>
+          <tbody id="logBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn secondary sm" onclick="loadLogs(logPage - 1)">上一页</button>
+          <span id="logPageInfo" class="dim"></span>
+          <button class="btn secondary sm" onclick="loadLogs(logPage + 1)">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+<script src="/miniwms/js/layout.js"></script>
+<script>
+let dictData = { statuses: [], results: [], result_labels: {}, diff_reasons: [], diff_labels: {}, actions: [] };
+let rvRows = [], logPage = 1, rvPage = 1, currentReview = null;
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function emptyRow(bodyId, colspan, text) {
+  document.getElementById(bodyId).innerHTML =
+    `<tr><td colspan="${colspan}" class="muted">${esc(text)}</td></tr>`;
+}
+function tagOf(text, cls) { return `<span class="tag ${cls || "off"}">${esc(text)}</span>`; }
+function statusTag(s) {
+  const cls = s === "completed" ? "ok" : (s === "reviewing" ? "info" : (s === "cancelled" ? "off" : "warn"));
+  const label = { draft: "待复核", reviewing: "复核中", completed: "已完成", cancelled: "已取消" }[s] || s;
+  return tagOf(label, cls);
+}
+function resultTag(s) {
+  if (!s) return tagOf("未复核", "off");
+  return tagOf(dictData.result_labels[s] || s, s === "diff" ? "warn" : "ok");
+}
+function diffLabel(code) { return dictData.diff_labels[code] || code || "—"; }
+function actionLabel(code) {
+  return code === "diff_registered" ? "登记差异" : (code === "diff_cleared" ? "改判留痕" : (code || "—"));
+}
+
+async function loadDict() {
+  try {
+    dictData = await api("GET", "/api/dn-reviews/dict");
+    document.getElementById("statusFilter").innerHTML =
+      `<option value="">全部状态</option>` + dictData.statuses
+        .map((x) => `<option value="${esc(x)}">${esc({draft:"待复核",reviewing:"复核中",completed:"已完成",cancelled:"已取消"}[x] || x)}</option>`).join("");
+    document.getElementById("logAction").innerHTML =
+      `<option value="">全部动作</option>` + dictData.actions
+        .map((x) => `<option value="${esc(x)}">${esc(actionLabel(x))}</option>`).join("");
+    document.getElementById("logReason").innerHTML =
+      `<option value="">全部原因</option>` + dictData.diff_reasons
+        .map((x) => `<option value="${esc(x)}">${esc(dictData.diff_labels[x])}</option>`).join("");
+  } catch (e) { msg("字典加载失败：" + e.message, "error"); }
+}
+
+async function loadReviews(page) {
+  rvPage = Math.max(1, page || 1);
+  const qs = new URLSearchParams({ page: rvPage, page_size: 20 });
+  const st = document.getElementById("statusFilter").value;
+  const kw = document.getElementById("keyword").value.trim();
+  if (st) qs.set("status", st);
+  if (kw) qs.set("keyword", kw);
+  try {
+    const d = await api("GET", "/api/dn-reviews?" + qs);
+    document.getElementById("rvCount").textContent =
+      `（共 ${d.total} 张 · 待复核 ${d.stats.draft || 0} / 复核中 ${d.stats.reviewing || 0}）`;
+    document.getElementById("rvPageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 张`;
+    const body = document.getElementById("rvBody");
+    if (!d.reviews.length) { emptyRow("rvBody", 10, "暂无复核单，先在下方生成"); return; }
+    body.innerHTML = d.reviews.map((x) => `<tr>
+      <td><b onclick="loadDetail(${x.id})" style="cursor:pointer;color:#2563eb">${esc(x.code)}</b></td>
+      <td>${esc(x.dn_code)}</td>
+      <td>${esc(x.owner_code || "")} · ${esc(x.owner_name || "")}</td>
+      <td class="dim">${esc(x.wave_no || "—")}</td>
+      <td>${statusTag(x.status)}</td>
+      <td>${x.reviewed_lines} / ${x.total_lines}</td>
+      <td>${x.diff_lines ? tagOf(x.diff_lines, "warn") : "0"}</td>
+      <td class="dim">${esc(x.operator || "—")}</td>
+      <td class="dim">${esc(x.created_at || "—")}</td>
+      <td><button class="btn secondary sm" onclick="loadDetail(${x.id})">复核</button></td>
+    </tr>`).join("");
+  } catch (e) { msg("复核单加载失败：" + e.message, "error"); }
+}
+
+async function loadDns() {
+  try {
+    const d = await api("GET", "/api/dns?page_size=100");
+    // 用详情接口的 picks 判断是否有拣货记录（列表接口不带 picks）
+    const candidates = [];
+    for (const x of d.dns) {
+      if (x.workflow_required ? x.status !== "picked" :
+          !["picking", "allocated", "picked", "shipped"].includes(x.status)) continue;
+      const det = await api("GET", "/api/dns/" + x.id);
+      if (det.picks && det.picks.length) candidates.push(x);
+      if (candidates.length >= 50) break;
+    }
+    const sel = document.getElementById("dnSel");
+    sel.innerHTML = candidates.length
+      ? candidates.map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.owner_code || "")} · ${x.total_qty}</option>`).join("")
+      : `<option value="">暂无已拣货的出库单</option>`;
+    const linked = new URLSearchParams(location.search).get("dn_id");
+    if (linked && candidates.some(row => String(row.id) === linked)) sel.value = linked;
+  } catch (e) { msg("出库单加载失败：" + e.message, "error"); }
+}
+
+async function createReview() {
+  const dnId = Number(document.getElementById("dnSel").value);
+  if (!dnId) { msg("请先选择一张已拣货的出库单", "error"); return; }
+  try {
+    const d = await api("POST", "/api/dn-reviews", {
+      dn_id: dnId, note: document.getElementById("rvNote").value.trim(),
+    });
+    msg(`已生成复核单 ${d.code}，快照 ${d.total_lines} 行拣货明细`);
+    await loadReviews(1);
+    await loadDetail(d.id);
+  } catch (e) { msg("生成复核单失败：" + e.message, "error"); }
+}
+
+async function loadDetail(id) {
+  try {
+    const d = await api("GET", "/api/dn-reviews/" + id);
+    currentReview = d;
+    document.getElementById("detailCard").style.display = "";
+    document.getElementById("detailCode").textContent = `${d.code} · 出库单 ${d.dn_code}`;
+    document.getElementById("detailStatus").innerHTML = statusTag(d.status);
+    document.getElementById("detailStats").innerHTML = [
+      ["复核进度", `${d.reviewed_lines} / ${d.total_lines}`],
+      ["差异行", d.diff_lines], ["留痕条数", d.diff_logs.length], ["波次", d.wave_no || "—"],
+    ].map(([k, v]) => `<span class="stat">${esc(k)}<b>${esc(v)}</b></span>`).join("");
+
+    const closed = d.status === "completed" || d.status === "cancelled";
+    const lb = document.getElementById("lineBody");
+    if (!d.lines.length) { emptyRow("lineBody", 11, "复核单无明细"); }
+    else lb.innerHTML = d.lines.map((l) => `<tr class="review-line" data-line="${l.id}">
+      <td>${esc(l.sku)}<div class="dim">${esc(l.product_name)}</div></td>
+      <td>${esc(l.location_code || ("#" + l.location_id))}</td>
+      <td class="batch-cell">${esc(l.batch_no || "—")}</td>
+      <td>${esc(l.expiry_date || "—")}</td>
+      <td class="dim">${esc(l.goods_property || "—")} / ${esc(l.stock_status || "—")}</td>
+      <td><b>${esc(l.expected_qty)}</b></td>
+      <td><input type="number" step="any" min="0" class="actual" value="${l.actual_qty ?? l.expected_qty}" ${closed ? "disabled" : ""}></td>
+      <td>${resultTag(l.result)}</td>
+      <td><select class="reason" ${closed ? "disabled" : ""}>
+        <option value="">—</option>
+        ${dictData.diff_reasons.map((r) => `<option value="${esc(r)}" ${l.reason_code === r ? "selected" : ""}>${esc(dictData.diff_labels[r])}</option>`).join("")}
+      </select></td>
+      <td><input class="lnote" value="${esc(l.note || "")}" style="width:110px;padding:5px 7px;border:1px solid #d5dbe4;border-radius:6px" ${closed ? "disabled" : ""}></td>
+      <td>${closed ? '<span class="dim">—</span>' : `<button class="btn secondary sm" onclick="checkLine(${l.id})">提交</button>`}</td>
+    </tr>`).join("");
+
+    const db = document.getElementById("diffBody");
+    db.innerHTML = d.diff_logs.length ? d.diff_logs.map((g) => `<tr>
+      <td class="dim">${esc(g.created_at)}</td>
+      <td>${esc(g.location_code || ("#" + g.location_id))}</td>
+      <td class="batch-cell">${esc(g.batch_no || "—")}</td>
+      <td>${esc(g.expected_qty)}</td><td>${esc(g.actual_qty)}</td>
+      <td><b>${esc(g.diff_qty)}</b></td>
+      <td>${esc(diffLabel(g.reason_code))}</td>
+      <td>${tagOf(actionLabel(g.action), g.action === "diff_cleared" ? "info" : "warn")}</td>
+      <td class="dim">${esc(g.operator || "—")}</td>
+    </tr>`).join("") : `<tr><td colspan="9" class="muted">无差异留痕</td></tr>`;
+
+    document.querySelector('#detailCard button.btn:not(.secondary)').disabled = closed;
+  } catch (e) { msg("复核详情加载失败：" + e.message, "error"); }
+}
+
+async function checkLine(lineId) {
+  const tr = document.querySelector(`tr[data-line="${lineId}"]`);
+  const actual = Number(tr.querySelector(".actual").value);
+  const reason = tr.querySelector(".reason").value;
+  const note = tr.querySelector(".lnote").value;
+  // 数量一致 → 通过；不一致 → 差异（必填原因码）
+  const result = Math.abs(actual - currentReview.lines.find((l) => l.id === lineId).expected_qty) < 1e-9 ? "pass" : "diff";
+  if (result === "diff" && !reason) {
+    msg("实拣与应拣不一致，必须选择差异原因码", "error");
+    tr.querySelector(".reason").focus();
+    return;
+  }
+  try {
+    const d = await api("POST", `/api/dn-reviews/${currentReview.id}/check`, {
+      line_id: lineId, actual_qty: actual, result, reason_code: reason, note,
+    });
+    msg(`${result === "pass" ? "复核通过" : "已登记差异"}：差异量 ${d.diff_qty}，进度 ${d.reviewed_lines}/${d.total_lines}`);
+    await loadDetail(currentReview.id);
+    await loadLogs(1);
+  } catch (e) { msg("提交复核失败：" + e.message, "error"); }
+}
+
+async function completeReview() {
+  if (!currentReview) return;
+  try {
+    const d = await api("POST", `/api/dn-reviews/${currentReview.id}/complete`, {});
+    msg(`复核完成：${d.code}，差异行 ${d.diff_lines}`);
+    await loadReviews(1);
+    await loadDetail(currentReview.id);
+  } catch (e) { msg("完成复核失败：" + e.message, "error"); }
+}
+
+async function cancelReview() {
+  if (!currentReview || !confirm(`确认取消复核单 ${currentReview.code}？`)) return;
+  try {
+    await api("POST", `/api/dn-reviews/${currentReview.id}/cancel`, {});
+    msg("复核单已取消");
+    await loadReviews(1);
+    await loadDetail(currentReview.id);
+  } catch (e) { msg("取消复核单失败：" + e.message, "error"); }
+}
+
+function clearLogFilter() {
+  ["logRv", "logDn"].forEach((id) => { document.getElementById(id).value = ""; });
+  document.getElementById("logAction").value = "";
+  document.getElementById("logReason").value = "";
+  loadLogs(1);
+}
+
+async function loadLogs(page) {
+  logPage = Math.max(1, page || 1);
+  const qs = new URLSearchParams({ page: logPage, page_size: 20 });
+  const rv = document.getElementById("logRv").value.trim();
+  const dn = document.getElementById("logDn").value.trim();
+  const act = document.getElementById("logAction").value;
+  const reason = document.getElementById("logReason").value;
+  if (rv) qs.set("review_id", rv);
+  if (dn) qs.set("dn_id", dn);
+  if (act) qs.set("action", act);
+  if (reason) qs.set("reason_code", reason);
+  try {
+    const d = await api("GET", "/api/dn-reviews/logs?" + qs);
+    const stats = Object.entries(d.stats || {}).map(([k, v]) => `${actionLabel(k)} ${v}`).join(" · ");
+    document.getElementById("logStats").textContent = stats ? `（${stats}）` : "";
+    document.getElementById("logPageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+    const body = document.getElementById("logBody");
+    if (!d.logs.length) { emptyRow("logBody", 11, "暂无差异留痕"); return; }
+    body.innerHTML = d.logs.map((x) => `<tr>
+      <td class="dim">${esc(x.created_at)}</td>
+      <td>${esc(x.review_code || ("#" + x.review_id))}</td>
+      <td>#${x.dn_id}</td><td>${esc(x.sku || "—")}</td>
+      <td>${esc(x.location_code || ("#" + x.location_id))}</td>
+      <td class="batch-cell">${esc(x.batch_no || "—")}</td>
+      <td>${esc(x.expiry_date || "—")}</td>
+      <td><b>${esc(x.diff_qty)}</b></td>
+      <td>${esc(diffLabel(x.reason_code))}</td>
+      <td>${tagOf(actionLabel(x.action), x.action === "diff_cleared" ? "info" : "warn")}</td>
+      <td class="dim">${esc(x.operator || "—")}</td>
+    </tr>`).join("");
+  } catch (e) { msg("留痕加载失败：" + e.message, "error"); }
+}
+
+(async function init() {
+  await loadDict();
+  await loadReviews(1);
+  await loadDns();
+  await loadLogs(1);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>物料管理 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>物料管理</h1><div class="crumb">MiniWMS / 基础主数据</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>物料列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建物料</button>
+    </div>
+    <div class="toolbar">
+      <input id="kw" placeholder="SKU/名称搜索">
+      <select id="ownerFilter"><option value="">全部货主</option></select>
+      <button class="btn secondary" onclick="load()">查询</button>
+      <button class="btn secondary" onclick="openAbcPanel()">ABC 分类</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>SKU</th><th>名称</th><th>条码</th><th>品牌</th><th>规格</th><th>分类</th><th>产品类型</th><th>序列号台账</th><th>货主</th><th>推荐储区</th><th>采购价</th><th>销售价</th><th>当前库存</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+    <div class="pager">
+      <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+      <span id="pageInfo"></span>
+      <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/modal.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+let ownerOptions = [{ value: "", label: "自营" }];
+let zones = [];
+let typeOptions = [];   // M32：产品类型字典（code → 显示名）
+
+// 体积：未手填但填了长宽高时，前端先做 cm³ 估算（后端为权威口径，会再算一次）
+function autoVolume(p) {
+  if (p.volume === "" || p.volume === null || p.volume === undefined) {
+    if (p.length_cm && p.width_cm && p.height_cm) {
+      p.volume = Math.round(Number(p.length_cm) * Number(p.width_cm) * Number(p.height_cm) * 10000) / 10000;
+    }
+  }
+  return p;
+}
+
+function productFields() {
+  const yesno = [{ value: 0, label: "否" }, { value: 1, label: "是" }];
+  return [
+    { name: "sku", label: "SKU *", required: true, autocode: true, autocodePrefix: "SKU" },
+    { name: "name", label: "名称 *", required: true },
+    { name: "article_no", label: "货号" },
+    { name: "category", label: "默认分类" },
+    { name: "unit", label: "单位" },
+    { name: "barcode", label: "主条码" },
+    { name: "brand", label: "品牌" },
+    { name: "spec", label: "规格型号" },
+    { name: "product_type", label: "产品类型", type: "select",
+      placeholder: "未指定产品类型",
+      options: typeOptions.map(t => ({ value: t.code, label: t.code + " · " + t.name })),
+      help: "取自产品类型字典（M32）；填字典外的值会自动建一行" },
+    { name: "main_category", label: "产品主分类" },
+    { name: "category_l1", label: "一级分类" },
+    { name: "category_l2", label: "二级分类" },
+    { name: "category_l3", label: "三级分类" },
+    { name: "category_l4", label: "四级分类" },
+    { name: "origin", label: "产地" },
+    { name: "external_code", label: "外部编码" },
+    { name: "business_scope", label: "经营范围", full: true },
+    { name: "reg_cert_no", label: "注册证号" },
+    { name: "registrant", label: "注册人/备案人" },
+    { name: "mfg_enterprise", label: "生产企业" },
+    { name: "mfg_license", label: "生产企业许可证" },
+    { name: "temp_range", label: "温度范围" },
+    { name: "humidity_range", label: "湿度范围" },
+    { name: "hazard_type", label: "危险品类型" },
+    { name: "is_serial", label: "是否序列号", type: "select", options: yesno },
+    { name: "is_shelf_control", label: "是否保质期控制", type: "select", options: yesno },
+    { name: "extra1", label: "备用字段1" },
+    { name: "extra2", label: "备用字段2" },
+    { name: "extra3", label: "备用字段3" },
+    { name: "weight_kg", label: "重量(kg)", type: "number" },
+    { name: "length_cm", label: "长(cm)", type: "number" },
+    { name: "width_cm", label: "宽(cm)", type: "number" },
+    { name: "height_cm", label: "高(cm)", type: "number" },
+    { name: "volume", label: "体积(cm³)", type: "number" },
+    { name: "shelf_life_days", label: "保质期(天)", type: "number" },
+    { name: "purchase_price", label: "采购价", type: "number" },
+    { name: "sale_price", label: "销售价", type: "number" },
+    { type: "section", label: "上架推荐（M20）" },
+    { name: "default_zone_id", label: "推荐储区", type: "select", placeholder: "未设置推荐储区",
+      options: zones.filter(z => z.status === "active").map(z => ({
+        value: z.id, label: `${z.code} · ${z.name}〔${z.warehouse_name || "全仓共享"}｜${z.temp_class}〕`,
+      })),
+      help: "上架推荐会给该储区下的库位加分；下方「绑定货位」可指定优先级更高的固定货位" },
+    { name: "abc_class", label: "ABC 分类", readonly: true,
+      help: "按近 30 天出库金额累计占比自动分级（A 累计≤80%、B ≤95%、其余 C）；无出库记录则不分类" },
+    { name: "owner_id", label: "货主（可空=自营）", type: "select", nullable: true, options: ownerOptions },
+    { name: "status", label: "状态", type: "select", options: [{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }] },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+// ABC 分类面板：看分布 + 预览 + 重算（只写货品的 abc_class 一列）
+async function openAbcPanel() {
+  const ov = await api("GET", "/api/abc/overview");
+  const rows = (ov.distribution || []).map(d =>
+    `<tr><td>${d.owner_id === null ? '<span class="muted">自营</span>' : "#" + d.owner_id}</td>
+      <td>${d.A}</td><td>${d.B}</td><td>${d.C}</td><td>${d.total}</td></tr>`).join("");
+  const ov2 = document.createElement("div");
+  ov2.className = "modal-overlay";
+  ov2.innerHTML = `<div class="modal" role="dialog" aria-modal="true" style="max-width:720px">
+    <div class="modal-head"><h3>ABC 分类</h3>
+      <button class="modal-x" type="button" onclick="this.closest('.modal-overlay').remove()">×</button></div>
+    <div class="modal-body">
+      <p class="muted">按货主分别计算，依据近 ${ov.days} 天出库金额累计占比：
+         A（累计≤80%）／B（≤95%）／C（其余）；无出库记录的货品不分类。
+         当前未分类 <b>${ov.unclassified}</b> 个。</p>
+      <table><thead><tr><th>货主</th><th>A</th><th>B</th><th>C</th><th>合计</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="muted">暂无已分类的货品</td></tr>'}</tbody></table>
+      <div class="modal-foot">
+        <button type="button" class="btn secondary" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+        <button type="button" class="btn" id="abcRecalc">重算并写回</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(ov2);
+  ov2.querySelector("#abcRecalc").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await api("POST", "/api/abc/recalculate", {days: ov.days});
+      showMsg(document.getElementById("msg"),
+        `重算完成：更新 ${r.changed_count} 个货品的分类`, "success");
+      ov2.remove();
+      load();
+    } catch (err) {
+      showMsg(document.getElementById("msg"), "重算失败：" + err.message, "error");
+      e.target.disabled = false;
+    }
+  });
+}
+
+async function loadOwners() {
+  const data = await api("GET", "/api/owners?page_size=100");
+  ownerOptions = [{ value: "", label: "自营" }].concat(
+    data.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }))
+  );
+  document.getElementById("ownerFilter").insertAdjacentHTML("beforeend",
+    data.owners.map((o) => `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`).join(""));
+}
+
+async function loadZones() {
+  try {
+    const d = await api("GET", "/api/zones?page_size=100");
+    zones = d.zones || [];
+  } catch (e) { /* 忽略 */ }
+}
+
+// M32：产品类型字典（下拉取 code；字典外的文本仍会被后端自动建行）
+async function loadTypes() {
+  try {
+    const d = await api("GET", "/api/product-types?page=1&page_size=100");
+    typeOptions = d.product_types || [];
+  } catch (e) { typeOptions = []; }
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const oid = document.getElementById("ownerFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (oid) qs.set("owner_id", oid);
+  try {
+    const data = await api("GET", "/api/products?" + qs);
+    // M33：一次批量取本页货品的序列号台账统计（避免每行一次请求）
+    let serialStats = {};
+    try {
+      const ids = data.products.map((p) => p.id).join(",");
+      if (ids) {
+        const sd = await api("GET", "/api/serials/stats/batch?product_ids=" + ids);
+        serialStats = sd.stats || {};
+      }
+    } catch (e) { serialStats = {}; }
+    document.getElementById("tbody").innerHTML = data.products.map((p) => {
+      return `<tr>
+        <td>${p.id}</td><td>${esc(p.sku)}</td><td>${esc(p.name)}</td>
+        <td>${esc(p.barcode)}</td><td>${esc(p.brand)}</td><td>${esc(p.spec)}</td>
+        <td>${esc(p.category)}</td>
+        <td>${p.product_type
+          ? esc(p.product_type_name || p.product_type)
+          : '<span class="muted">—</span>'}</td>
+        <td>${(() => {
+          const s = serialStats[p.id];
+          if (!s || !s.total) return '<span class="muted">—</span>';
+          return `<span title="台账 ${s.total} 件">${s.in_stock}/${s.total}</span>`;
+        })()}</td>
+        <td>${p.owner_code ? esc(p.owner_code + " · " + p.owner_name) : '<span class="muted">自营</span>'}</td>
+        <td>${p.default_zone_name ? esc(p.default_zone_name) : '<span class="muted">—</span>'}</td>
+        <td>${p.purchase_price}</td><td>${p.sale_price}</td>
+        <td><b>${p.stock_qty}</b></td>
+        <td>${statusTag(p.status)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${p.id})">编辑</button>
+          <button class="btn secondary sm" onclick="manageBindings(${p.id})">绑定货位</button>
+          <button class="btn secondary sm" onclick="manageProductAttrs(${p.id})">条码/包装</button>
+          <button class="btn danger sm" onclick="del(${p.id})">删除</button>
+        </td>
+      </tr>`;}).join("");
+    document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+
+function openCreate() {
+  openForm({
+    title: "新建物料", submitText: "创建", width: 760, fields: productFields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/products", autoVolume(p));
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/products/" + id);
+  openForm({
+    title: "编辑物料", submitText: "保存", width: 760, fields: productFields(), values: data.product,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/products/" + id, autoVolume(p));
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+/** 固定货位绑定（M20）：一个 SKU 可绑多个货位，上架推荐优先取绑定货位。 */
+async function manageBindings(id) {
+  const [prod, loc] = await Promise.all([
+    api("GET", "/api/products/" + id),
+    api("GET", "/api/locations?status=active&page_size=100"),
+  ]);
+  const p = prod.product;
+  const eligible = loc.locations.filter(l => l.loc_type === "storage" || l.loc_type === "picking");
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML = `
+    <div class="modal" style="width:min(820px,100%)">
+      <div class="modal-head"><h3>绑定货位：${esc(p.sku)} · ${esc(p.name)}</h3>
+        <button class="modal-x" type="button" aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <div class="text-sm muted" style="margin-bottom:10px">
+          绑定货位在上架推荐中得分最高（100 + 优先级），高于「推荐储区」。只能绑定启用中的存储位 / 拣货位。
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>库位</th><th>储区</th><th>仓库</th><th>优先级</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody id="bindBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:12px">
+          <select id="bindLoc" style="min-width:260px"><option value="">选择固定货位…</option>
+            ${eligible.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)}〔${esc(l.zone_name || "无储区")}｜${esc(l.warehouse_name || "未指定仓库")}〕</option>`).join("")}
+          </select>
+          <input id="bindPrio" type="number" value="0" step="1" style="width:96px" title="优先级（越大越靠前）" placeholder="优先级">
+          <input id="bindNote" placeholder="备注（可空）" style="width:150px">
+          <button class="btn sm" id="bindAdd">+ 添加绑定</button>
+        </div>
+        <div id="bindErr" class="modal-err"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov || e.target.classList.contains("modal-x")) close();
+  });
+  ov.querySelector(".modal-x").addEventListener("click", close);
+  const errEl = ov.querySelector("#bindErr");
+
+  async function refresh() {
+    const d = await api("GET", `/api/product-locations?product_id=${id}`);
+    ov.querySelector("#bindBody").innerHTML = d.bindings.map(b =>
+      `<tr><td>${esc(b.location_code)} · ${esc(b.location_name)}</td>
+        <td>${esc(b.zone_name || "—")}</td><td>${esc(b.warehouse_code || "—")}</td>
+        <td>${b.priority}</td><td>${esc(b.note || "")}</td>
+        <td><button class="btn danger sm" data-del="${b.id}">解绑</button></td></tr>`
+    ).join("") || '<tr><td colspan="6" class="muted">暂无固定货位，推荐将按「推荐储区 + 聚拢规则」计算</td></tr>';
+    ov.querySelectorAll("[data-del]").forEach(btn => btn.addEventListener("click", async () => {
+      try {
+        await api("DELETE", `/api/product-locations/${btn.dataset.del}`);
+        await refresh();
+      } catch (e) { errEl.textContent = e.message; errEl.style.display = "block"; }
+    }));
+  }
+  ov.querySelector("#bindAdd").addEventListener("click", async () => {
+    errEl.style.display = "none";
+    const location_id = ov.querySelector("#bindLoc").value;
+    if (!location_id) { errEl.textContent = "请先选择货位"; errEl.style.display = "block"; return; }
+    try {
+      await api("POST", "/api/product-locations", {
+        product_id: id, location_id: Number(location_id),
+        priority: Number(ov.querySelector("#bindPrio").value || 0),
+        note: ov.querySelector("#bindNote").value.trim(),
+      });
+      ov.querySelector("#bindLoc").value = "";
+      ov.querySelector("#bindNote").value = "";
+      await refresh();
+    } catch (e) { errEl.textContent = e.message; errEl.style.display = "block"; }
+  });
+  await refresh();
+}
+
+// 条码与包装管理（多条码 / 多层级包装规格）
+async function manageProductAttrs(id) {
+  const data = await api("GET", "/api/products/" + id);
+  const p = data.product;
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML = `
+    <div class="modal" style="width:min(780px,100%)">
+      <div class="modal-head"><h3>条码与包装：${esc(p.name)}</h3><button class="modal-x" type="button" aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <h4>产品条码（多条码，可设主条码）</h4>
+        <div class="toolbar">
+          <input id="bcInput" placeholder="输入条码">
+          <label class="inline"><input type="checkbox" id="bcPrim"> 设为主条码</label>
+          <button class="btn sm" id="bcAdd">+ 添加</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>条码</th><th>主</th><th>操作</th></tr></thead>
+          <tbody id="bcBody"></tbody>
+        </table></div>
+
+        <h4 style="margin-top:16px">包装层级（多规格：主箱/内箱/中箱，长宽高体积重量）</h4>
+        <div class="table-wrap"><table>
+          <thead><tr><th>层级</th><th>长(cm)</th><th>宽(cm)</th><th>高(cm)</th><th>体积(cm³)</th><th>重(kg)</th><th>每箱数量</th><th>操作</th></tr></thead>
+          <tbody id="pkgBody"></tbody>
+        </table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <select id="pkLevel" style="width:110px">
+            <option value="1级">1级</option><option value="2级">2级</option><option value="3级">3级</option>
+            <option value="4级">4级</option><option value="5级">5级</option><option value="6级">6级</option>
+          </select>
+          <input id="pkL" placeholder="长" type="number" step="0.01" style="width:64px">
+          <input id="pkW" placeholder="宽" type="number" step="0.01" style="width:64px">
+          <input id="pkH" placeholder="高" type="number" step="0.01" style="width:64px">
+          <input id="pkWt" placeholder="重kg" type="number" step="0.01" style="width:64px">
+          <input id="pkQty" placeholder="每箱" type="number" step="0.01" style="width:64px">
+          <button class="btn sm" id="pkAdd">+ 添加包装</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov || e.target.classList.contains("modal-x") || e.target.hasAttribute("data-close")) close();
+  });
+  ov.querySelector(".modal-x").addEventListener("click", close);
+
+  const bcBody = ov.querySelector("#bcBody");
+  const pkgBody = ov.querySelector("#pkgBody");
+
+  async function refreshBc() {
+    const d = await api("GET", `/api/products/${id}/barcodes`);
+    bcBody.innerHTML = d.barcodes.map((b) =>
+      `<tr><td>${esc(b.barcode)}</td><td>${b.is_primary ? "★" : ""}</td>` +
+      `<td><button class="btn secondary sm" data-editbc="${b.id}" data-bc="${esc(b.barcode)}" data-prim="${b.is_primary}">编辑</button> ` +
+      `<button class="btn danger sm" data-delbc="${b.id}">删</button></td></tr>`).join("");
+    bcBody.querySelectorAll("[data-editbc]").forEach((btn) => btn.addEventListener("click", () => {
+      editBarcode(Number(btn.dataset.editbc), btn.dataset.bc, btn.dataset.prim === "1");
+    }));
+    bcBody.querySelectorAll("[data-delbc]").forEach((btn) => btn.addEventListener("click", async () => {
+      await api("DELETE", `/api/products/${id}/barcodes/${btn.dataset.delbc}`); refreshBc();
+    }));
+  }
+  async function refreshPkg() {
+    const d = await api("GET", `/api/products/${id}/packages`);
+    pkgBody.innerHTML = d.packages.map((q) =>
+      `<tr><td>${esc(q.pkg_level)}</td><td>${q.length_cm}</td><td>${q.width_cm}</td><td>${q.height_cm}</td>` +
+      `<td>${q.volume}</td><td>${q.weight_kg}</td><td>${q.qty_per_package}</td>` +
+      `<td><button class="btn secondary sm" data-editpk="${q.id}">编辑</button> ` +
+      `<button class="btn danger sm" data-delpk="${q.id}">删</button></td></tr>`).join("");
+    pkgBody.querySelectorAll("[data-editpk]").forEach((btn) => btn.addEventListener("click", () => {
+      const q = d.packages.find((x) => String(x.id) === btn.dataset.editpk);
+      editPackage(q.id, q);
+    }));
+    pkgBody.querySelectorAll("[data-delpk]").forEach((btn) => btn.addEventListener("click", async () => {
+      await api("DELETE", `/api/products/${id}/packages/${btn.dataset.delpk}`); refreshPkg();
+    }));
+  }
+  ov.querySelector("#bcAdd").addEventListener("click", async () => {
+    const barcode = ov.querySelector("#bcInput").value.trim();
+    if (!barcode) return;
+    const is_primary = ov.querySelector("#bcPrim").checked ? 1 : 0;
+    await api("POST", `/api/products/${id}/barcodes`, { barcode, is_primary });
+    ov.querySelector("#bcInput").value = "";
+    refreshBc();
+  });
+  ov.querySelector("#pkAdd").addEventListener("click", async () => {
+    const payload = {
+      pkg_level: ov.querySelector("#pkLevel").value.trim() || "主箱",
+      length_cm: Number(ov.querySelector("#pkL").value || 0),
+      width_cm: Number(ov.querySelector("#pkW").value || 0),
+      height_cm: Number(ov.querySelector("#pkH").value || 0),
+      weight_kg: Number(ov.querySelector("#pkWt").value || 0),
+      qty_per_package: Number(ov.querySelector("#pkQty").value || 0),
+    };
+    await api("POST", `/api/products/${id}/packages`, payload);
+    ["#pkL", "#pkW", "#pkH", "#pkWt", "#pkQty"].forEach((s) => { ov.querySelector(s).value = ""; });
+    refreshPkg();
+  });
+  async function editBarcode(bid, curVal, curPrim) {
+    openForm({
+      title: "编辑条码", submitText: "保存", width: 420,
+      fields: [
+        { name: "barcode", label: "条码 *", required: true },
+        { name: "is_primary", label: "设为主条码", type: "select",
+          options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+      ],
+      values: { barcode: curVal, is_primary: curPrim ? 1 : 0 },
+      onSubmit: async (p) => {
+        await api("PUT", `/api/products/${id}/barcodes/${bid}`,
+          { barcode: p.barcode, is_primary: p.is_primary ? 1 : 0 });
+        refreshBc();
+      },
+    });
+  }
+  async function editPackage(pkid, pkg) {
+    openForm({
+      title: "编辑包装层级", submitText: "保存", width: 560,
+      fields: [
+        { name: "pkg_level", label: "等级", type: "select",
+          options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: `${n}级`, label: `${n}级` })) },
+        { name: "length_cm", label: "长(cm)", type: "number" },
+        { name: "width_cm", label: "宽(cm)", type: "number" },
+        { name: "height_cm", label: "高(cm)", type: "number" },
+        { name: "weight_kg", label: "重(kg)", type: "number" },
+        { name: "qty_per_package", label: "每箱数量", type: "number" },
+      ],
+      values: pkg,
+      onSubmit: async (p) => {
+        await api("PUT", `/api/products/${id}/packages/${pkid}`, p);
+        refreshPkg();
+      },
+    });
+  }
+  await refreshBc();
+  await refreshPkg();
+}
+
+async function del(id) {
+  if (!confirm("确认删除该物料？（库存非 0 时会被拒绝）")) return;
+  try {
+    await api("DELETE", "/api/products/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+Promise.all([loadOwners(), loadZones(), loadTypes()]).then(load);
+</script>
+</body>
+</html>

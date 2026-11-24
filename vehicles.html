@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>车辆管理 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#64748b); margin:0 0 12px; }
+.tabbar { display:flex; gap:6px; margin:4px 0 14px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:8px 14px; border:none; background:none; cursor:pointer; font-size:13px;
+  color:#475569; border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; }
+.panel.active { display:block; }
+.stat { display:inline-block; min-width:128px; padding:8px 12px; margin:0 8px 8px 0;
+  border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; font-size:12px; color:#475569; }
+.stat b { display:block; font-size:19px; color:#0f172a; margin-top:3px; }
+.stat.expired b { color:#991b1b; }
+.stat.soon b { color:#c2410c; }
+.stat.normal b { color:#1d7a4d; }
+.tag { display:inline-block; padding:2px 7px; border-radius:10px; font-size:12px; }
+.tag.ok { background:#e6f6ec; color:#1d7a4d; }
+.tag.warn { background:#fff7ed; color:#9a3412; }
+.tag.danger { background:#fee2e2; color:#991b1b; }
+.tag.off { background:#f1f5f9; color:#64748b; }
+.filters { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:flex-end; margin-bottom:10px; }
+.filters label { font-size:12px; color:#475569; display:flex; flex-direction:column; gap:3px; }
+.filters input, .filters select { padding:5px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>车辆管理</h1><div class="crumb">MiniWMS / 基础主数据 / 运力档案 / 车辆管理</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <p class="hint">
+        车辆档案支持按货主隔离，<b>owner_id 留空＝全系统共享运力</b>；编码与车牌号唯一。
+        保险 / 道路运输证效期只做只读预警，<b>不拦截派车与出入库</b>。
+      </p>
+
+      <div class="tabbar" id="tabbar">
+        <button class="tab active" data-tab="list" onclick="switchTab('list')">车辆档案</button>
+        <button class="tab" data-tab="expiry" onclick="switchTab('expiry')">证照效期</button>
+      </div>
+
+      <section class="panel active" id="panel-list">
+        <div class="card">
+          <div class="card-head"><h2>车辆列表</h2>
+            <button class="btn" id="btnCreate" onclick="openCreate()">+ 新建车辆</button></div>
+          <div class="filters">
+            <label>关键词<input id="kw" placeholder="编码/车牌/车型/备注"></label>
+            <label>状态<select id="statusFilter"></select></label>
+            <label>车型<select id="typeFilter"></select></label>
+            <label>承运商<select id="carrierFilter"></select></label>
+            <label>货主<select id="ownerFilter"></select></label>
+            <label>保险分级<select id="levelFilter"></select></label>
+            <label>近效期天数<input id="days" type="number" min="0" max="365" value="30"></label>
+            <button class="btn sm" id="btnQuery" onclick="load(1)">查询</button>
+            <button class="btn secondary sm" onclick="resetFilters()">重置</button>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>ID</th><th>编码</th><th>车牌号</th><th>车型</th><th>载重(kg)</th>
+              <th>尺寸(cm)</th><th>保险有效期</th><th>运输证有效期</th>
+              <th>承运商</th><th>货主</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="vehicleBody"></tbody>
+          </table></div>
+          <div class="pager">
+            <button class="btn secondary" id="prevBtn" onclick="load(page-1)">上一页</button>
+            <span id="pageInfo"></span>
+            <button class="btn secondary" id="nextBtn" onclick="load(page+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-expiry">
+        <div class="card">
+          <div class="card-head"><h2>车辆证照效期预警</h2>
+            <button class="btn secondary sm" onclick="loadExpiry(1)">刷新</button></div>
+          <p class="hint">可切换 <b>车辆保险 / 道路运输证</b> 两类证照；分级只读，过期不自动停用车辆。</p>
+          <div class="filters">
+            <label>证照<select id="expKind"></select></label>
+            <label>近效期天数<input id="expDays" type="number" min="0" max="365" value="30"></label>
+            <label>分级<select id="expLevel"></select></label>
+            <button class="btn sm" onclick="loadExpiry(1)">应用</button>
+          </div>
+          <div id="expiryStats"></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>证照</th><th>编码</th><th>车辆</th><th>货主</th>
+              <th>有效期至</th><th>分级</th><th>剩余天数</th></tr></thead>
+            <tbody id="expiryBody"></tbody>
+          </table></div>
+          <div class="pager">
+            <button class="btn secondary" id="expPrevBtn" onclick="loadExpiry(expPage-1)">上一页</button>
+            <span id="expiryPageInfo"></span>
+            <button class="btn secondary" id="expNextBtn" onclick="loadExpiry(expPage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+<script src="/miniwms/js/modal.js"></script>
+<script src="/miniwms/js/layout.js"></script>
+<script src="/miniwms/js/fleet.js"></script>
+<script>
+let page = 1, expPage = 1;
+const pageSize = 20;
+const U = window.FLEET_UI;
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function escText(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + name));
+}
+
+function filters() {
+  return {
+    keyword: document.getElementById("kw").value.trim(),
+    status: document.getElementById("statusFilter").value,
+    owner_id: document.getElementById("ownerFilter").value,
+    carrier_id: document.getElementById("carrierFilter").value,
+    expiry_level: document.getElementById("levelFilter").value,
+    days: document.getElementById("days").value || 30,
+  };
+}
+
+function resetFilters() {
+  ["kw", "statusFilter", "typeFilter", "carrierFilter", "ownerFilter", "levelFilter"].forEach(id => {
+    document.getElementById(id).value = "";
+  });
+  document.getElementById("days").value = 30;
+  load(1);
+}
+
+async function load(target) {
+  page = Math.max(1, Number(target) || 1);
+  const args = Object.assign({ page, page_size: pageSize }, filters());
+  const vt = document.getElementById("typeFilter").value;
+  if (vt) args.vehicle_type = vt;
+  const qs = U.queryString(args);
+  try {
+    const d = await api("GET", "/api/vehicles?" + qs);
+    document.getElementById("vehicleBody").innerHTML = d.vehicles.map(x =>
+      `<tr><td>${x.id}</td><td>${escText(x.code)}</td><td>${escText(x.plate_no)}</td>` +
+      `<td>${escText(x.vehicle_type)}</td><td>${x.max_load_kg}</td>` +
+      `<td>${x.length_cm}×${x.width_cm}×${x.height_cm}</td>` +
+      `<td>${U.levelTag(x.insurance_expiry, args.days)}</td>` +
+      `<td>${U.levelTag(x.transport_expiry, args.days)}</td>` +
+      `<td>${escText(U.carrierText(x.carrier_id))}</td>` +
+      `<td>${escText(U.ownerText(x.owner_id))}</td><td>${U.statusTag(x.status)}</td>` +
+      `<td><button class="btn secondary sm" onclick="openEdit(${x.id})">编辑</button> ` +
+      `<button class="btn secondary sm" onclick="toggle(${x.id},'${x.status}')">` +
+      `${x.status === "active" ? "停用" : "启用"}</button> ` +
+      `<button class="btn danger sm" onclick="del(${x.id})">删除</button></td></tr>`
+    ).join("") || `<tr><td colspan="12" class="muted">暂无车辆档案</td></tr>`;
+    document.getElementById("pageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= d.total;
+  } catch (e) { msg("加载失败：" + e.message, "error"); }
+}
+
+async function loadExpiry(target) {
+  expPage = Math.max(1, Number(target) || 1);
+  const days = document.getElementById("expDays").value || 30;
+  const qs = U.queryString({ kind: document.getElementById("expKind").value,
+    days, level: document.getElementById("expLevel").value,
+    page: expPage, page_size: pageSize });
+  try {
+    const d = await api("GET", "/api/fleet/expiry?" + qs);
+    U.renderExpiry("expiryStats", "expiryBody", d, days);
+    document.getElementById("expiryPageInfo").textContent =
+      `第 ${d.page} 页 / 共 ${d.total} 条`;
+    document.getElementById("expPrevBtn").disabled = expPage <= 1;
+    document.getElementById("expNextBtn").disabled = expPage * pageSize >= d.total;
+  } catch (e) { msg("效期加载失败：" + e.message, "error"); }
+}
+
+function formFields() {
+  const d = U.state().dict;
+  return [
+    { name: "code", label: "车辆编码 *", required: true, autocode: true, autocodePrefix: "VEH" },
+    { name: "plate_no", label: "车牌号 *", required: true, placeholder: "如 沪A12345" },
+    { name: "vehicle_type", label: "车辆类型", type: "select", default: "厢式货车",
+      options: (d.vehicle_types || []).map(x => ({ value: x.code, label: x.label })) },
+    { name: "max_load_kg", label: "最大载重(kg)", type: "number", default: 0 },
+    { name: "length_cm", label: "长(cm)", type: "number", default: 0 },
+    { name: "width_cm", label: "宽(cm)", type: "number", default: 0 },
+    { name: "height_cm", label: "高(cm)", type: "number", default: 0 },
+    { name: "insurance_expiry", label: "车辆保险有效期至", type: "date" },
+    { name: "transport_expiry", label: "道路运输证有效期至", type: "date" },
+    { name: "carrier_id", label: "所属承运商", type: "select", nullable: true,
+      options: U.carrierOptions(true) },
+    { name: "owner_id", label: "归属货主", type: "select", nullable: true,
+      options: U.ownerOptions(true),
+      help: "留空＝全系统共享运力；指定后仅该货主及有权限账号可见" },
+    { name: "status", label: "状态", type: "select", default: "active",
+      options: (d.statuses || []).map(x => ({ value: x.code, label: x.label })) },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+function openCreate() {
+  openForm({ title: "新建车辆", submitText: "创建", width: 760, fields: formFields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/vehicles", p);
+      msg("创建成功"); load(1); loadExpiry(1);
+    } });
+}
+
+async function openEdit(id) {
+  const d = await api("GET", "/api/vehicles/" + id);
+  openForm({ title: "编辑车辆", submitText: "保存", width: 760,
+    fields: formFields(), values: d,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/vehicles/" + id, p);
+      msg("已保存"); load(page); loadExpiry(expPage);
+    } });
+}
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/vehicles/" + id, {
+      status: status === "active" ? "inactive" : "active" });
+    load(page);
+  } catch (e) { msg("操作失败：" + e.message, "error"); }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该车辆档案？")) return;
+  try {
+    await api("DELETE", "/api/vehicles/" + id);
+    msg("已删除"); load(page); loadExpiry(expPage);
+  } catch (e) { msg("删除失败：" + e.message, "error"); }
+}
+
+(async function init() {
+  try {
+    const d = await U.init();
+    U.fillSelect("statusFilter", d.statuses.map(x => ({ value: x.code, label: x.label })), "全部状态");
+    U.fillSelect("typeFilter", d.vehicle_types.map(x => ({ value: x.code, label: x.label })), "全部车型");
+    U.fillSelect("levelFilter", d.expiry_levels.map(x => ({ value: x.code, label: x.label })), "全部分级");
+    U.fillSelect("expLevel", d.expiry_levels.map(x => ({ value: x.code, label: x.label })), "全部分级");
+    U.fillSelect("expKind", d.expiry_kinds.filter(x =>
+      x.code !== "driver_license").map(x => ({ value: x.code, label: x.label })), "全部证照");
+    U.fillSelect("carrierFilter", U.carrierOptions(false).map(x => ({ value: x.value, label: x.label })), "全部承运商");
+    U.fillSelect("ownerFilter", U.ownerOptions(false).map(x => ({ value: x.value, label: x.label })), "全部货主");
+    await Promise.all([load(1), loadExpiry(1)]);
+  } catch (e) { msg("初始化失败：" + e.message, "error"); }
+})();
+</script>
+</body>
+</html>

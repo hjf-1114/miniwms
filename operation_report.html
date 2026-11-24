@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>经营报表 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.tabbar { display:flex; gap:6px; margin:4px 0 14px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:8px 14px; border:none; background:none; cursor:pointer; font-size:13px;
+  color:#475569; border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; }
+.panel.active { display:block; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>经营报表</h1><div class="crumb">MiniWMS / 统计报表 / 经营分析</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head"><h2>统计区间</h2></div>
+        <div class="toolbar">
+          <label class="muted">起</label>
+          <input id="dateFrom" type="date">
+          <label class="muted">止</label>
+          <input id="dateTo" type="date">
+          <select id="periodSel">
+            <option value="">自定义区间</option>
+            <option value="day">今天</option>
+            <option value="week">本周</option>
+            <option value="month">本月</option>
+          </select>
+          <select id="ownerFilter">
+            <option value="">全部货主</option>
+          </select>
+          <select id="costFilter">
+            <option value="purchase_price">成本口径：采购价</option>
+            <option value="sale_price">成本口径：销售价</option>
+          </select>
+          <button class="btn secondary" id="btnQuery" onclick="loadAll()">查询</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>经营总览</h2></div>
+        <div class="content" style="padding:4px 2px">
+          <div id="ovStats" class="stat-grid"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>经营分析</h2></div>
+        <div class="tabbar">
+          <button class="tab active" data-tab="io">收发汇总</button>
+          <button class="tab" data-tab="turn">库存周转</button>
+          <button class="tab" data-tab="util">库位利用率</button>
+        </div>
+
+        <div class="panel active" id="panel-io">
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>货主</th><th>入库量</th><th>出库量</th><th>净变化</th><th>流水条数</th></tr></thead>
+            <tbody id="ioBody"></tbody>
+            </table>
+          </div>
+          <div class="muted" style="margin:10px 0 16px">
+            收发口径已排除库位间转移流水（<span id="excludedTypes"></span>），
+            避免上架 / 移库把收货量算两遍。
+          </div>
+          <h3 style="margin:6px 0 8px">收发 Top 货品</h3>
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>SKU</th><th>名称</th><th>入库量</th><th>出库量</th></tr></thead>
+            <tbody id="topBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-turn">
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>货主</th><th>期初金额</th><th>期末金额</th><th>平均库存金额</th>
+              <th>期间入库金额</th><th>期间出库金额</th><th>周转次数</th><th>周转天数</th></tr></thead>
+            <tbody id="turnBody"></tbody>
+            </table>
+          </div>
+          <div class="muted" style="margin-top:10px">
+            周转次数＝期间出库成本 ÷ 平均库存金额；平均库存金额＝（期初 + 期末）/ 2，
+            期初＝期末 − 净变化。当前有 <b id="noPrice">0</b> 条库存行未填价格，
+            其金额按 0 计（不猜价）。
+          </div>
+        </div>
+
+        <div class="panel" id="panel-util">
+          <div class="toolbar">
+            <select id="dimFilter" onchange="loadUtil()">
+              <option value="all">全部库位</option>
+              <option value="warehouse">按仓库</option>
+              <option value="zone">按储区</option>
+              <option value="location_group">按货位组</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>维度</th><th>名称</th><th>库位总数</th><th>已占用</th><th>空闲</th><th>利用率</th></tr></thead>
+            <tbody id="utilBody"></tbody>
+            </table>
+          </div>
+          <h3 style="margin:16px 0 8px">闲置库位（最多 50 条）</h3>
+          <div class="table-wrap">
+            <table>
+            <thead><tr><th>库位编码</th><th>名称</th><th>储区</th><th>货位组</th></tr></thead>
+            <tbody id="emptyBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+    <script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/modal.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
+<script>
+let ownerOptions = [];
+
+function iso(d) { return d.toISOString().slice(0, 10); }
+
+function query() {
+  const qs = new URLSearchParams();
+  const df = document.getElementById("dateFrom").value;
+  const dt = document.getElementById("dateTo").value;
+  if (df) qs.set("date_from", df);
+  if (dt) qs.set("date_to", dt);
+  const p = document.getElementById("periodSel").value;
+  if (p) qs.set("period", p);
+  const oid = document.getElementById("ownerFilter").value;
+  if (oid) qs.set("owner_id", oid);
+  qs.set("cost_field", document.getElementById("costFilter").value);
+  return qs.toString();
+}
+
+function statCard(label, value, hint) {
+  return `<div class="stat"><div class="label">${esc(label)}</div>
+    <div class="value">${esc(value)}</div>
+    ${hint ? `<div class="muted text-sm">${esc(hint)}</div>` : ""}</div>`;
+}
+
+async function loadOverview() {
+  try {
+    const d = await api("GET", "/api/operation-report/overview?" + query());
+    document.getElementById("ovStats").innerHTML = [
+      statCard("入库量", d.in_qty, `${d.date_from} ~ ${d.date_to}`),
+      statCard("出库量", d.out_qty, `流水 ${d.movements} 条`),
+      statCard("净变化", d.net_qty, `期末库存 ${d.stock_qty}`),
+      statCard("周转次数", d.turn_count === null ? "—" : d.turn_count,
+               d.turn_days === null ? "库存金额不足，未计算" : `周转 ${d.turn_days} 天`),
+      statCard("期末库存金额", d.end_amount, `成本口径：${d.cost_field === "purchase_price" ? "采购价" : "销售价"}`),
+      statCard("库位利用率", (d.location_utilization * 100).toFixed(1) + "%",
+               `${d.location_used} / ${d.location_total} 个库位`),
+      statCard("在库 SKU", d.sku_count, `${d.stock_lines} 条库存行`),
+      statCard("缺价库存行", d.no_price_items, "金额按 0 计"),
+    ].join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "总览加载失败：" + e.message, "error");
+  }
+}
+
+async function loadIo() {
+  try {
+    const d = await api("GET", "/api/operation-report/io-summary?" + query());
+    document.getElementById("excludedTypes").textContent =
+      (d.excluded_ref_types || []).join(" / ");
+    const rows = (d.items || []).map(i => `<tr>
+        <td>${i.owner_code ? esc(i.owner_code + " · " + i.owner_name)
+                           : '<span class="muted">自营 / 未指定</span>'}</td>
+        <td>${i.in_qty}</td><td>${i.out_qty}</td>
+        <td>${i.net_qty > 0 ? "+" : ""}${i.net_qty}</td><td>${i.movements}</td>
+      </tr>`);
+    rows.push(`<tr><td><b>合计</b></td><td><b>${d.total.in_qty}</b></td>
+      <td><b>${d.total.out_qty}</b></td><td><b>${d.total.net_qty}</b></td>
+      <td><b>${d.total.movements}</b></td></tr>`);
+    document.getElementById("ioBody").innerHTML = rows.join("");
+
+    document.getElementById("topBody").innerHTML =
+      (d.top_products || []).map(p => `<tr>
+        <td>${esc(p.sku)}</td><td>${esc(p.name)}</td>
+        <td>${p.in_qty}</td><td>${p.out_qty}</td></tr>`).join("")
+      || '<tr><td colspan="4" class="muted">区间内无收发流水</td></tr>';
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "收发汇总加载失败：" + e.message, "error");
+  }
+}
+
+async function loadTurn() {
+  try {
+    const d = await api("GET", "/api/operation-report/turnover?" + query());
+    document.getElementById("noPrice").textContent = d.no_price_items;
+    document.getElementById("turnBody").innerHTML =
+      (d.items || []).map(i => `<tr>
+        <td>${i.owner_code ? esc(i.owner_code + " · " + i.owner_name)
+                           : '<span class="muted">自营 / 未指定</span>'}</td>
+        <td>${i.begin_amount}</td><td>${i.end_amount}</td><td>${i.avg_amount}</td>
+        <td>${i.in_amount}</td><td>${i.out_amount}</td>
+        <td>${i.turn_count === null ? "—" : i.turn_count}</td>
+        <td>${i.turn_days === null ? "—" : i.turn_days}</td>
+      </tr>`).join("")
+      || '<tr><td colspan="8" class="muted">区间内无数据</td></tr>';
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "周转分析加载失败：" + e.message, "error");
+  }
+}
+
+async function loadUtil() {
+  try {
+    const dim = document.getElementById("dimFilter").value;
+    const d = await api("GET", "/api/operation-report/location-utilization?dimension=" + dim);
+    const rows = (d.groups || []).map(g => `<tr>
+        <td>${esc(g.key || "（未分组）")}</td><td>${esc(g.name)}</td>
+        <td>${g.total_locations}</td><td>${g.used_locations}</td><td>${g.free_locations}</td>
+        <td>${(g.utilization * 100).toFixed(1)}%</td></tr>`);
+    rows.push(`<tr><td><b>合计</b></td><td></td><td><b>${d.total_locations}</b></td>
+      <td><b>${d.used_locations}</b></td><td><b>${d.free_locations}</b></td>
+      <td><b>${(d.utilization * 100).toFixed(1)}%</b></td></tr>`);
+    document.getElementById("utilBody").innerHTML = rows.join("");
+    document.getElementById("emptyBody").innerHTML =
+      (d.empty_locations || []).map(l => `<tr>
+        <td>${esc(l.code)}</td><td>${esc(l.name)}</td>
+        <td>${esc(l.zone)}</td><td>${esc(l.location_group)}</td></tr>`).join("")
+      || '<tr><td colspan="4" class="muted">没有闲置库位</td></tr>';
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "库位利用率加载失败：" + e.message, "error");
+  }
+}
+
+function loadAll() {
+  loadOverview();
+  loadIo();
+  loadTurn();
+  loadUtil();
+}
+
+document.querySelectorAll(".tabbar .tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabbar .tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const t = btn.dataset.tab;
+    document.querySelectorAll(".panel").forEach(p =>
+      p.classList.toggle("active", p.id === "panel-" + t));
+    document.querySelectorAll(".panel").forEach(p =>
+      p.classList.toggle("active", p.id === "panel-" + t));
+    document.querySelectorAll(".panel").forEach(p =>
+      p.classList.toggle("active", p.id === "panel-" + t));
+  });
+});
+
+async function loadOwners() {
+  try {
+    const d = await api("GET", "/api/owners?page_size=100");
+    ownerOptions = d.owners || [];
+    const sel = document.getElementById("ownerFilter");
+    ownerOptions.forEach(o => sel.insertAdjacentHTML("beforeend",
+      `<option value="${o.id}">${esc(o.code)} · ${esc(o.name)}</option>`));
+  } catch (e) { /* 忽略 */ }
+}
+
+(function init() {
+  const today = new Date();
+  const from = new Date(today.getTime() - 29 * 86400000);
+  document.getElementById("dateFrom").value = iso(from);
+  document.getElementById("dateTo").value = iso(today);
+  loadOwners().then(loadAll);
+})();
+</script>
+</body>
+</html>

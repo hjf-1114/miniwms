@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GSP 合规报表 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#666); margin:0 0 12px; }
+.dim { font-size:12px; color:#64748b; }
+.stat { display:inline-block; min-width:120px; padding:8px 12px; margin:0 8px 8px 0;
+  border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; font-size:12px; color:#475569; }
+.stat b { display:block; font-size:19px; color:#0f172a; margin-top:3px; }
+.stat.expired b { color:#991b1b; }
+.stat.soon b { color:#c2410c; }
+.stat.normal b { color:#1d7a4d; }
+.tag.ok { background:#e6f6ec; color:#1d7a4d; }
+.tag.warn { background:#fff7ed; color:#9a3412; }
+.tag.danger { background:#fee2e2; color:#991b1b; }
+.tag.info { background:#e0f2fe; color:#075985; }
+.tag.off { background:#f1f5f9; color:#64748b; }
+.tabbar { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 16px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:8px 14px; border:none; background:none; cursor:pointer; font-size:13px; color:#475569;
+  border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; }
+.panel.active { display:block; }
+.filters { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:flex-end; margin-bottom:10px; }
+.filters label { font-size:12px; color:#475569; display:flex; flex-direction:column; gap:3px; }
+.filters select, .filters input { padding:5px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:13px; }
+.chain { padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; margin:6px 0; }
+.chain h4 { margin:0 0 6px; font-size:13px; font-weight:600; }
+.chain .seg { font-size:12px; color:#475569; margin:2px 0; }
+.subtable { width:100%; border-collapse:collapse; margin-top:6px; font-size:12px; }
+.subtable th, .subtable td { border:1px solid #e2e8f0; padding:4px 7px; text-align:left; }
+.subtable th { background:#f1f5f9; color:#475569; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>GSP 合规报表</h1><div class="crumb">MiniWMS / 统计报表 / 合规与追溯 / GSP 合规报表</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <div id="overview"></div>
+
+      <p class="hint">
+        本页为<b>只读合规视图</b>：批次追溯 / 效期预警 / 养护记录 / 验收留痕 / 复核差异，
+        数据全部来自现有业务单据与留痕，<b>不改库存、不写流水、不生成调整单</b>；所有查询按货主隔离。
+      </p>
+
+      <div class="tabbar" id="tabbar"></div>
+
+      <!-- 效期预警 -->
+      <section class="panel active" id="panel-expiry">
+        <div class="card">
+          <div class="card-head"><h2>效期预警 <span id="expiryToday" class="dim"></span></h2>
+            <button class="btn secondary sm" onclick="loadExpiry(1)">刷新</button></div>
+          <div class="filters">
+            <label>近效期阈值(天)<input id="expDays" type="number" min="0" max="365" value="30"></label>
+            <label>分级<select id="expLevel"></select></label>
+            <button class="btn sm" onclick="loadExpiry(1)">应用</button>
+          </div>
+          <div id="expiryStats" class="expiry-stats"></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>批号</th><th>货主</th><th>物料</th><th>库位</th>
+              <th>效期</th><th>分级</th><th>剩余天数</th><th>在库/已分配</th></tr></thead>
+            <tbody id="expiryBody"></tbody>
+          </table></div>
+          <div class="toolbar" style="margin-top:8px">
+            <button class="btn secondary sm" onclick="loadExpiry(expPage-1)">上一页</button>
+            <span id="expiryPageInfo" class="dim"></span>
+            <button class="btn secondary sm" onclick="loadExpiry(expPage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 批次追溯 -->
+      <section class="panel" id="panel-trace">
+        <div class="card">
+          <div class="card-head"><h2>批次追溯</h2>
+            <button class="btn secondary sm" onclick="loadTrace(1)">查询</button></div>
+          <p class="hint">按批号 / 批次键 / 物料反查，展示<b>收货验收 → 在库批次 → 库存流水</b>三段链路。</p>
+          <div class="filters">
+            <label>批号<input id="traceNo" placeholder="如 B-2026-001"></label>
+            <label>批次键<input id="traceKey" placeholder="batch_key"></label>
+            <label>物料<select id="traceProduct"></select></label>
+            <button class="btn sm" onclick="loadTrace(1)">追溯</button>
+          </div>
+          <div id="traceList"></div>
+          <div class="toolbar" style="margin-top:8px">
+            <button class="btn secondary sm" onclick="loadTrace(tracePage-1)">上一页</button>
+            <span id="tracePageInfo" class="dim"></span>
+            <button class="btn secondary sm" onclick="loadTrace(tracePage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 养护留痕 -->
+      <section class="panel" id="panel-care">
+        <div class="card">
+          <div class="card-head"><h2>养护记录 <span id="careStat" class="dim"></span></h2>
+            <button class="btn secondary sm" onclick="loadCare(1)">刷新</button></div>
+          <div class="filters">
+            <label>项目<select id="careProject"></select></label>
+            <label>动作<select id="careAction"></select></label>
+            <label>结果<select id="careResult"></select></label>
+            <label>起始日<input id="careFrom" type="date"></label>
+            <label>截止日<input id="careTo" type="date"></label>
+            <button class="btn sm" onclick="loadCare(1)">查询</button>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>任务</th><th>货主</th><th>项目</th><th>动作</th><th>结果</th>
+              <th>温湿度</th><th>原因</th><th>时间</th></tr></thead>
+            <tbody id="careBody"></tbody>
+          </table></div>
+          <div class="toolbar" style="margin-top:8px">
+            <button class="btn secondary sm" onclick="loadCare(carePage-1)">上一页</button>
+            <span id="carePageInfo" class="dim"></span>
+            <button class="btn secondary sm" onclick="loadCare(carePage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 验收留痕 -->
+      <section class="panel" id="panel-receipt">
+        <div class="card">
+          <div class="card-head"><h2>验收留痕 <span id="receiptStat" class="dim"></span></h2>
+            <button class="btn secondary sm" onclick="loadReceipt(1)">刷新</button></div>
+          <p class="hint">来自收货验收记录，含 <b>M23 缺外部批号告警</b>（warning）。</p>
+          <div class="filters">
+            <label>批号<input id="receiptNo" placeholder="批号"></label>
+            <label>起始日<input id="receiptFrom" type="date"></label>
+            <label>截止日<input id="receiptTo" type="date"></label>
+            <button class="btn sm" onclick="loadReceipt(1)">查询</button>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>批号</th><th>外部批号</th><th>货主</th><th>单据</th><th>数量</th>
+              <th>质量</th><th>告警</th><th>时间</th></tr></thead>
+            <tbody id="receiptBody"></tbody>
+          </table></div>
+          <div class="toolbar" style="margin-top:8px">
+            <button class="btn secondary sm" onclick="loadReceipt(receiptPage-1)">上一页</button>
+            <span id="receiptPageInfo" class="dim"></span>
+            <button class="btn secondary sm" onclick="loadReceipt(receiptPage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 复核差异 -->
+      <section class="panel" id="panel-review">
+        <div class="card">
+          <div class="card-head"><h2>复核差异 <span id="reviewStat" class="dim"></span></h2>
+            <button class="btn secondary sm" onclick="loadReview(1)">刷新</button></div>
+          <p class="hint">来自 M36 出库复核差异留痕，<b>只留痕不改库存</b>；数量纠偏仍走库存调整单。</p>
+          <div class="filters">
+            <label>原因码<select id="reviewReason"></select></label>
+            <label>DN 单号<input id="reviewDn" placeholder="DN 单号"></label>
+            <label>起始日<input id="reviewFrom" type="date"></label>
+            <label>截止日<input id="reviewTo" type="date"></label>
+            <button class="btn sm" onclick="loadReview(1)">查询</button>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>复核单</th><th>DN</th><th>物料</th><th>批号</th><th>应拣/实拣</th>
+              <th>差异</th><th>原因</th><th>时间</th></tr></thead>
+            <tbody id="reviewBody"></tbody>
+          </table></div>
+          <div class="toolbar" style="margin-top:8px">
+            <button class="btn secondary sm" onclick="loadReview(reviewPage-1)">上一页</button>
+            <span id="reviewPageInfo" class="dim"></span>
+            <button class="btn secondary sm" onclick="loadReview(reviewPage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+<script src="/miniwms/js/layout.js"></script>
+<script>
+let D = {};
+let expPage = 1, tracePage = 1, carePage = 1, receiptPage = 1, reviewPage = 1;
+let activeTab = "expiry";
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+function emptyRow(id, colspan, text) {
+  document.getElementById(id).innerHTML = `<tr><td colspan="${colspan}" class="muted">${esc(text)}</td></tr>`;
+}
+function tag(text, cls) { return `<span class="tag ${cls||"off"}">${esc(text)}</span>`; }
+function levelTag(level) {
+  const m = { expired:["已过期","danger"], soon:["近效期","warn"], normal:["正常","ok"], none:["无有效期","off"] };
+  const v = m[level] || [level, "off"];
+  return tag(v[0], v[1]);
+}
+function actionTag(action) {
+  const m = { generated:["生成","info"], checked:["正常","ok"], abnormal:["异常","danger"],
+              handled:["已处置","info"], cancelled:["取消","off"] };
+  const v = m[action] || [action, "off"];
+  return tag(v[0], v[1]);
+}
+function fillSelect(id, items, placeholder) {
+  const el = document.getElementById(id);
+  el.innerHTML = (placeholder ? `<option value="">${esc(placeholder)}</option>` : "") +
+    items.map(x => `<option value="${esc(x.code)}">${esc(x.label)}</option>`).join("");
+}
+async function GET(path) {
+  const d = await api("GET", path);
+  if (!d || d.ok === false) throw new Error((d && d.error) || "请求失败");
+  return d;
+}
+
+function renderTabs() {
+  const tabs = D.reports || [];
+  document.getElementById("tabbar").innerHTML = tabs.map(r =>
+    `<button class="tab ${r.code === activeTab ? "active" : ""}" data-tab="${esc(r.code)}">${esc(r.label)}</button>`
+  ).join("");
+  document.querySelectorAll("#tabbar .tab").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+}
+function switchTab(code) {
+  activeTab = code;
+  document.querySelectorAll("#tabbar .tab").forEach(b => b.classList.toggle("active", b.dataset.tab === code));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + code));
+}
+
+async function loadDict() {
+  D = await GET("/api/gsp/dict");
+  const labels = {};
+  (D.reports || []).forEach(x => labels[x.code] = x.label);
+  D.report_labels = labels;
+  fillSelect("expLevel", D.expiry_levels || [], "全部");
+  fillSelect("careProject", D.care_projects || [], "全部项目");
+  fillSelect("careAction", [
+    {code:"generated",label:"生成"},{code:"checked",label:"正常"},
+    {code:"abnormal",label:"异常"},{code:"handled",label:"已处置"},
+    {code:"cancelled",label:"取消"}], "全部动作");
+  fillSelect("careResult", [{code:"normal",label:"正常"},{code:"abnormal",label:"异常"}], "全部结果");
+  fillSelect("reviewReason", D.review_reasons || [], "全部原因");
+  const pres = await GET("/api/products?page_size=200");
+  const prods = pres.products || pres.items || [];
+  fillSelect("traceProduct", prods.map(p => ({code:p.id, label:`${p.sku} ${p.name}`})), "全部物料");
+  renderTabs();
+}
+
+async function loadOverview() {
+  const d = await GET("/api/gsp/overview");
+  const cards = d.cards.map(c =>
+    `<div class="stat"><span>${esc(c.label)}</span><b>${c.count}</b></div>`).join("");
+  const exp = d.expiry_stats.map(s =>
+    `<div class="stat ${s.level}"><span>${esc(s.label)}</span><b>${s.count}</b></div>`).join("");
+  document.getElementById("overview").innerHTML =
+    `<div class="card"><div class="card-head"><h2>合规概览</h2></div>${cards}
+      <div style="margin-top:6px"><span class="dim">效期分级（近效期阈值 ${d.soon_days} 天）：</span>${exp}
+      <span class="stat"><span>养护异常</span><b>${d.care_abnormal}</b></span>
+      <span class="stat"><span>验收告警</span><b>${d.receipt_warned}</b></span></div></div>`;
+}
+
+async function loadExpiry(page) {
+  expPage = Math.max(1, page);
+  const days = document.getElementById("expDays").value || 30;
+  const level = document.getElementById("expLevel").value;
+  const d = await GET(`/api/gsp/expiry?page=${expPage}&page_size=20&days=${days}${level?"&level="+level:""}`);
+  document.getElementById("expiryToday").textContent = "基准日 " + d.today;
+  document.getElementById("expiryStats").innerHTML = d.stats.map(s =>
+    `<div class="stat ${s.level}"><span>${esc(s.label)}</span><b>${s.count}</b>
+      <span class="dim">${Number(s.qty).toFixed(2)} 件</span></div>`).join("");
+  const rows = d.batches;
+  if (!rows.length) emptyRow("expiryBody", 8, "无符合效期条件的在库批次");
+  else document.getElementById("expiryBody").innerHTML = rows.map(b =>
+    `<tr><td>${esc(b.batch_no)}</td><td>${esc(b.owner_code)}</td>
+      <td>${esc(b.sku)} ${esc(b.product_name)}</td><td>${esc(b.location_code)}</td>
+      <td>${esc(b.expiry_date || "—")}</td><td>${levelTag(b.level)}</td>
+      <td>${b.days_left == null ? "—" : b.days_left + " 天"}</td>
+      <td>${Number(b.qty).toFixed(2)} / ${Number(b.allocated_qty).toFixed(2)}</td></tr>`
+  ).join("");
+  document.getElementById("expiryPageInfo").textContent =
+    `第 ${d.page} 页 / 共 ${d.total} 条`;
+}
+
+async function loadTrace(page) {
+  tracePage = Math.max(1, page);
+  const no = document.getElementById("traceNo").value.trim();
+  const key = document.getElementById("traceKey").value.trim();
+  const pid = document.getElementById("traceProduct").value;
+  if (!no && !key && !pid) { msg("请至少填写批号 / 批次键 / 物料其中一项", "error"); return; }
+  const q = new URLSearchParams({page:tracePage, page_size:10});
+  if (no) q.set("batch_no", no);
+  if (key) q.set("batch_key", key);
+  if (pid) q.set("product_id", pid);
+  const d = await GET("/api/gsp/trace?" + q.toString());
+  const box = document.getElementById("traceList");
+  if (!d.batches.length) { box.innerHTML = `<p class="dim">未找到匹配的批次档案</p>`; }
+  else box.innerHTML = d.batches.map(b => {
+    const receipts = b.receipts.length
+      ? `<table class="subtable"><thead><tr><th>批号</th><th>外部批号</th><th>单据</th><th>数量</th><th>时间</th></tr></thead><tbody>` +
+        b.receipts.map(r => `<tr><td>${esc(r.batch_no)}</td><td>${esc(r.external_batch_no||"—")}</td>
+          <td>${esc(r.asn_code||"—")}</td><td>${Number(r.qty).toFixed(2)}</td><td>${esc(r.created_at)}</td></tr>`).join("") +
+        `</tbody></table>` : `<div class="seg dim">无收货验收记录</div>`;
+    const stocks = b.stocks.length
+      ? `<table class="subtable"><thead><tr><th>批号</th><th>库位</th><th>在库/已分配</th><th>效期</th><th>质量/状态</th></tr></thead><tbody>` +
+        b.stocks.map(s => `<tr><td>${esc(s.batch_no)}</td><td>${esc(s.location_code)}</td>
+          <td>${Number(s.qty).toFixed(2)} / ${Number(s.allocated_qty).toFixed(2)}</td>
+          <td>${esc(s.expiry_date||"—")}</td><td>${esc(s.goods_property)} / ${esc(s.stock_status)}</td></tr>`).join("") +
+        `</tbody></table>` : `<div class="seg dim">当前无在库余额</div>`;
+    const moves = b.movements.length
+      ? `<table class="subtable"><thead><tr><th>批号</th><th>类型</th><th>变动量</th><th>库位</th><th>时间</th></tr></thead><tbody>` +
+        b.movements.map(m => `<tr><td>${esc(m.batch_no)}</td><td>${esc(m.ref_type)}</td>
+          <td>${Number(m.qty_delta).toFixed(2)}</td><td>${esc(m.location_code||"—")}</td>
+          <td>${esc(m.created_at)}</td></tr>`).join("") + `</tbody></table>`
+      : `<div class="seg dim">无库存流水</div>`;
+    return `<div class="chain"><h4>${esc(b.code)} · ${esc(b.sku)} ${esc(b.product_name)}
+        <span class="dim">（${esc(b.owner_code)} · 批次键 ${esc(b.batch_key)}）</span></h4>
+      <div class="seg"><b>① 收货验收</b>（${b.stage_counts.receipt}）</div>${receipts}
+      <div class="seg"><b>② 在库批次</b>（${b.stage_counts.stock}）</div>${stocks}
+      <div class="seg"><b>③ 库存流水</b>（${b.stage_counts.movement}）</div>${moves}</div>`;
+  }).join("");
+  document.getElementById("tracePageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 个批次`;
+}
+
+function dateParams(prefix) {
+  const from = document.getElementById(prefix + "From") && document.getElementById(prefix + "From").value;
+  const to = document.getElementById(prefix + "To") && document.getElementById(prefix + "To").value;
+  return `${from?"&date_from="+from:""}${to?"&date_to="+to:""}`;
+}
+
+async function loadCare(page) {
+  carePage = Math.max(1, page);
+  const q = new URLSearchParams({page:carePage, page_size:20});
+  ["careProject:project","careAction:action","careResult:result"].forEach(pair => {
+    const [id,key] = pair.split(":"); const v = document.getElementById(id).value; if (v) q.set(key, v);
+  });
+  const from = document.getElementById("careFrom").value, to = document.getElementById("careTo").value;
+  if (from) q.set("date_from", from); if (to) q.set("date_to", to);
+  const d = await GET("/api/gsp/care?" + q.toString());
+  document.getElementById("careStat").textContent =
+    `共 ${d.stats.total} 条 · 异常 ${d.stats.abnormal} · 已处置 ${d.stats.handled}`;
+  if (!d.logs.length) emptyRow("careBody", 8, "无养护留痕");
+  else document.getElementById("careBody").innerHTML = d.logs.map(l =>
+    `<tr><td>${esc(l.task_code)}</td><td>${esc(l.owner_id)}</td>
+      <td>${esc((D.care_projects||[]).find(x=>x.code===l.project)?.label||l.project)}</td>
+      <td>${actionTag(l.action)}</td><td>${esc(l.result||"—")}</td>
+      <td>${l.temperature!=null?`${l.temperature}℃`:"—"} ${l.humidity!=null?`${l.humidity}%`:""}</td>
+      <td>${esc(l.reason_label||"—")}</td><td>${esc(l.created_at)}</td></tr>`
+  ).join("");
+  document.getElementById("carePageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+}
+
+async function loadReceipt(page) {
+  receiptPage = Math.max(1, page);
+  const no = document.getElementById("receiptNo").value.trim();
+  const q = new URLSearchParams({page:receiptPage, page_size:20});
+  if (no) q.set("batch_no", no);
+  const from = document.getElementById("receiptFrom").value, to = document.getElementById("receiptTo").value;
+  if (from) q.set("date_from", from); if (to) q.set("date_to", to);
+  const d = await GET("/api/gsp/receipt?" + q.toString());
+  document.getElementById("receiptStat").textContent = `共 ${d.stats.total} 条 · 告警 ${d.stats.warned}`;
+  if (!d.logs.length) emptyRow("receiptBody", 8, "无验收留痕");
+  else document.getElementById("receiptBody").innerHTML = d.logs.map(l =>
+    `<tr><td>${esc(l.batch_no)}</td><td>${esc(l.external_batch_no||"—")}</td>
+      <td>${esc(l.owner_id)}</td><td>${esc(l.doc_type)} #${l.asn_id||"—"}</td>
+      <td>${Number(l.qty).toFixed(2)}</td><td>${esc(l.goods_property)}</td>
+      <td>${l.warning ? tag("缺号告警","danger") : "—"}</td><td>${esc(l.created_at)}</td></tr>`
+  ).join("");
+  document.getElementById("receiptPageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+}
+
+async function loadReview(page) {
+  reviewPage = Math.max(1, page);
+  const reason = document.getElementById("reviewReason").value;
+  const dn = document.getElementById("reviewDn").value.trim();
+  const q = new URLSearchParams({page:reviewPage, page_size:20});
+  if (reason) q.set("reason_code", reason);
+  if (dn) q.set("dn_code", dn);
+  const from = document.getElementById("reviewFrom").value, to = document.getElementById("reviewTo").value;
+  if (from) q.set("date_from", from); if (to) q.set("date_to", to);
+  const d = await GET("/api/gsp/review?" + q.toString());
+  document.getElementById("reviewStat").textContent =
+    `共 ${d.stats.total} 条 · 少货 ${d.stats.short} · 多货 ${d.stats.over}`;
+  if (!d.logs.length) emptyRow("reviewBody", 8, "无复核差异留痕");
+  else document.getElementById("reviewBody").innerHTML = d.logs.map(l =>
+    `<tr><td>${esc(l.review_code)}</td><td>${esc(l.dn_code)}</td>
+      <td>${esc(l.sku)} ${esc(l.product_name)}</td><td>${esc(l.batch_no||"—")}</td>
+      <td>${Number(l.expected_qty).toFixed(2)} / ${Number(l.actual_qty).toFixed(2)}</td>
+      <td>${Number(l.diff_qty).toFixed(2)}</td><td>${esc(l.reason_label||l.reason_code)}</td>
+      <td>${esc(l.created_at)}</td></tr>`
+  ).join("");
+  document.getElementById("reviewPageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+}
+
+(async function init() {
+  if (window.MWS_NAV_TOOLS) window.MWS_NAV_TOOLS.mount();
+  try {
+    await loadDict();
+    await Promise.all([loadOverview(), loadExpiry(1), loadCare(1), loadReceipt(1), loadReview(1)]);
+  } catch (e) { msg("页面初始化失败：" + e.message, "error"); }
+})();
+</script>
+</body>
+</html>

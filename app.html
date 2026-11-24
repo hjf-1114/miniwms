@@ -34,8 +34,7 @@
   </div>
 </div>
 
-<script src="/miniwms/js/preview-data.js"></script>
-<script src="/miniwms/js/preview-api.js"></script>
+<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
 <script src="/miniwms/js/api.js"></script>
 <script src="/miniwms/js/layout.js"></script>
 <script>
@@ -59,7 +58,9 @@ if (EMBED || window.self !== window.top) {
   // 与独立页面 layout.js 保持一致：本项目登录是可选增强，未登录仍可浏览，故不强制跳转。
   const userBox = document.getElementById("wsUserBox");
   if (window.MWS_PREVIEW_API) {
-    userBox.textContent = "在线只读演示 · 样例数据";
+    userBox.textContent = "正在启动在线演示…";
+    window.demoReady?.then(() => { userBox.textContent = "在线演示 · 数据保存在此浏览器"; },
+      () => { userBox.textContent = "演示启动失败 · 请刷新后重试"; });
   } else if (getToken()) {
     const u = currentUser();
     userBox.innerHTML =

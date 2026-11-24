@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>产品类型字典 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>产品类型字典</h1><div class="crumb">MiniWMS / 基础主数据 / 货品档案</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>类型字典</h2>
+          <button class="btn" onclick="openCreate()">+ 新建产品类型</button>
+        </div>
+        <div class="toolbar">
+          <input id="kw" placeholder="编码/名称搜索">
+          <select id="statusFilter">
+            <option value="">全部状态</option>
+            <option value="active">启用</option>
+            <option value="inactive">停用</option>
+          </select>
+          <button class="btn secondary" onclick="load()">查询</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+          <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>上级类型</th><th>排序</th>
+            <th>引用货品</th><th>归属货主</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+          <span id="pageInfo"></span>
+          <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>使用说明</h2></div>
+        <div class="content" style="padding:4px 2px">
+          <ul class="muted" style="line-height:1.9;margin:0;padding-left:18px">
+            <li>货品的「产品类型」列现在引用本字典的<b>编码</b>；老数据在 M32 迁移时已按原文本回填成字典行，<b>取值不变</b>，历史盘点维度与报表分组继续匹配。</li>
+            <li>录入货品时若填了字典里没有的类型，会<b>自动建一行</b>（继承该货品的归属），字典随业务逐步收敛，不阻塞录入。</li>
+            <li>字典行仍被货品引用时<b>不能删除</b>，请先调整货品的产品类型；改编码同理。</li>
+            <li>层级最多两级：子类型不能再挂子类型；上级不能是自己。</li>
+            <li>编码全系统唯一；归属货主留空＝全局字典，受限账号可见。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+    <script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/modal.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+let ownerOptions = [{ value: "", label: "（全局字典，不绑定货主）" }];
+let ownerNames = {};
+let typeOptions = [];      // 全部类型（做上级下拉 / 缩进展示）
+let typeMap = {};         // id → 行
+
+function baseFields() {
+  return [
+    { name: "code", label: "编码 *", required: true,
+      help: "货品「产品类型」列引用的就是它；全系统唯一" },
+    { name: "name", label: "名称 *", required: true },
+    { name: "parent_id", label: "上级类型", type: "select", placeholder: "（顶级类型）",
+      options: typeOptions.map(t => ({ value: t.id, label: t.code + " · " + t.name })),
+      help: "最多两级：父级不能再有上级；上级不能是自己" },
+    { name: "sort_no", label: "排序", type: "number", help: "数字越小越靠前" },
+    { name: "owner_id", label: "归属货主", type: "select", nullable: true, options: ownerOptions,
+      help: "留空＝全局字典；指定货主后仅该货主可见" },
+    { name: "status", label: "状态", type: "select", options: [
+      { value: "active", label: "启用" }, { value: "inactive", label: "停用" } ] },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+async function loadAll() {
+  // 拉全量（最多 100 行）用于上级下拉与缩进展示
+  try {
+    const d = await api("GET", "/api/product-types?page=1&page_size=100");
+    typeOptions = d.product_types || [];
+    typeMap = {};
+    typeOptions.forEach(t => { typeMap[t.id] = t; });
+  } catch (e) { /* 忽略 */ }
+}
+
+function parentLabel(id) {
+  if (!id) return '<span class="muted">顶级</span>';
+  const p = typeMap[id];
+  return p ? esc(p.code + " · " + p.name) : esc("#" + id);
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  try {
+    await loadAll();
+    const data = await api("GET", "/api/product-types?" + qs);
+    document.getElementById("tbody").innerHTML = data.product_types.map((t) => {
+      const indent = t.parent_id ? "　└ " : "";
+      return `<tr>
+        <td>${t.id}</td>
+        <td>${esc(indent)}${esc(t.code)}</td>
+        <td>${esc(t.name)}</td>
+        <td>${parentLabel(t.parent_id)}</td>
+        <td>${t.sort_no}</td>
+        <td>${t.ref_count ? `<b>${t.ref_count}</b>` : '<span class="muted">0</span>'}</td>
+        <td>${t.owner_id
+          ? esc(ownerNames[t.owner_id] || ("#" + t.owner_id))
+          : '<span class="muted">全局</span>'}</td>
+        <td>${statusTag(t.status)}</td>
+        <td>${esc(t.note)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${t.id})">编辑</button>
+          <button class="btn secondary sm" onclick="toggle(${t.id},'${t.status}')">${t.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger sm" onclick="del(${t.id})">删除</button>
+        </td>
+      </tr>`;
+    }).join("");
+    document.getElementById("pageInfo").textContent = `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+
+function openCreate() {
+  openForm({
+    title: "新建产品类型", submitText: "创建", width: 700, fields: baseFields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/product-types", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/product-types/" + id);
+  const t = data.product_type;
+  const fields = baseFields().map(f => {
+    if (f.name === "parent_id") {
+      // 上级下拉排除自身
+      return { ...f, options: typeOptions.filter(x => x.id !== id)
+        .map(x => ({ value: x.id, label: x.code + " · " + x.name })) };
+    }
+    return f;
+  });
+  openForm({
+    title: "编辑产品类型", submitText: "保存", width: 700, fields, values: t,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/product-types/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/product-types/" + id, { status: status === "active" ? "inactive" : "active" });
+    showMsg(document.getElementById("msg"), "已切换状态", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "操作失败：" + e.message, "error");
+  }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该产品类型？被货品引用时会被拒绝。")) return;
+  try {
+    await api("DELETE", "/api/product-types/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+async function loadOwners() {
+  try {
+    const d = await api("GET", "/api/owners?page_size=100");
+    ownerOptions.length = 0;
+    ownerOptions.push({ value: "", label: "（全局字典，不绑定货主）" });
+    d.owners.forEach((o) => {
+      ownerOptions.push({ value: o.id, label: o.code + " · " + o.name });
+      ownerNames[o.id] = o.code + " · " + o.name;
+    });
+  } catch (e) { /* 权限不足时下拉为空，不影响列表浏览 */ }
+}
+
+loadOwners().then(load);
+</script>
+</body>
+</html>

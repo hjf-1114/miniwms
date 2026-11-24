@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>司机管理 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#64748b); margin:0 0 12px; }
+.tabbar { display:flex; gap:6px; margin:4px 0 14px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:8px 14px; border:none; background:none; cursor:pointer; font-size:13px;
+  color:#475569; border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; }
+.panel.active { display:block; }
+.stat { display:inline-block; min-width:128px; padding:8px 12px; margin:0 8px 8px 0;
+  border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; font-size:12px; color:#475569; }
+.stat b { display:block; font-size:19px; color:#0f172a; margin-top:3px; }
+.stat.expired b { color:#991b1b; }
+.stat.soon b { color:#c2410c; }
+.stat.normal b { color:#1d7a4d; }
+.tag { display:inline-block; padding:2px 7px; border-radius:10px; font-size:12px; }
+.tag.ok { background:#e6f6ec; color:#1d7a4d; }
+.tag.warn { background:#fff7ed; color:#9a3412; }
+.tag.danger { background:#fee2e2; color:#991b1b; }
+.tag.off { background:#f1f5f9; color:#64748b; }
+.filters { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:flex-end; margin-bottom:10px; }
+.filters label { font-size:12px; color:#475569; display:flex; flex-direction:column; gap:3px; }
+.filters input, .filters select { padding:5px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>司机管理</h1><div class="crumb">MiniWMS / 基础主数据 / 运力档案 / 司机管理</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <p class="hint">
+        司机主数据支持按货主隔离，<b>owner_id 留空＝全系统共享运力</b>；编码与驾驶证号唯一。
+        本里程碑只做档案与证照效期预警，<b>不接 ASN/DN 运力派工</b>，效期过期只提示不拦截业务。
+      </p>
+
+      <div class="tabbar" id="tabbar">
+        <button class="tab active" data-tab="list" onclick="switchTab('list')">司机档案</button>
+        <button class="tab" data-tab="expiry" onclick="switchTab('expiry')">驾驶证效期</button>
+      </div>
+
+      <section class="panel active" id="panel-list">
+        <div class="card">
+          <div class="card-head"><h2>司机列表</h2>
+            <button class="btn" id="btnCreate" onclick="openCreate()">+ 新建司机</button></div>
+          <div class="filters">
+            <label>关键词<input id="kw" placeholder="编码/姓名/手机/驾驶证号"></label>
+            <label>状态<select id="statusFilter"></select></label>
+            <label>承运商<select id="carrierFilter"></select></label>
+            <label>货主<select id="ownerFilter"></select></label>
+            <label>证照分级<select id="levelFilter"></select></label>
+            <label>近效期天数<input id="days" type="number" min="0" max="365" value="30"></label>
+            <button class="btn sm" id="btnQuery" onclick="load(1)">查询</button>
+            <button class="btn secondary sm" onclick="resetFilters()">重置</button>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>ID</th><th>编码</th><th>姓名</th><th>手机</th><th>驾照</th>
+              <th>驾驶证号</th><th>有效期</th><th>承运商</th><th>货主</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="driverBody"></tbody>
+          </table></div>
+          <div class="pager">
+            <button class="btn secondary" id="prevBtn" onclick="load(page-1)">上一页</button>
+            <span id="pageInfo"></span>
+            <button class="btn secondary" id="nextBtn" onclick="load(page+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-expiry">
+        <div class="card">
+          <div class="card-head"><h2>驾驶证效期预警</h2>
+            <button class="btn secondary sm" onclick="loadExpiry(1)">刷新</button></div>
+          <p class="hint">只读分级：<b>已过期 / 临近到期 / 正常 / 未登记日期</b>；默认 30 天，可自定义阈值。</p>
+          <div class="filters">
+            <label>近效期天数<input id="expDays" type="number" min="0" max="365" value="30"></label>
+            <label>分级<select id="expLevel"></select></label>
+            <button class="btn sm" onclick="loadExpiry(1)">应用</button>
+          </div>
+          <div id="expiryStats"></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>证照</th><th>编码</th><th>司机</th><th>货主</th>
+              <th>有效期至</th><th>分级</th><th>剩余天数</th></tr></thead>
+            <tbody id="expiryBody"></tbody>
+          </table></div>
+          <div class="pager">
+            <button class="btn secondary" id="expPrevBtn" onclick="loadExpiry(expPage-1)">上一页</button>
+            <span id="expiryPageInfo"></span>
+            <button class="btn secondary" id="expNextBtn" onclick="loadExpiry(expPage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+<script src="/miniwms/js/modal.js"></script>
+<script src="/miniwms/js/layout.js"></script>
+<script src="/miniwms/js/fleet.js"></script>
+<script>
+let page = 1, expPage = 1;
+const pageSize = 20;
+const U = window.FLEET_UI;
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function escText(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + name));
+}
+
+function filters() {
+  return {
+    keyword: document.getElementById("kw").value.trim(),
+    status: document.getElementById("statusFilter").value,
+    carrier_id: document.getElementById("carrierFilter").value,
+    owner_id: document.getElementById("ownerFilter").value,
+    expiry_level: document.getElementById("levelFilter").value,
+    days: document.getElementById("days").value || 30,
+  };
+}
+
+function resetFilters() {
+  ["kw", "statusFilter", "carrierFilter", "ownerFilter", "levelFilter"].forEach(id => {
+    document.getElementById(id).value = "";
+  });
+  document.getElementById("days").value = 30;
+  load(1);
+}
+
+async function load(target) {
+  page = Math.max(1, Number(target) || 1);
+  const qs = U.queryString(Object.assign({ page, page_size: pageSize }, filters()));
+  try {
+    const d = await api("GET", "/api/drivers?" + qs);
+    document.getElementById("driverBody").innerHTML = d.drivers.map(x =>
+      `<tr><td>${x.id}</td><td>${escText(x.code)}</td><td>${escText(x.name)}</td>` +
+      `<td>${escText(x.phone)}</td><td>${escText(x.license_type)}</td>` +
+      `<td>${escText(x.license_no)}</td>` +
+      `<td>${U.levelTag(x.license_expiry, document.getElementById("days").value || 30)}</td>` +
+      `<td>${escText(U.carrierText(x.carrier_id))}</td>` +
+      `<td>${escText(U.ownerText(x.owner_id))}</td><td>${U.statusTag(x.status)}</td>` +
+      `<td><button class="btn secondary sm" onclick="openEdit(${x.id})">编辑</button> ` +
+      `<button class="btn secondary sm" onclick="toggle(${x.id},'${x.status}')">` +
+      `${x.status === "active" ? "停用" : "启用"}</button> ` +
+      `<button class="btn danger sm" onclick="del(${x.id})">删除</button></td></tr>`
+    ).join("") || `<tr><td colspan="11" class="muted">暂无司机档案</td></tr>`;
+    document.getElementById("pageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= d.total;
+  } catch (e) { msg("加载失败：" + e.message, "error"); }
+}
+
+async function loadExpiry(target) {
+  expPage = Math.max(1, Number(target) || 1);
+  const days = document.getElementById("expDays").value || 30;
+  const qs = U.queryString({ kind: "driver_license", days,
+    level: document.getElementById("expLevel").value,
+    page: expPage, page_size: pageSize });
+  try {
+    const d = await api("GET", "/api/fleet/expiry?" + qs);
+    U.renderExpiry("expiryStats", "expiryBody", d, days);
+    document.getElementById("expiryPageInfo").textContent =
+      `第 ${d.page} 页 / 共 ${d.total} 条`;
+    document.getElementById("expPrevBtn").disabled = expPage <= 1;
+    document.getElementById("expNextBtn").disabled = expPage * pageSize >= d.total;
+  } catch (e) { msg("效期加载失败：" + e.message, "error"); }
+}
+
+function formFields() {
+  const d = U.state().dict;
+  return [
+    { name: "code", label: "司机编码 *", required: true, autocode: true, autocodePrefix: "DRV" },
+    { name: "name", label: "司机姓名 *", required: true },
+    { name: "phone", label: "手机号" },
+    { name: "id_no", label: "身份证号" },
+    { name: "license_no", label: "驾驶证号" },
+    { name: "license_type", label: "准驾车型", type: "select", default: "C1",
+      options: (d.license_types || []).map(x => ({ value: x.code, label: x.code + " · " + x.label })) },
+    { name: "license_expiry", label: "驾驶证有效期至", type: "date" },
+    { name: "carrier_id", label: "所属承运商", type: "select", nullable: true,
+      options: U.carrierOptions(true) },
+    { name: "owner_id", label: "归属货主", type: "select", nullable: true,
+      options: U.ownerOptions(true),
+      help: "留空＝全系统共享运力；指定后仅该货主及有权限账号可见" },
+    { name: "status", label: "状态", type: "select", default: "active",
+      options: (d.statuses || []).map(x => ({ value: x.code, label: x.label })) },
+    { name: "note", label: "备注", type: "textarea", full: true },
+  ];
+}
+
+function openCreate() {
+  openForm({ title: "新建司机", submitText: "创建", width: 720, fields: formFields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/drivers", p);
+      msg("创建成功"); load(1); loadExpiry(1);
+    } });
+}
+
+async function openEdit(id) {
+  const d = await api("GET", "/api/drivers/" + id);
+  openForm({ title: "编辑司机", submitText: "保存", width: 720,
+    fields: formFields(), values: d,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/drivers/" + id, p);
+      msg("已保存"); load(page); loadExpiry(expPage);
+    } });
+}
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/drivers/" + id, {
+      status: status === "active" ? "inactive" : "active" });
+    load(page);
+  } catch (e) { msg("操作失败：" + e.message, "error"); }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该司机档案？")) return;
+  try {
+    await api("DELETE", "/api/drivers/" + id);
+    msg("已删除"); load(page); loadExpiry(expPage);
+  } catch (e) { msg("删除失败：" + e.message, "error"); }
+}
+
+(async function init() {
+  try {
+    const d = await U.init();
+    U.fillSelect("statusFilter", d.statuses.map(x => ({ value: x.code, label: x.label })), "全部状态");
+    U.fillSelect("levelFilter", d.expiry_levels.map(x => ({ value: x.code, label: x.label })), "全部分级");
+    U.fillSelect("expLevel", d.expiry_levels.map(x => ({ value: x.code, label: x.label })), "全部分级");
+    U.fillSelect("carrierFilter", U.carrierOptions(false).map(x => ({ value: x.value, label: x.label })), "全部承运商");
+    U.fillSelect("ownerFilter", U.ownerOptions(false).map(x => ({ value: x.value, label: x.label })), "全部货主");
+    await Promise.all([load(1), loadExpiry(1)]);
+  } catch (e) { msg("初始化失败：" + e.message, "error"); }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工作量统计 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#666); margin:0 0 12px; }
+.dim { font-size:12px; color:#64748b; }
+.stat { display:inline-block; min-width:125px; padding:8px 12px; margin:0 8px 8px 0;
+  border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; font-size:12px; color:#475569; }
+.stat b { display:block; font-size:19px; color:#0f172a; margin-top:3px; }
+.tabbar { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 16px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:8px 14px; border:none; background:none; cursor:pointer; font-size:13px; color:#475569;
+  border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; }
+.panel.active { display:block; }
+.filters { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:flex-end; margin-bottom:10px; }
+.filters label { font-size:12px; color:#475569; display:flex; flex-direction:column; gap:3px; }
+.filters select, .filters input { padding:5px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:13px; }
+.bar { height:10px; min-width:3px; background:#2563eb; border-radius:5px; display:inline-block; vertical-align:middle; }
+.tag { display:inline-block; padding:2px 7px; border-radius:10px; font-size:11px; }
+.tag.blue { background:#e0f2fe; color:#075985; }
+.tag.green { background:#e6f6ec; color:#1d7a4d; }
+.topbox { display:flex; flex-wrap:wrap; gap:18px; margin-top:4px; }
+.topbox > div { flex:1 1 260px; }
+.topbox ul { list-style:none; padding:0; margin:4px 0 0; font-size:12px; color:#334155; }
+.topbox li { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px dashed #e2e8f0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>工作量统计</h1><div class="crumb">MiniWMS / 统计报表 / 运营分析 / 工作量统计</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <div id="wlOverview"></div>
+
+      <p class="hint">
+        本页为<b>只读运营视图</b>：从现有操作留痕抽取事件，按<b>人 / 作业节点 / 时间段</b>聚合，
+        支持日期、操作人、节点下钻到明细；<b>不改库存、不写流水</b>，所有查询按货主隔离。
+        「数量」为事件涉及数量（库存变动取绝对值，纯分配取分配量），不是工时。
+      </p>
+
+      <div class="card">
+        <div class="card-head"><h2>筛选条件</h2><button class="btn secondary sm" id="btnReset" onclick="resetFilters()">重置</button></div>
+        <div class="filters">
+          <label>起始日<input id="wlFrom" type="date"></label>
+          <label>截止日<input id="wlTo" type="date"></label>
+          <label>操作人<select id="wlOperator"></select></label>
+          <label>作业节点<select id="wlNode"></select></label>
+          <button class="btn sm" id="btnApply" onclick="applyFilters()">应用筛选</button>
+        </div>
+      </div>
+
+      <div class="tabbar" id="wlTabs"></div>
+
+      <section class="panel active" id="panel-operator">
+        <div class="card">
+          <div class="card-head"><h2>按人统计</h2><span id="opStat" class="dim"></span></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>操作人</th><th>事件数</th><th>涉及数量</th><th>覆盖节点</th><th>活跃天数</th><th>最近作业</th></tr></thead>
+            <tbody id="opBody"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-node">
+        <div class="card">
+          <div class="card-head"><h2>按节点统计</h2><span id="nodeStat" class="dim"></span></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>作业节点</th><th>事件数</th><th>占比</th><th>涉及数量</th><th>操作人数</th><th>最近作业</th></tr></thead>
+            <tbody id="nodeBody"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-period">
+        <div class="card">
+          <div class="card-head"><h2>按时间段统计</h2>
+            <div class="filters" style="margin:0">
+              <label>粒度<select id="wlPeriod"></select></label>
+              <button class="btn sm" id="btnPeriod" onclick="loadPeriod()">刷新</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>时间段</th><th>事件数</th><th>分布</th><th>涉及数量</th><th>操作人数</th></tr></thead>
+            <tbody id="periodBody"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-events">
+        <div class="card">
+          <div class="card-head"><h2>事件明细</h2><span id="eventStat" class="dim"></span></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>时间</th><th>节点</th><th>动作</th><th>操作人</th><th>数据源</th><th>数量</th><th>备注</th></tr></thead>
+            <tbody id="eventBody"></tbody>
+          </table></div>
+          <div class="toolbar" style="margin-top:8px">
+            <button class="btn secondary sm" id="btnPrev" onclick="loadEvents(eventPage-1)">上一页</button>
+            <span id="eventPageInfo" class="dim"></span>
+            <button class="btn secondary sm" id="btnNext" onclick="loadEvents(eventPage+1)">下一页</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+<script src="/miniwms/js/layout.js"></script>
+<script>
+let D = {};
+let activeTab = "operator";
+let eventPage = 1;
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+function emptyRow(id, colspan, text) {
+  document.getElementById(id).innerHTML = `<tr><td colspan="${colspan}" class="muted">${esc(text)}</td></tr>`;
+}
+function fillSelect(id, items, placeholder) {
+  const el = document.getElementById(id);
+  el.innerHTML = (placeholder ? `<option value="">${esc(placeholder)}</option>` : "") +
+    items.map(x => `<option value="${esc(x.code != null ? x.code : x.operator)}">${esc(x.label || x.operator)}</option>`).join("");
+}
+async function GET(path) {
+  const d = await api("GET", path);
+  if (!d || d.ok === false) throw new Error((d && d.error) || "请求失败");
+  return d;
+}
+function labelOf(code) {
+  return (D.nodes || []).find(n => n.code === code)?.label || code;
+}
+function query() {
+  const q = new URLSearchParams();
+  const from = document.getElementById("wlFrom").value;
+  const to = document.getElementById("wlTo").value;
+  const op = document.getElementById("wlOperator").value;
+  const node = document.getElementById("wlNode").value;
+  if (from) q.set("date_from", from);
+  if (to) q.set("date_to", to);
+  if (op) q.set("operator", op);
+  if (node) q.set("node", node);
+  return q.toString();
+}
+
+const TABS = [
+  {code:"operator", label:"按人"},
+  {code:"node", label:"按节点"},
+  {code:"period", label:"按时间段"},
+  {code:"events", label:"事件明细"},
+];
+function renderTabs() {
+  document.getElementById("wlTabs").innerHTML = TABS.map(t =>
+    `<button class="tab ${t.code === activeTab ? "active" : ""}" data-tab="${t.code}">${esc(t.label)}</button>`
+  ).join("");
+  document.querySelectorAll("#wlTabs .tab").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+}
+function switchTab(code) {
+  activeTab = code;
+  document.querySelectorAll("#wlTabs .tab").forEach(b => b.classList.toggle("active", b.dataset.tab === code));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + code));
+}
+
+async function loadDict() {
+  D = await GET("/api/workload/dict");
+  fillSelect("wlNode", D.nodes || [], "全部节点");
+  fillSelect("wlPeriod", D.periods || []);
+  document.getElementById("wlPeriod").value = "day";
+  const ops = await GET("/api/workload/operators");
+  fillSelect("wlOperator", ops.operators || [], "全部操作人");
+  renderTabs();
+}
+
+async function loadOverview() {
+  const q = query();
+  const d = await GET("/api/workload/overview" + (q ? "?" + q : ""));
+  document.getElementById("wlOverview").innerHTML =
+    `<div class="card"><div class="card-head"><h2>作业概览</h2>
+      <span class="dim">${q ? "已应用筛选条件" : "全部可见数据"}</span></div>
+      ${d.cards.map(c => `<div class="stat"><span>${esc(c.label)}</span><b>${c.value}</b></div>`).join("")}
+      <div class="topbox">
+        <div><span class="dim">操作人 Top5</span><ul>${(d.top_operators || []).map(o =>
+          `<li><span>${esc(o.operator)}</span><b>${o.count}</b></li>`).join("") || "<li>暂无数据</li>"}</ul></div>
+        <div><span class="dim">热门节点 Top5</span><ul>${(d.top_nodes || []).map(n =>
+          `<li><span>${esc(n.label)}</span><b>${n.count}</b></li>`).join("") || "<li>暂无数据</li>"}</ul></div>
+        <div><span class="dim">近 14 天趋势</span><ul>${(d.daily || []).slice(-5).map(x =>
+          `<li><span>${esc(x.label)}</span><b>${x.count}</b></li>`).join("") || "<li>暂无数据</li>"}</ul></div>
+      </div></div>`;
+}
+
+async function loadByOperator() {
+  const q = query();
+  const d = await GET("/api/workload/by-operator" + (q ? "?" + q : ""));
+  document.getElementById("opStat").textContent = `共 ${d.operators.length} 人`;
+  if (!d.operators.length) return emptyRow("opBody", 6, "无符合条件的作业记录");
+  document.getElementById("opBody").innerHTML = d.operators.map(o =>
+    `<tr><td>${esc(o.operator)}</td><td><b>${o.count}</b></td>
+      <td>${Number(o.qty).toFixed(2)}</td>
+      <td>${(o.node_labels || []).map(n => `<span class="tag blue">${esc(n)}</span>`).join(" ")}</td>
+      <td>${o.active_days}</td><td>${esc(o.last_at || "—")}</td></tr>`).join("");
+}
+
+async function loadByNode() {
+  const q = query();
+  const d = await GET("/api/workload/by-node" + (q ? "?" + q : ""));
+  document.getElementById("nodeStat").textContent = `共 ${d.nodes.length} 个节点`;
+  if (!d.nodes.length) return emptyRow("nodeBody", 6, "无符合条件的作业记录");
+  const max = Math.max(...d.nodes.map(n => n.count), 1);
+  document.getElementById("nodeBody").innerHTML = d.nodes.map(n =>
+    `<tr><td><span class="tag green">${esc(n.label)}</span></td><td><b>${n.count}</b></td>
+      <td><span class="bar" style="width:${Math.round(n.count / max * 90)}px"></span>
+        ${(n.count / d.total * 100).toFixed(1)}%</td>
+      <td>${Number(n.qty).toFixed(2)}</td><td>${n.operator_count}</td>
+      <td>${esc(n.last_at || "—")}</td></tr>`).join("");
+}
+
+async function loadPeriod() {
+  const q = query();
+  const period = document.getElementById("wlPeriod").value || "day";
+  const d = await GET("/api/workload/by-period?" + (q ? q + "&" : "") + "period=" + period);
+  if (!d.series.length) return emptyRow("periodBody", 5, "无符合条件的作业记录");
+  const max = Math.max(...d.series.map(s => s.count), 1);
+  document.getElementById("periodBody").innerHTML = d.series.map(s =>
+    `<tr><td>${esc(s.label)}</td><td><b>${s.count}</b></td>
+      <td><span class="bar" style="width:${Math.round(s.count / max * 90)}px"></span>
+        ${Object.entries(s.nodes || {}).map(([k,v]) => `${esc(labelOf(k))} ${v}`).join(" / ")}</td>
+      <td>${Number(s.qty).toFixed(2)}</td><td>${s.operator_count}</td></tr>`).join("");
+}
+
+async function loadEvents(page) {
+  eventPage = Math.max(1, page);
+  const q = query();
+  const d = await GET("/api/workload/events?" + (q ? q + "&" : "") +
+    "page=" + eventPage + "&page_size=20");
+  document.getElementById("eventStat").textContent = `共 ${d.total} 条事件`;
+  document.getElementById("eventPageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
+  if (!d.events.length) return emptyRow("eventBody", 7, "无符合条件的事件明细");
+  document.getElementById("eventBody").innerHTML = d.events.map(e =>
+    `<tr><td>${esc(e.occurred_at)}</td><td><span class="tag blue">${esc(e.node_label)}</span></td>
+      <td>${esc(e.action)}</td><td>${esc(e.operator)}</td><td>${esc(e.source)}</td>
+      <td>${Number(e.qty).toFixed(2)}</td><td>${esc(e.note || "—")}</td></tr>`).join("");
+}
+
+function applyFilters() {
+  eventPage = 1;
+  Promise.all([loadOverview(), loadByOperator(), loadByNode(), loadPeriod(), loadEvents(1)])
+    .catch(e => msg("筛选失败：" + e.message, "error"));
+}
+function resetFilters() {
+  ["wlFrom", "wlTo"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("wlOperator").value = "";
+  document.getElementById("wlNode").value = "";
+  applyFilters();
+}
+
+(async function init() {
+  if (window.MWS_NAV_TOOLS) window.MWS_NAV_TOOLS.mount();
+  try {
+    await loadDict();
+    await Promise.all([loadOverview(), loadByOperator(), loadByNode(), loadPeriod(), loadEvents(1)]);
+  } catch (e) { msg("页面初始化失败：" + e.message, "error"); }
+})();
+</script>
+</body>
+</html>

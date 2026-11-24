@@ -12,6 +12,7 @@
 .m23-pill { display:inline-block; border-radius:10px; padding:1px 8px; font-size:11px; white-space:nowrap; }
 .m23-risk { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }
 .m23-ok { background:#f1f5f9; color:#64748b; border:1px solid #e2e8f0; }
+.toolbar .btn[hidden] { display:none; }
 </style>
 </head>
 <body>
@@ -41,8 +42,11 @@
       <label>创建至 <input id="dnDateTo" type="date"></label>
       <select id="statusFilter">
         <option value="">全部状态</option>
-        <option value="open">待拣货</option>
+        <option value="open">新建</option>
+        <option value="allocated">已分配</option>
         <option value="picking">拣货中</option>
+        <option value="picked">已拣货</option>
+        <option value="reviewed">已复核</option>
         <option value="shipped">已发货</option>
         <option value="cancelled">已取消</option>
       </select>
@@ -50,7 +54,7 @@
     </div>
       <div class="table-wrap">
       <table>
-      <thead><tr><th>单号</th><th>单据类型</th><th>货主</th><th>客户</th><th>调出 / 出库仓</th><th>调入仓</th><th>总数量</th><th>品类数</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead>
+      <thead><tr><th>单号</th><th>单据类型</th><th>货主</th><th>客户</th><th>总数量</th><th>品类数</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -67,6 +71,9 @@
     <div class="toolbar">
       <select id="pickLocSel"></select><span class="muted">← 拣货来源位（存储/拣货区）</span>
       <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
+      <button class="btn secondary" onclick="refreshDnDetail()">刷新明细</button>
+      <button class="btn secondary" id="confirmPickBtn" onclick="confirmPick()" hidden>确认拣货完成</button>
+      <button class="btn secondary" id="reviewBtn" onclick="openWorkTab('出库复核','/miniwms/dn_review.html?dn_id=' + currentDn.dn.id)" hidden>去复核</button>
         <button class="btn" id="shipBtn" onclick="doShip()">确认发货</button>
     </div>
     <div class="table-wrap">
@@ -94,8 +101,7 @@
       </div>
     </div>
 
-    <script src="/miniwms/js/preview-data.js"></script>
-<script src="/miniwms/js/preview-api.js"></script>
+    <script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
 <script src="/miniwms/js/api.js"></script>
     <script src="/miniwms/js/modal.js"></script>
     <script src="/miniwms/js/order_lines.js"></script>
@@ -161,8 +167,6 @@ async function load() {
         <td>${esc(d.doc_type || "")}</td>
         <td>${esc(d.owner_code || "")} · ${esc(d.owner_name || "")}</td>
         <td>${esc(d.customer_display_name || d.customer_name || "—")}</td>
-        <td>${esc(d.source_warehouse_code || "-")}</td>
-        <td>${esc(d.target_warehouse_name || d.target_warehouse_code || "—")}</td>
         <td>${d.total_qty ?? 0}</td>
         <td>${d.category_count ?? 0}</td>
         <td>${dnStatusTag(d.status)}</td>
@@ -171,18 +175,24 @@ async function load() {
         <td>
           <button class="btn secondary sm" onclick="openDnDetail(${d.id})">明细</button>
           <button class="btn secondary sm" onclick="openWorkTab('打印发货单','/miniwms/print_preview.html?node=ship&source=dn&doc_id=${d.id}')">打印</button>
-          ${d.status === "open" ? `<button class="btn danger sm" onclick="cancelDn(${d.id})">取消</button>` : ""}
+          ${d.status === "open" || (d.workflow_required && ["allocated", "picking", "picked"].includes(d.status))
+            ? `<button class="btn danger sm" onclick="cancelDn(${d.id})">取消</button>` : ""}
         </td>
-      </tr>`).join("") || '<tr><td colspan="12" class="muted">暂无符合条件的出库单</td></tr>';
+      </tr>`).join("") || '<tr><td colspan="10" class="muted">暂无符合条件的出库单</td></tr>';
   } catch (e) {
     showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
   }
 }
 
 function dnStatusTag(s) {
-  const map = { open: "待拣货", picking: "拣货中", shipped: "已发货", cancelled: "已取消" };
   const cls = s === "shipped" ? "ok" : "off";
-  return `<span class="tag ${cls}">${map[s] || s}</span>`;
+  return `<span class="tag ${cls}">${esc(dnStatusLabel(s))}</span>`;
+}
+
+function dnStatusLabel(status) {
+  const labels = { open: "新建", allocated: "已分配", picking: "拣货中", picked: "已拣货",
+    reviewed: "已复核", shipped: "已发货", cancelled: "已取消" };
+  return labels[status] || status;
 }
 
 async function showDetail(id) {
@@ -193,9 +203,12 @@ async function showDetail(id) {
   document.getElementById("detailTitle").textContent =
     `出库单明细 · ${data.dn.code}`;
   const d = data.dn;
-  document.getElementById("shipBtn").disabled = !["open", "picking"].includes(d.status)
-    || data.lines.some(line => line.remaining_pick > 1e-9);
+  const short = data.lines.some(line => line.remaining_pick > 1e-9);
+  document.getElementById("confirmPickBtn").hidden = d.status !== "allocated" || short;
+  document.getElementById("reviewBtn").hidden = d.status !== "picked";
+  document.getElementById("shipBtn").disabled = d.status !== "reviewed" || short;
   document.getElementById("dnMeta").innerHTML = [
+    ["状态", dnStatusLabel(d.status), "更新时间", d.updated_at || "—"],
     ["单据类型", d.doc_type || "-", "外部单号", d.external_no || "-"],
     ["外部单据类别", d.external_doc_type || "-", "单据标识", docFlagsText(d)],
     ["来源仓库", d.source_warehouse_name || (d.source_warehouse_code || "-"), "订单来源", d.order_source || "-"],
@@ -210,8 +223,8 @@ async function showDetail(id) {
   ].map(([k1, v1, k2, v2]) =>
     `<tr><td class="muted">${k1}</td><td>${esc(v1)}</td><td class="muted">${k2}</td><td>${esc(v2)}</td></tr>`
   ).join("");
-  await loadLocs();
   renderLines();
+  await loadLocs();
   await loadRiskLogs(id);
   await showRiskNotice(id, d.status);
 }
@@ -275,7 +288,7 @@ function renderLines() {
       <td><details><summary>查看</summary>${batchDetails(SNAP_FIELDS.concat(BATCH_FIELDS), l.line_snapshot)}</details></td>
       <td>
         <input id="pk-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
-        <button class="btn sm" onclick="doPick(${l.id})" ${d.dn.status === "shipped" || d.dn.status === "cancelled" ? "disabled" : ""}>拣货</button>
+        <button class="btn sm" onclick="doPick(${l.id})" ${l.remaining_pick <= 1e-9 || !["open", "picking", "allocated"].includes(d.dn.status) ? "disabled" : ""}>拣货</button>
       </td>
     </tr>`).join("");
   document.getElementById("pickBody").innerHTML = d.picks.length
@@ -291,12 +304,27 @@ async function doPick(lineId) {
   try {
     const r = await api("POST", `/api/dns/${currentDn.dn.id}/pick`,
       { line_id: lineId, location_id: locationId, qty });
-    showMsg(document.getElementById("msg"), `拣货成功，单据状态：${r.status}`, "success");
+    showMsg(document.getElementById("msg"), `拣货成功，单据状态：${dnStatusLabel(r.status)}`, "success");
     await showDetail(currentDn.dn.id);
     load();
   } catch (e) {
     showMsg(document.getElementById("msg"), "拣货失败：" + e.message, "error");
   }
+}
+
+async function confirmPick() {
+  const id = currentDn.dn.id;
+  try {
+    await api("POST", `/api/dns/${id}/confirm-pick`, {});
+    await Promise.all([showDetail(id), load()]);
+    showMsg(document.getElementById("msg"), "已确认拣货，可以复核");
+  } catch (e) { showMsg(document.getElementById("msg"), e.message, "error"); }
+}
+
+async function refreshDnDetail() {
+  if (!currentDn) return;
+  try { await showDetail(currentDn.dn.id); }
+  catch (e) { showMsg(document.getElementById("msg"), "刷新失败：" + e.message, "error"); }
 }
 
 async function doShip() {
@@ -415,7 +443,7 @@ async function openCreate() {
     ],
     onSubmit: async (p) => {
       delete p.warehouse_display;
-      await api("POST", "/api/dns", { ...p, source_warehouse: warehouse.id });
+      await api("POST", "/api/dns", { ...p, source_warehouse: warehouse.id, workflow_required: true });
       showMsg(document.getElementById("msg"), "创建成功", "success");
       load();
     },
@@ -436,6 +464,7 @@ async function openCreate() {
   }
   function syncType() {
     const transfer = docType.value === "调拨";
+    field("warehouse_display").parentElement.hidden = !transfer;
     target.parentElement.hidden = !transfer;
     target.disabled = !transfer;
     target.required = transfer;
@@ -454,16 +483,19 @@ async function openCreate() {
 
 function openDnDetail(id) {
   const r = dnList.find((x) => x.id === id);
-  openDetail("出库 " + (r ? r.code : id), "/miniwms/dns.html?detail=" + id);
+  openWorkTab("出库 " + (r ? r.code : id), "/miniwms/dns.html?detail=" + id);
 }
 
 document.getElementById("dnOwner").addEventListener("change", event => {
   filterOwnerOptions(document.getElementById("dnCustomer"), allCustomerOptions, event.target.value);
 });
-loadOptions().then(load).then(() => {
-  const dp = new URLSearchParams(location.search).get("detail");
-  if (dp) showDetail(parseInt(dp, 10));
-});
+const detailId = new URLSearchParams(location.search).get("detail");
+if (detailId) {
+  document.getElementById("tbody").closest(".card").hidden = true;
+  showDetail(Number(detailId)).catch(e => showMsg(document.getElementById("msg"), "明细加载失败：" + e.message, "error"));
+} else {
+  loadOptions().then(load).catch(e => showMsg(document.getElementById("msg"), e.message, "error"));
+}
 </script>
 </body>
 </html>

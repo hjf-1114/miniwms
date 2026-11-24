@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用户管理 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>用户管理</h1><div class="crumb">MiniWMS / 系统管理</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>用户列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建用户</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>绑定货主</th><th>数据范围</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/modal.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
+<script>
+requireLogin();
+
+let roleOptions = [];
+let ownerOptions = [{ value: "", label: "（不绑定，全局）" }];
+
+function userFields() {
+  return [
+    { name: "username", label: "用户名 *", required: true },
+    { name: "password", label: "密码 *（编辑时留空=不修改）", type: "text" },
+    { name: "role_id", label: "角色 *", type: "select", required: true, options: roleOptions },
+    { name: "owner_id", label: "绑定货主（可空=全局）", type: "select", nullable: true, options: ownerOptions },
+    { name: "status", label: "状态", type: "select", options: [
+      { value: "active", label: "启用" }, { value: "inactive", label: "停用" },
+    ] },
+  ];
+}
+
+async function loadOptions() {
+  const [roles, owners] = await Promise.all([
+    api("GET", "/api/roles"),
+    api("GET", "/api/owners?page_size=100"),
+  ]);
+  roleOptions = roles.roles.map((r) => ({ value: r.id, label: `${r.name}${r.name === "管理员" ? "（全部权限）" : ""}` }));
+  ownerOptions = [{ value: "", label: "（不绑定，全局）" }].concat(
+    owners.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }))
+  );
+}
+
+async function load() {
+  try {
+    const data = await api("GET", "/api/users");
+    document.getElementById("tbody").innerHTML = data.users.map((u) =>
+      `<tr>
+        <td>${u.id}</td>
+        <td>${esc(u.username)}</td>
+        <td>${esc(u.role_name || "-")}</td>
+        <td>${u.owner_code ? esc(u.owner_code) : '<span class="muted">全局</span>'}</td>
+        <td><span class="muted">${scopeText(u)}</span></td>
+        <td>${statusTag(u.status)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${u.id})">编辑</button>
+          <button class="btn secondary sm" onclick="openGrants(${u.id})">数据权限</button>
+          <button class="btn danger sm" onclick="del(${u.id})">删除</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function openCreate() {
+  openForm({
+    title: "新建用户", submitText: "创建", fields: userFields(), width: 600,
+    onSubmit: async (p) => {
+      await api("POST", "/api/users", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/users/" + id);
+  const u = data.user;
+  openForm({
+    title: "编辑用户", submitText: "保存", fields: userFields(), width: 600,
+    values: {
+      username: u.username, password: "", role_id: u.role_id,
+      owner_id: u.owner_id == null ? "" : u.owner_id, status: u.status,
+    },
+    onSubmit: async (p) => {
+      if (!p.password) delete p.password;  // 留空不修改
+      await api("PUT", "/api/users/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+function scopeText(u) {
+  return (u.warehouse_scope === "all" ? "全部仓库" : "指定仓库") + " · " +
+         (u.owner_scope === "all" ? "全部货主" : "指定货主");
+}
+
+/** 配置账号可访问的仓库 / 货主范围（全部或自定义部分）。 */
+async function openGrants(uid) {
+  let d;
+  try { d = await api("GET", "/api/users/" + uid + "/grants"); }
+  catch (e) { showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error"); return; }
+
+  const ov = openForm({
+    title: "数据权限配置 · " + d.user.username, submitText: "保存授权", width: 720,
+    values: { warehouse_scope: d.user.warehouse_scope, owner_scope: d.user.owner_scope },
+    fields: [
+      { type: "section", label: "数据可见范围（ALL 是显式标志，不靠空配置隐含放行）" },
+      { name: "warehouse_scope", label: "仓库范围", type: "select", options: [
+        { value: "all", label: "可切换到全部仓库（作业视角，一次只看一个仓）" },
+        { value: "grant", label: "仅可访问下方勾选的仓库" },
+      ], help: "仓库已按容器/数据库隔离，账号只能切到有权限的仓" },
+      { name: "owner_scope", label: "货主范围", type: "select", options: [
+        { value: "all", label: "可查看全部货主数据" },
+        { value: "grant", label: "仅可查看下方勾选的货主数据" },
+      ], help: "货主维度在同一仓内由 SQL 层自动注入 owner_id 条件" },
+    ],
+    onSubmit: async (p) => {
+      const whIds = Array.from(ov.querySelectorAll("[data-wh]:checked")).map((x) => Number(x.value));
+      const owIds = Array.from(ov.querySelectorAll("[data-ow]:checked")).map((x) => Number(x.value));
+      await api("PUT", "/api/users/" + uid + "/grants", {
+        warehouse_scope: p.warehouse_scope, owner_scope: p.owner_scope,
+        warehouse_ids: whIds, owner_ids: owIds,
+      });
+      showMsg(document.getElementById("msg"), "数据权限已保存（下次请求立即生效）", "success");
+      load();
+    },
+  });
+
+  const boxes = (list, checked, attr, emptyText) => {
+    if (!list.length) return '<span class="muted">（暂无可选' + emptyText + '）</span>';
+    return list.map((x) =>
+      '<label class="grant-item"><input type="checkbox" ' + attr + ' value="' + x.id + '"' +
+      (checked.indexOf(x.id) >= 0 ? " checked" : "") + '>' +
+      '<span>' + esc(x.code + " · " + x.name) + '</span></label>').join("");
+  };
+  const block = document.createElement("div");
+  block.className = "grant-grid full";
+  block.innerHTML =
+    '<div><label>可访问仓库</label><div class="grant-list" id="grantWh">' +
+      boxes(d.warehouses, d.warehouse_ids, "data-wh", "仓库") + '</div></div>' +
+    '<div><label>可查看货主</label><div class="grant-list" id="grantOw">' +
+      boxes(d.owners, d.owner_ids, "data-ow", "货主") + '</div></div>';
+  const form = ov.querySelector("#modalForm");
+  form.insertBefore(block, form.querySelector(".modal-foot"));
+
+  const whSel = ov.querySelector('[name="warehouse_scope"]');
+  const owSel = ov.querySelector('[name="owner_scope"]');
+  function sync() {
+    ov.querySelectorAll("[data-wh]").forEach((c) => { c.disabled = whSel.value === "all"; });
+    ov.querySelectorAll("[data-ow]").forEach((c) => { c.disabled = owSel.value === "all"; });
+    block.querySelector("#grantWh").style.opacity = whSel.value === "all" ? ".45" : "1";
+    block.querySelector("#grantOw").style.opacity = owSel.value === "all" ? ".45" : "1";
+  }
+  whSel.addEventListener("change", sync);
+  owSel.addEventListener("change", sync);
+  sync();
+}
+
+async function del(id) {
+  if (!confirm("确认删除该用户？")) return;
+  try {
+    await api("DELETE", "/api/users/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+loadOptions().then(load);
+</script>
+</body>
+</html>

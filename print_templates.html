@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>打印模板配置 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.hint { font-size:13px; line-height:1.7; color:var(--text-muted,#666); margin:0 0 12px; }
+.dim { font-size:12px; color:#64748b; }
+.tabbar { display:flex; gap:6px; margin:4px 0 12px; border-bottom:1px solid #e2e8f0; }
+.tab { padding:7px 13px; border:none; background:none; cursor:pointer; font-size:13px;
+  color:#475569; border-bottom:2px solid transparent; }
+.tab.active { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.panel { display:none; } .panel.active { display:block; }
+.grid2 { display:grid; grid-template-columns:320px 1fr; gap:16px; align-items:start; }
+.formrow { display:flex; flex-direction:column; gap:3px; margin-bottom:8px; }
+.formrow label { font-size:12px; color:#475569; }
+.formrow input, .formrow select, .formrow textarea { padding:6px 8px; border:1px solid #cbd5e1;
+  border-radius:6px; font-size:13px; width:100%; }
+textarea { min-height:180px; font-family:ui-monospace,Consolas,monospace; line-height:1.6; }
+.chips { display:flex; flex-wrap:wrap; gap:5px; margin:6px 0; }
+.chip { border:1px solid #cbd5e1; background:#f8fafc; border-radius:12px; padding:2px 8px;
+  font-size:11px; cursor:pointer; color:#334155; }
+.chip:hover { border-color:#2563eb; color:#2563eb; }
+.block { border:1px solid #cbd5e1; border-radius:8px; padding:9px 11px; margin:7px 0;
+  background:#f8fafc; cursor:grab; }
+.block.dragover { border-color:#2563eb; background:#eff6ff; }
+.blockhead { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
+.blockhead input, .blockhead select { padding:4px 6px; border:1px solid #cbd5e1; border-radius:5px; }
+.blockfields { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:#334155; }
+.tag { display:inline-block; padding:2px 7px; border-radius:10px; font-size:11px; }
+.tag.on { background:#e6f6ec; color:#1d7a4d; } .tag.off { background:#f1f5f9; color:#64748b; }
+.subtable { width:100%; border-collapse:collapse; font-size:12px; }
+.subtable th, .subtable td { border:1px solid #e2e8f0; padding:5px 7px; text-align:left; }
+.subtable th { background:#f1f5f9; color:#475569; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>打印模板配置</h1><div class="crumb">MiniWMS / 打印中心 / 打印配置 / 模板配置</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+      <p class="hint">
+        六个作业节点各可挂多模板、一个生效。<b>L1 占位符文本</b>与<b>L2 区块拖拽排版</b>共用同一份
+        <code>layout_json</code>：L1 有内容时优先按文本渲染，清空后走 L2 区块。
+        PDF 用系统 Chrome headless 生成，零安装；预览页的临时编辑不回写业务单据。
+      </p>
+      <div class="grid2">
+        <div>
+          <div class="card">
+            <div class="card-head"><h2>模板列表</h2>
+              <button class="btn sm" id="btnNew" onclick="newTemplate()">+ 新建</button></div>
+            <div class="formrow"><label>作业节点</label><select id="nodeFilter" onchange="renderList()"></select></div>
+            <div id="tplList"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2 id="editorTitle">模板编辑器</h2>
+            <span class="dim" id="editorMeta"></span></div>
+          <div class="formrow"><label>模板编码</label><input id="tplCode" placeholder="如 CUSTOM-RECEIVE"></div>
+          <div class="formrow"><label>模板名称</label><input id="tplName" placeholder="如 收货单（含批号）"></div>
+          <div class="formrow"><label>适用节点 / 版本</label>
+            <div style="display:flex;gap:8px"><select id="tplNode" style="flex:1"></select>
+            <input id="tplVersion" value="1.0" style="width:90px"></div></div>
+          <div class="formrow"><label>备注</label><input id="tplNote"></div>
+
+          <div class="tabbar">
+            <button class="tab active" id="tabL1" data-tab="l1">L1 占位符 + 字段映射</button>
+            <button class="tab" id="tabL2" data-tab="l2">L2 可视化拖拽排版</button>
+          </div>
+          <section class="panel active" id="panel-l1">
+            <p class="dim">点击字段插入占位符；<code>{{lines_table}}</code> 展开明细表。留空则使用 L2 区块排版。</p>
+            <div class="chips" id="fieldChips"></div>
+            <textarea id="contentText" placeholder="单号 {{code}}&#10;货主 {{owner_name}}&#10;{{lines_table}}"></textarea>
+          </section>
+          <section class="panel" id="panel-l2">
+            <p class="dim">拖动区块卡片调整顺序；勾选字段控制显隐。区块级拖拽保证 A4 分页稳定。</p>
+            <div class="toolbar" style="margin-bottom:6px">
+              <select id="newBlockType"></select>
+              <button class="btn secondary sm" id="btnAddBlock" onclick="addBlock()">+ 添加区块</button>
+            </div>
+            <div id="blockList"></div>
+          </section>
+
+          <h3 style="font-size:13px;margin:14px 0 6px">字段映射（标签 / 列宽 / 可临时编辑）</h3>
+          <div class="table-wrap"><table class="subtable">
+            <thead><tr><th>字段</th><th>范围</th><th>显示名</th><th>列宽(px)</th><th>可编辑</th></tr></thead>
+            <tbody id="fieldMapBody"></tbody>
+          </table></div>
+          <div class="toolbar" style="margin-top:12px">
+            <button class="btn" id="btnSave" onclick="saveTemplate()">保存模板</button>
+            <button class="btn secondary" id="btnActivate" onclick="activateTemplate()">设为生效</button>
+            <button class="btn danger" id="btnDelete" onclick="deleteTemplate()">删除</button>
+            <button class="btn secondary" type="button" onclick="openWorkTab('打印预览','/miniwms/print_preview.html')">打开打印预览</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+<script src="/miniwms/js/layout.js"></script>
+<script>
+let D = {}, templates = [], current = null, dragIndex = -1;
+
+function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+async function GET(path) {
+  const d = await api("GET", path);
+  if (!d || d.ok === false) throw new Error(d && d.error || "请求失败");
+  return d;
+}
+async function send(method, path, payload) {
+  const d = await api(method, path, payload);
+  if (!d || d.ok === false) throw new Error(d && d.error || "请求失败");
+  return d;
+}
+function fill(id, items, placeholder) {
+  document.getElementById(id).innerHTML = (placeholder ? `<option value="">${esc(placeholder)}</option>` : "") +
+    items.map(x => `<option value="${esc(x.code)}">${esc(x.label)}</option>`).join("");
+}
+function switchTab(code) {
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === code));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + code));
+}
+
+async function initDict() {
+  D = await GET("/api/print/dict");
+  fill("nodeFilter", D.nodes);
+  fill("tplNode", D.nodes);
+  fill("newBlockType", D.blocks);
+  document.getElementById("nodeFilter").value = D.nodes[0].code;
+  document.getElementById("fieldChips").innerHTML =
+    D.fields.map(f => `<button class="chip" data-field="${esc(f.code)}">${esc(f.label)}</button>`).join("") +
+    `<button class="chip" data-field="lines_table">明细表 lines_table</button>`;
+  document.querySelectorAll(".chip").forEach(b => b.onclick = () => {
+    const ta = document.getElementById("contentText");
+    const token = "{{" + b.dataset.field + "}}";
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + token + ta.value.slice(e);
+    ta.focus(); ta.selectionStart = ta.selectionEnd = s + token.length;
+  });
+  document.querySelectorAll(".tab").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+  await renderList();
+  newTemplate();
+}
+
+async function renderList() {
+  const node = document.getElementById("nodeFilter").value;
+  templates = (await GET("/api/print/templates?node=" + encodeURIComponent(node))).templates;
+  document.getElementById("tplList").innerHTML = templates.map(t =>
+    `<div class="block" style="cursor:pointer" data-id="${t.id}">
+      <b>${esc(t.name)}</b> ${t.is_active ? '<span class="tag on">生效</span>' : '<span class="tag off">停用</span>'}
+      <div class="dim">${esc(t.code)} · v${esc(t.version)} · ${esc(t.note || "无备注")}</div>
+      <div style="margin-top:5px">
+        <button class="btn secondary sm" onclick="editTemplate(${t.id})">编辑</button>
+        <button class="btn secondary sm" onclick="copyTemplate(${t.id})">复制</button>
+        ${t.is_active ? "" : `<button class="btn sm" onclick="activateById(${t.id})">生效</button>`}
+      </div></div>`).join("") || `<p class="dim">该节点暂无模板</p>`;
+}
+
+function currentLayout() {
+  return current && current.layout ? JSON.parse(JSON.stringify(current.layout))
+    : {blocks: [], content_template: ""};
+}
+function editTemplate(id) {
+  current = templates.find(t => t.id === id);
+  if (!current) return;
+  document.getElementById("tplCode").value = current.code;
+  document.getElementById("tplName").value = current.name;
+  document.getElementById("tplNode").value = current.node;
+  document.getElementById("tplVersion").value = current.version || "1.0";
+  document.getElementById("tplNote").value = current.note || "";
+  document.getElementById("contentText").value = current.layout.content_template || "";
+  document.getElementById("editorTitle").textContent = "编辑模板 #" + current.id;
+  document.getElementById("editorMeta").textContent = current.node + " · " + current.code;
+  renderBlocks(); renderFieldMap();
+}
+function newTemplate() {
+  current = null;
+  document.getElementById("tplCode").value = "";
+  document.getElementById("tplName").value = "";
+  document.getElementById("tplNode").value = document.getElementById("nodeFilter").value;
+  document.getElementById("tplVersion").value = "1.0";
+  document.getElementById("tplNote").value = "";
+  document.getElementById("contentText").value = "";
+  document.getElementById("editorTitle").textContent = "新建模板";
+  document.getElementById("editorMeta").textContent = "保存后可设为生效";
+  current = {layout: {blocks: JSON.parse(JSON.stringify(D.blocks ? [] : [])), content_template: ""},
+    field_map: Object.fromEntries(D.fields.map(f => [f.code, {label: f.label, editable: !!f.editable}]))};
+  renderBlocks(); renderFieldMap();
+}
+function copyTemplate(id) {
+  const t = templates.find(x => x.id === id); if (!t) return;
+  newTemplate();
+  document.getElementById("tplCode").value = t.code + "-COPY";
+  document.getElementById("tplName").value = t.name + "（副本）";
+  document.getElementById("tplNode").value = t.node;
+  document.getElementById("tplNote").value = t.note || "";
+  document.getElementById("contentText").value = t.layout.content_template || "";
+  current.layout.blocks = JSON.parse(JSON.stringify(t.layout.blocks || []));
+  current.field_map = JSON.parse(JSON.stringify(t.field_map || {}));
+  renderBlocks(); renderFieldMap();
+}
+
+function renderBlocks() {
+  const blocks = (current && current.layout && current.layout.blocks) || [];
+  document.getElementById("blockList").innerHTML = blocks.map((b, i) => {
+    const scope = (b.type === "table") ? "line" : "header";
+    const opts = D.fields.filter(f => f.scope === scope || b.type === "signature" ||
+      (b.type === "total" && f.code === "total_qty")).map(f =>
+      `<label><input type="checkbox" data-block="${i}" data-field="${esc(f.code)}"
+        ${(b.fields || []).includes(f.code) ? "checked" : ""}> ${esc(f.label)}</label>`).join("");
+    return `<div class="block" draggable="true" data-index="${i}">
+      <div class="blockhead"><b>⋮ 区块 ${i + 1}</b>
+        <select data-block-type="${i}">${D.blocks.map(x =>
+          `<option value="${esc(x.code)}" ${b.type === x.code ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
+        <input data-block-title="${i}" value="${esc(b.title || "")}" placeholder="区块标题">
+        <input data-block-cols="${i}" type="number" min="1" max="4" value="${b.columns || 2}" title="列数" style="width:60px">
+        <button class="btn danger sm" onclick="removeBlock(${i})">删除</button></div>
+      <div class="blockfields">${opts}</div>
+      <input data-block-text="${i}" value="${esc(b.text || "")}" placeholder="自由文本内容（支持 {{field}}）" style="width:100%;margin-top:6px">
+    </div>`;
+  }).join("") || `<p class="dim">无区块；可点「添加区块」或在 L1 填占位符文本</p>`;
+  document.querySelectorAll("#blockList .block").forEach(el => {
+    el.ondragstart = () => dragIndex = Number(el.dataset.index);
+    el.ondragover = (ev) => { ev.preventDefault(); el.classList.add("dragover"); };
+    el.ondragleave = () => el.classList.remove("dragover");
+    el.ondrop = (ev) => {
+      ev.preventDefault(); el.classList.remove("dragover");
+      const to = Number(el.dataset.index);
+      if (dragIndex < 0 || dragIndex === to) return;
+      const arr = current.layout.blocks;
+      arr.splice(to, 0, arr.splice(dragIndex, 1)[0]);
+      dragIndex = -1; syncBlocks(); renderBlocks();
+    };
+  });
+  document.querySelectorAll("[data-block-type]").forEach(el => el.onchange = () => {
+    current.layout.blocks[Number(el.dataset.blockType)].type = el.value; syncBlocks(); renderBlocks();
+  });
+  document.querySelectorAll("[data-block-title]").forEach(el => el.oninput = () => {
+    current.layout.blocks[Number(el.dataset.blockTitle)].title = el.value;
+  });
+  document.querySelectorAll("[data-block-cols]").forEach(el => el.oninput = () => {
+    current.layout.blocks[Number(el.dataset.blockCols)].columns = Number(el.value) || 2;
+  });
+  document.querySelectorAll("[data-block-text]").forEach(el => el.oninput = () => {
+    current.layout.blocks[Number(el.dataset.blockText)].text = el.value;
+  });
+  document.querySelectorAll("[data-block][data-field]").forEach(el => el.onchange = () => {
+    const b = current.layout.blocks[Number(el.dataset.block)];
+    b.fields = b.fields || [];
+    if (el.checked) b.fields.push(el.dataset.field);
+    else b.fields = b.fields.filter(f => f !== el.dataset.field);
+  });
+}
+function syncBlocks() {
+  const rows = [...document.querySelectorAll("#blockList .block")];
+  // 结构变化已直接写回 current.layout.blocks；此处仅保留顺序同步入口
+  return rows.map(el => Number(el.dataset.index));
+}
+function addBlock() {
+  const type = document.getElementById("newBlockType").value || "header";
+  current.layout.blocks.push({id: "b" + Date.now(), type, title: D.blocks.find(x => x.code === type).label,
+    fields: type === "table" ? ["line_no", "product_name", "qty"] : ["code"], columns: 2, text: ""});
+  renderBlocks();
+}
+function removeBlock(i) { current.layout.blocks.splice(i, 1); renderBlocks(); }
+
+function renderFieldMap() {
+  document.getElementById("fieldMapBody").innerHTML = D.fields.map(f => {
+    const m = current.field_map[f.code] || {label: f.label};
+    return `<tr><td>${esc(f.code)}</td><td>${esc(f.scope)}</td>
+      <td><input data-fm-label="${esc(f.code)}" value="${esc(m.label || f.label)}" style="width:100%"></td>
+      <td><input data-fm-width="${esc(f.code)}" value="${esc(m.width || "")}" style="width:70px"></td>
+      <td><input type="checkbox" data-fm-edit="${esc(f.code)}" ${m.editable ? "checked" : ""}></td></tr>`;
+  }).join("");
+  document.querySelectorAll("[data-fm-label]").forEach(el => el.oninput = () => {
+    current.field_map[el.dataset.fmLabel].label = el.value;
+  });
+  document.querySelectorAll("[data-fm-width]").forEach(el => el.oninput = () => {
+    current.field_map[el.dataset.fmWidth].width = el.value;
+  });
+  document.querySelectorAll("[data-fm-edit]").forEach(el => el.onchange = () => {
+    current.field_map[el.dataset.fmEdit].editable = el.checked;
+  });
+}
+
+function payload() {
+  syncBlocks();
+  return {node: document.getElementById("tplNode").value,
+    code: document.getElementById("tplCode").value.trim(),
+    name: document.getElementById("tplName").value.trim(),
+    version: document.getElementById("tplVersion").value.trim() || "1.0",
+    note: document.getElementById("tplNote").value,
+    is_active: current && current.is_active ? 1 : 0,
+    layout_json: {blocks: current.layout.blocks,
+                  content_template: document.getElementById("contentText").value},
+    field_map: current.field_map};
+}
+async function saveTemplate() {
+  const p = payload();
+  if (!p.code || !p.name) { msg("请填写模板编码与名称", "error"); return; }
+  try {
+    if (current && current.id) {
+      const d = await send("PUT", "/api/print/templates/" + current.id, p);
+      current = d.template; msg("模板已保存");
+    } else {
+      const d = await send("POST", "/api/print/templates", p);
+      current = d.template; msg("模板已创建");
+    }
+    await renderList();
+  } catch (e) { msg("保存失败：" + e.message, "error"); }
+}
+async function activateById(id) {
+  try { await send("POST", "/api/print/templates/" + id + "/activate", {});
+    await renderList(); msg("已设为生效模板"); } catch (e) { msg(e.message, "error"); }
+}
+async function activateTemplate() {
+  if (!current || !current.id) { msg("请先保存模板", "error"); return; }
+  await activateById(current.id);
+}
+async function deleteTemplate() {
+  if (!current || !current.id) { msg("请先选择模板", "error"); return; }
+  if (!confirm("确认删除模板「" + current.name + "」？")) return;
+  try { await send("DELETE", "/api/print/templates/" + current.id);
+    msg("已删除"); newTemplate(); await renderList(); } catch (e) { msg(e.message, "error"); }
+}
+
+(async function init() {
+  if (window.MWS_NAV_TOOLS) window.MWS_NAV_TOOLS.mount();
+  try { await initDict(); } catch (e) { msg("初始化失败：" + e.message, "error"); }
+})();
+</script>
+</body>
+</html>

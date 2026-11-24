@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>客户管理 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>客户管理</h1><div class="crumb">MiniWMS / 基础主数据</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>客户列表</h2>
+      <button class="btn" onclick="openCreate()">+ 新建客户</button>
+    </div>
+    <div class="toolbar">
+      <input id="kw" placeholder="编码/名称搜索">
+      <select id="ownerFilter"><option value="">全部货主</option></select>
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="active">启用</option>
+        <option value="inactive">停用</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>ID</th><th>编码</th><th>名称</th><th>所属货主</th><th>联系人</th><th>电话</th><th>邮箱</th><th>等级</th><th>地区</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+    <div class="pager">
+      <button class="btn secondary" id="prevBtn" onclick="turn(-1)">上一页</button>
+      <span id="pageInfo"></span>
+      <button class="btn secondary" id="nextBtn" onclick="turn(1)">下一页</button>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/modal.js"></script>
+    <script src="/miniwms/js/region.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
+<script>
+let page = 1, pageSize = 20;
+let ownerOptions = [{ value: "", label: "（未指定）" }];
+
+function customerFields() {
+  return [
+    { name: "code", label: "编码 *", required: true, autocode: true, autocodePrefix: "CUST" },
+    { name: "name", label: "名称 *", required: true },
+    { name: "owner_id", label: "所属货主 *", type: "select", required: true, options: ownerOptions },
+    { name: "contact", label: "联系人" },
+    { name: "phone", label: "电话" },
+    { name: "email", label: "邮箱", type: "email" },
+    { name: "level", label: "客户等级", type: "select", options: [
+      { value: "普通", label: "普通" },
+      { value: "银牌", label: "银牌" },
+      { value: "金牌", label: "金牌" },
+      { value: "VIP", label: "VIP" },
+    ] },
+    { name: "region", label: "所在地区（省/市/区）", type: "region", full: true },
+    { name: "detail_address", label: "详细地址", full: true },
+    { name: "business_scope", label: "经营范围", full: true },
+    { name: "address", label: "备用地址(旧字段)", full: true },
+  ];
+}
+
+async function loadOwners() {
+  const data = await api("GET", "/api/owners?page_size=100");
+  ownerOptions = [{ value: "", label: "（未指定）" }].concat(
+    data.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }))
+  );
+  document.getElementById("ownerFilter").insertAdjacentHTML("beforeend",
+    data.owners.map((o) => `<option value="${o.id}">${esc(o.code)}</option>`).join(""));
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const ow = document.getElementById("ownerFilter").value;
+  const qs = new URLSearchParams({ page, page_size: pageSize });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  if (ow) qs.set("owner_id", ow);
+  try {
+    const data = await api("GET", "/api/customers?" + qs);
+    document.getElementById("tbody").innerHTML = data.customers.map((c) =>
+      `<tr>
+        <td>${c.id}</td><td>${esc(c.code)}</td><td>${esc(c.name)}</td>
+        <td>${esc(c.owner_code || "")} · ${esc(c.owner_name || "")}</td>
+        <td>${esc(c.contact)}</td><td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(c.level)}</td><td>${esc(c.province || "")} ${esc(c.city || "")}</td>
+        <td>${statusTag(c.status)}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openEdit(${c.id})">编辑</button>
+          <button class="btn secondary sm" onclick="toggle(${c.id},'${c.status}')">${c.status === "active" ? "停用" : "启用"}</button>
+          <button class="btn danger sm" onclick="del(${c.id})">删除</button>
+        </td>
+      </tr>`).join("");
+    document.getElementById("pageInfo").textContent =
+      `第 ${data.page} 页 / 共 ${data.total} 条`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page * pageSize >= data.total;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function turn(d) { page += d; load(); }
+
+function openCreate() {
+  openForm({
+    title: "新建客户", submitText: "创建", width: 760, fields: customerFields(),
+    onSubmit: async (p) => {
+      await api("POST", "/api/customers", p);
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+}
+
+async function openEdit(id) {
+  const data = await api("GET", "/api/customers/" + id);
+  openForm({
+    title: "编辑客户", submitText: "保存", width: 760, fields: customerFields(), values: data.customer,
+    onSubmit: async (p) => {
+      await api("PUT", "/api/customers/" + id, p);
+      showMsg(document.getElementById("msg"), "已保存", "success");
+      load();
+    },
+  });
+}
+
+async function toggle(id, status) {
+  try {
+    await api("PUT", "/api/customers/" + id, { status: status === "active" ? "inactive" : "active" });
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "操作失败：" + e.message, "error");
+  }
+}
+
+async function del(id) {
+  if (!confirm("确认删除该客户？（被出库单引用时会被拒绝）")) return;
+  try {
+    await api("DELETE", "/api/customers/" + id);
+    showMsg(document.getElementById("msg"), "已删除", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "删除失败：" + e.message, "error");
+  }
+}
+
+loadOwners().then(load);
+</script>
+</body>
+</html>
