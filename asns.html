@@ -111,15 +111,6 @@ let productMap = {}, supplierMap = {}, customerMap = {};
 let asnList = [];
 let modalEl = null;
 
-async function fetchOptions(resource) {
-  const rows = [];
-  for (let page = 1; ; page++) {
-    const data = await api("GET", `/api/${resource}?page_size=100&page=${page}`);
-    rows.push(...data[resource]);
-    if (rows.length >= data.total || !data[resource].length) return rows;
-  }
-}
-
 async function loadOptions() {
   const [owners, products, suppliers, customers] = await Promise.all(
     ["owners", "products", "suppliers", "customers"].map(fetchOptions)

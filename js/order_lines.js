@@ -59,3 +59,12 @@ const PRODUCT_LINE_AUTOFILL = { product_id: {
         reg_cert_no: "reg_cert_no", registrant: "registrant",
         mfg_license: "mfg_license", shelf_life_days: "shelf_life_days",
       } };
+
+async function fetchOptions(resource) {
+  const rows = [];
+  for (let page = 1; ; page++) {
+    const data = await api("GET", `/api/${resource}?page_size=100&page=${page}`);
+    rows.push(...data[resource]);
+    if (rows.length >= data.total || !data[resource].length) return rows;
+  }
+}

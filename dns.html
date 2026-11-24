@@ -113,20 +113,17 @@ let warehouseOptions = [];
 let dnList = [];
 
 async function loadOptions() {
-  const [ow, pr, cu, wh] = await Promise.all([
-    api("GET", "/api/owners?page_size=100"),
-    api("GET", "/api/products?page_size=100"),
-    api("GET", "/api/customers?page_size=100"),
-    api("GET", "/api/warehouses?page_size=100"),
-  ]);
-  ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
-  productMap = Object.fromEntries(pr.products.map(p => [p.id, p]));
-  productOptions = pr.products.map(p => ({ value: p.id, label: `${p.sku} · ${p.name}`, owner_id: p.owner_id }));
-  allCustomerOptions = cu.customers.map((c) => ({
+  const [owners, products, customers, warehouses] = await Promise.all(
+    ["owners", "products", "customers", "warehouses"].map(fetchOptions)
+  );
+  ownerOptions = owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  productMap = Object.fromEntries(products.map(p => [p.id, p]));
+  productOptions = products.map(p => ({ value: p.id, label: `${p.sku} · ${p.name}`, owner_id: p.owner_id }));
+  allCustomerOptions = customers.map((c) => ({
     value: c.id, label: `${c.code} · ${c.name}`, owner_id: c.owner_id,
   }));
-  customerMap = Object.fromEntries(cu.customers.map(c => [c.id, c]));
-  warehouseOptions = wh.warehouses.filter(w => w.status === "active")
+  customerMap = Object.fromEntries(customers.map(c => [c.id, c]));
+  warehouseOptions = warehouses.filter(w => w.status === "active")
     .map(w => ({ value: w.id, label: `${w.code} · ${w.name}` }));
   const listOwner = document.getElementById("dnOwner");
   const previous = listOwner.value;
@@ -387,7 +384,8 @@ async function openCreate() {
         options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
       { name: "warehouse_display", label: "调出仓库（当前仓）", readonly: true, default: `${warehouse.code} · ${warehouse.name}` },
       { name: "target_warehouse", label: "调入仓库", type: "select", placeholder: "请选择调入仓库",
-        options: warehouseOptions.filter(option => option.value !== warehouse.id) },
+        options: warehouseOptions.filter(option =>
+          option.value !== warehouse.id && context.warehouses.some(w => w.id === option.value)) },
       { name: "customer_name", label: "客户名称（可覆盖）" },
       { name: "customer_contact", label: "客户联系人" },
       { name: "customer_phone", label: "客户电话" },
