@@ -176,9 +176,11 @@ class M41PrintTest(unittest.TestCase):
     def test_09_doc_missing_and_bad_params(self):
         self.assertEqual(self._get("/api/print/preview?node=receive&source=asn&doc_id=999999",
                                    status=400)["code"], "PRINT_DOC_NOT_FOUND")
+        self.assertEqual(self._get("/api/print/preview?node=receive&source=asn&doc_id=M41-ASN")
+                         ["document"]["code"], "M41-ASN")
         for q in ("node=bogus&source=asn&doc_id=1",
                   "node=receive&source=bogus&doc_id=1",
-                  "node=receive&source=asn&doc_id=abc"):
+                  "node=receive&source=asn&doc_id="):
             self.assertEqual(self._get("/api/print/preview?" + q, status=400)["code"],
                              "PRINT_BAD_PARAM")
 

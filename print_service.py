@@ -378,10 +378,19 @@ def load_document(db, node, source, doc_id):
         raise PrintError(f"node 无效：{node}")
     if source not in C.PRINT_SOURCES:
         raise PrintError(f"source 无效：{source}")
+    text = str(doc_id or "").strip()
+    if not text:
+        raise PrintError("请输入单号或单据 ID")
     try:
-        did = int(doc_id)
-    except (TypeError, ValueError):
-        raise PrintError("doc_id 必须是整数")
+        did = int(text)
+    except ValueError:
+        table = {C.PRINT_SOURCE_ASN: "asn", C.PRINT_SOURCE_DN: "dn", C.PRINT_SOURCE_REVIEW: "dn_review"}[source]
+        where, params = ["code = ? COLLATE NOCASE"], [text]
+        S.scoped_where(where, params)
+        row = db.execute(f"SELECT id FROM {table} WHERE {' AND '.join(where)}", params).fetchone()
+        if row is None:
+            raise PrintError("单据不存在或无权查看", "PRINT_DOC_NOT_FOUND")
+        did = row["id"]
     if source == C.PRINT_SOURCE_ASN:
         return _asn_document(db, node, did)
     if source == C.PRINT_SOURCE_DN:

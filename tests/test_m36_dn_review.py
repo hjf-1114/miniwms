@@ -272,8 +272,7 @@ class M36DnReviewTest(unittest.TestCase):
         self.assertEqual(self._bad(
             f"/api/dn-reviews/{rv['id']}/cancel", {})["code"], "REVIEW_CLOSED")
 
-    def test_14_review_does_not_touch_dn_status(self):
-        """Q18：复核完全独立于发货，复核过程不改 DN 状态机。"""
+    def test_14_review_completes_dn_stage_and_blocks_cancellation(self):
         dn_id = self._dn_with_picks(10)
         before = self._get(f"/api/dns/{dn_id}")["dn"]["status"]
         rv = self._review(dn_id)
@@ -282,7 +281,9 @@ class M36DnReviewTest(unittest.TestCase):
             "reason_code": C.REVIEW_DIFF_SHORT}, status=200)
         self._post(f"/api/dn-reviews/{rv['id']}/complete", {}, status=200)
         after = self._get(f"/api/dns/{dn_id}")["dn"]["status"]
-        self.assertEqual(before, after, "复核前后 DN 状态必须一致")
+        self.assertEqual(before, C.DN_ALLOCATED)
+        self.assertEqual(after, C.DN_REVIEWED)
+        self.assertEqual(self.client.post(f"/api/dns/{dn_id}/cancel").status_code, 409)
 
     def test_15_logs_query_and_stats(self):
         dn_id = self._dn_with_picks(10)

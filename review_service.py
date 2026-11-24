@@ -88,6 +88,8 @@ def create_review(db, dn_id, operator="", note=""):
         raise ReviewError("DN 不存在", "DN_NOT_FOUND")
     if dn["status"] in (C.DN_CANCELLED,):
         raise ReviewError("已取消的 DN 不可复核", "DN_CANCELLED")
+    if dn["status"] == C.DN_REVIEWED:
+        raise ReviewError("出库单已完成复核", "DN_REVIEWED")
 
     picks = db.execute(
         """SELECT dp.*, l.code AS location_code, dl.product_id,
@@ -101,6 +103,8 @@ def create_review(db, dn_id, operator="", note=""):
     ).fetchall()
     if not picks:
         raise ReviewError("该 DN 无拣货明细，无法生成复核单", "NO_PICKS")
+    if dn["workflow_required"] and dn["status"] != C.DN_PICKED:
+        raise ReviewError("出库单须先完成拣货", "DN_NOT_PICKED")
 
     exists = db.execute(
         "SELECT id FROM dn_review WHERE dn_id = ? AND status NOT IN (?, ?)",
@@ -159,6 +163,8 @@ def record(db, review_id, line_id, actual_qty, result, reason_code="",
         raise ReviewError("复核单不存在", "REVIEW_NOT_FOUND")
     if review["status"] in C.REVIEW_TERMINAL:
         raise ReviewError(f"复核单状态为 {review['status']}，不可复核", "REVIEW_CLOSED")
+    if db.execute("SELECT status FROM dn WHERE id = ?", (review["dn_id"],)).fetchone()[0] == C.DN_CANCELLED:
+        raise ReviewError("出库单已取消", "DN_CANCELLED")
 
     line = _line_row(db, line_id)
     if line is None or line["review_id"] != review_id:
@@ -270,6 +276,9 @@ def complete(db, review_id, operator=""):
         raise ReviewError("复核单不存在", "REVIEW_NOT_FOUND")
     if review["status"] in C.REVIEW_TERMINAL:
         raise ReviewError(f"复核单状态为 {review['status']}，不可重复完成", "REVIEW_CLOSED")
+    dn = db.execute("SELECT * FROM dn WHERE id = ?", (review["dn_id"],)).fetchone()
+    if dn["status"] == C.DN_CANCELLED:
+        raise ReviewError("出库单已取消", "DN_CANCELLED")
     total, reviewed, diffs = _delta_counts(db, review_id)
     if reviewed < total:
         raise ReviewError(f"还有 {total - reviewed} 行未复核，不可完成", "UNREVIEWED_LINES")
@@ -279,6 +288,9 @@ def complete(db, review_id, operator=""):
                updated_at = datetime('now','localtime') WHERE id = ?""",
         (C.REVIEW_COMPLETED, reviewed, diffs, _operator_safe(operator), review_id),
     )
+    if dn["status"] != C.DN_SHIPPED:
+        db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                   (C.DN_REVIEWED, review["dn_id"]))
     return _review_out(db, review_id)
 
 

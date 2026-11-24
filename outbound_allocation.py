@@ -94,7 +94,7 @@ def build_context(db, dn_id, line_id):
         "is_cold_chain": int(d.get("is_cold_chain") or 0),
         "is_hazard": int(d.get("is_hazard") or 0),
         "external_doc_type": str(d.get("external_doc_type") or ""),
-        "abc_class": "",                    # 暂无 ABC 数据源（M26 同一边界）
+        "abc_class": str(p.get("abc_class") or ""),
         "owner_id": d.get("owner_id"),
         "is_designated": 1 if d.get("customer_id") else 0,
         "zone_id": None,
@@ -139,7 +139,7 @@ def resolve_rule(db, info, strategy=None):
     return rule, set_row, chosen, C.OUTBOUND_ENGINE_RULES, limits
 
 
-def _step_scope(_db, rule):
+def _step_scope(db, rule):
     """解释规则行 steps：只认第一个可解释的库位范围步骤，其余忽略（Q02）。
 
     返回 ``(kind, value)``；``all_active`` / 不认识的 step 一律返回 ``("all", None)``。
@@ -154,8 +154,16 @@ def _step_scope(_db, rule):
         try:
             if kind == "zone_by_code" and s.get("zone_id"):
                 return "zone", int(s["zone_id"])
+            if kind == "zone_by_code" and s.get("zone_code"):
+                zone = db.execute("SELECT id FROM zone WHERE code = ?", (s["zone_code"],)).fetchone()
+                return "zone", zone["id"] if zone else -1
             if kind == "fixed_location" and s.get("location_id"):
                 return "location", int(s["location_id"])
+            if kind == "fixed_location" and s.get("location_code"):
+                loc = db.execute("SELECT id FROM location WHERE code = ?", (s["location_code"],)).fetchone()
+                return "location", loc["id"] if loc else -1
+            if kind == "location_group" and s.get("group_code"):
+                return "group", str(s["group_code"])
         except (TypeError, ValueError):
             return "all", None
         if kind == "all_active":
@@ -163,7 +171,7 @@ def _step_scope(_db, rule):
     return "all", None
 
 
-def _skip_reason(row, customer_id):
+def _skip_reason(row, customer_id, reject_expired=False):
     """返回跳批原因码；None 表示可分配。质量/专属红线在这里统一收口。"""
     gp = str(row["goods_property"] or "").strip()
     if gp and gp not in C.OUTBOUND_ALLOCATABLE_GOODS:
@@ -171,6 +179,8 @@ def _skip_reason(row, customer_id):
     st = str(row["stock_status"] or "").strip()
     if st in C.OUTBOUND_BLOCKED_STATUSES:
         return C.OUTBOUND_SKIP_STATUS
+    if reject_expired and row["expiry_date"] and row["expiry_date"] < datetime.date.today().isoformat():
+        return C.OUTBOUND_SKIP_EXPIRED
     if str(row["loc_status"] or "") != "active" or str(row["loc_type"] or "") not in ("storage", "picking"):
         return C.OUTBOUND_SKIP_LOCATION
     verdict = check_customer_reservation(row["designated_customer_id"], customer_id)
@@ -179,10 +189,10 @@ def _skip_reason(row, customer_id):
     return None
 
 
-def _sort_key(row, customer_id, strategy):
+def _sort_key(row, customer_id, strategy, prefer_picking=False):
     """先专属后通用（默认）或严格 FEFO；空效期永远排最后。"""
     exp = str(row["expiry_date"] or "")
-    fefo = (0 if exp else 1, exp, row["location_id"], row["id"])
+    fefo = (0 if exp else 1, exp, prefer_picking and row["loc_type"] != "picking", row["location_id"], row["id"])
     if strategy == C.OUTBOUND_STRATEGY_STRICT_FEFO:
         return fefo
     own = 0 if (_as_int(row["designated_customer_id"]) is not None
@@ -199,12 +209,19 @@ def _candidates(db, info, scope):
              WHERE sb.owner_id = ? AND sb.product_id = ?
                AND (sb.qty - sb.allocated_qty) > ?"""
     params = [info["owner_id"], info["product_id"], EPS]
+    warehouse = info["dn"]["source_warehouse"]
+    if warehouse:
+        sql += " AND (l.warehouse_id = ? OR l.warehouse_id IS NULL)"
+        params.append(warehouse)
     kind, value = scope
     if kind == "zone":
         sql += " AND l.zone_id = ?"
         params.append(value)
     elif kind == "location":
         sql += " AND sb.location_id = ?"
+        params.append(value)
+    elif kind == "group":
+        sql += " AND l.location_group = ?"
         params.append(value)
     return [dict(r) for r in db.execute(sql, params).fetchall()]
 
@@ -256,8 +273,10 @@ def _validate_dn_ids(db, dn_ids):
         dn = db.execute(_DN_SELECT, (n,)).fetchone()
         if dn is None:
             raise AllocationError(f"DN 不存在: id={n}")
-        if dn["status"] in (C.DN_SHIPPED, C.DN_CANCELLED):
+        if dn["status"] in (C.DN_PICKED, C.DN_REVIEWED, C.DN_SHIPPED, C.DN_CANCELLED):
             raise AllocationError(f"DN {dn['code']} 状态为 {dn['status']}，不可分配")
+        if _under_review(db, n):
+            raise AllocationError(f"DN {dn['code']} 正在复核，不可重新分配")
         out.append(dict(dn))
     return out
 
@@ -296,6 +315,8 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                 continue
             info = build_context(db, dn["id"], line["id"])
             rule, _set, strat, engine, limits = resolve_rule(db, info, strategy)
+            options = _j(rule["score"], dict) if rule else {}
+            reject_expired = bool((limits.get("quality_state") or {}).get("reject_expired"))
             scope = _step_scope(db, rule)
             key = (info["owner_id"], info["product_id"])
             if dry_run:
@@ -305,7 +326,7 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
             else:
                 rows = _candidates(db, info, scope)
 
-            ordered = sorted(rows, key=lambda r: _sort_key(r, dn["customer_id"], strat))
+            ordered = sorted(rows, key=lambda r: _sort_key(r, dn["customer_id"], strat, bool(options.get("prefer_picking"))))
             # 跳批留痕与「剩余量」解耦：先全量扫描红线候选，再按排序分配。
             # 否则需求被前面的批次满足后 break，排在后面的不合格/专属批次会静默消失，
             # 排查时看不到「这批为什么没被选中」。
@@ -314,7 +335,7 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                 avail = float(row.get("available", row["qty"] - row["allocated_qty"]))
                 if avail <= EPS:
                     continue
-                code = _skip_reason(row, dn["customer_id"])
+                code = _skip_reason(row, dn["customer_id"], reject_expired)
                 if code:
                     skip_map[row["id"]] = (code, avail)
             for row in ordered:
@@ -402,9 +423,9 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                          product_id=info["product_id"])
             if apply and picked_any:
                 lines_now = db.execute(
-                    "SELECT picked_qty FROM dn_line WHERE dn_id = ?", (dn["id"],)
+                    "SELECT picked_qty, ordered_qty FROM dn_line WHERE dn_id = ?", (dn["id"],)
                 ).fetchall()
-                status = C.DN_PICKING if any(r["picked_qty"] > 0 for r in lines_now) else C.DN_OPEN
+                status = C.DN_ALLOCATED if all(r["ordered_qty"] - r["picked_qty"] <= EPS for r in lines_now) else C.DN_PICKING
                 db.execute(
                     "UPDATE dn SET status = ?, wave_no = ?, "
                     "updated_at = datetime('now','localtime') WHERE id = ?",
@@ -427,7 +448,12 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
     }
 
 
-def unallocate(db, dn_id, pick_ids=None, operator="", wave_no=""):
+def _under_review(db, dn_id):
+    return db.execute("SELECT 1 FROM dn_review WHERE dn_id = ? AND status != ?",
+                      (dn_id, C.REVIEW_CANCELLED)).fetchone() is not None
+
+
+def unallocate(db, dn_id, pick_ids=None, operator="", wave_no="", *, cancelling=False):
     """取消分配：对称释放 ``allocated_qty``、删 ``dn_pick``、回退 ``picked_qty``。
 
     新行按记录的批次维度精确释放；历史行（无批号）回退到 M21 自动释放路径。
@@ -436,8 +462,11 @@ def unallocate(db, dn_id, pick_ids=None, operator="", wave_no=""):
     dn = db.execute(_DN_SELECT, (dn_id,)).fetchone()
     if dn is None:
         raise AllocationError(f"DN 不存在: id={dn_id}")
-    if dn["status"] in (C.DN_SHIPPED, C.DN_CANCELLED):
+    blocked = (C.DN_REVIEWED, C.DN_SHIPPED, C.DN_CANCELLED)
+    if dn["status"] in blocked or (dn["status"] == C.DN_PICKED and dn["workflow_required"] and not cancelling):
         raise AllocationError(f"状态为 {dn['status']}，不可取消分配")
+    if _under_review(db, dn_id):
+        raise AllocationError("复核中的出库单不可取消分配")
     sql = """SELECT dp.*, dl.product_id FROM dn_pick dp
               JOIN dn_line dl ON dl.id = dp.line_id WHERE dp.dn_id = ?"""
     params = [dn_id]
@@ -469,8 +498,11 @@ def unallocate(db, dn_id, pick_ids=None, operator="", wave_no=""):
              engine=C.OUTBOUND_ENGINE_LEGACY, operator=operator,
              product_id=p["product_id"])
         released += float(p["qty"])
-    lines = db.execute("SELECT picked_qty FROM dn_line WHERE dn_id = ?", (dn_id,)).fetchall()
-    status = C.DN_PICKING if any(r["picked_qty"] > 0 for r in lines) else C.DN_OPEN
+    lines = db.execute("SELECT picked_qty, ordered_qty FROM dn_line WHERE dn_id = ?", (dn_id,)).fetchall()
+    if lines and all(r["ordered_qty"] - r["picked_qty"] <= EPS for r in lines):
+        status = C.DN_ALLOCATED
+    else:
+        status = C.DN_PICKING if any(r["picked_qty"] > 0 for r in lines) else C.DN_OPEN
     db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') "
                "WHERE id = ?", (status, dn_id))
     return {"ok": True, "dn_id": dn_id, "status": status,

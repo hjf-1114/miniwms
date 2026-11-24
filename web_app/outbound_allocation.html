@@ -168,7 +168,7 @@ async function loadDict() {
 async function loadDns() {
   try {
     const d = await api("GET", "/api/dns?page_size=100");
-    dnRows = (d.dns || []).filter((x) => x.status === "open" || x.status === "picking");
+    dnRows = (d.dns || []).filter(x => ["open", "picking", "allocated"].includes(x.status));
     document.getElementById("dnCount").textContent = `（${dnRows.length} 张可分配）`;
     const body = document.getElementById("dnBody");
     if (!dnRows.length) { emptyRow("dnBody", 9, "暂无待拣货 / 拣货中的出库单"); return; }
@@ -178,7 +178,7 @@ async function loadDns() {
       <td>${esc(x.owner_code || "")} · ${esc(x.owner_name || "")}</td>
       <td>${esc(x.customer_code || "-")}</td>
       <td>${x.total_qty ?? 0}</td>
-      <td>${tagOf(x.status === "picking" ? "拣货中" : "待拣货", x.status === "picking" ? "warn" : "off")}</td>
+      <td>${tagOf({ open: "新建", picking: "拣货中", allocated: "已分配" }[x.status], x.status === "open" ? "off" : "warn")}</td>
       <td class="dim">${esc(x.wave_no || "—")}</td>
       <td><button class="btn secondary sm" onclick="unallocate(${x.id})">取消分配</button></td>
     </tr>`).join("");

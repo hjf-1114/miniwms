@@ -108,7 +108,8 @@ def _clone_dn(db, tpl, suffix_note, operator=None):
     fields = ("owner_id", "customer_id", "doc_type", "external_no", "order_source",
               "source_warehouse", "carrier_name", "extra1", "extra2", "extra3",
               "is_virtual", "is_direct", "is_cold_chain", "is_hazard", "external_doc_type",
-              "target_warehouse", "customer_name", "customer_contact", "customer_phone", "customer_address")
+              "target_warehouse", "customer_name", "customer_contact", "customer_phone", "customer_address",
+              "workflow_required")
     values = [code] + [tpl[f] for f in fields] + [suffix_note]
     sql = (
         "INSERT INTO dn (code, " + ",".join(fields) + ", note, total_qty, category_count) VALUES ("

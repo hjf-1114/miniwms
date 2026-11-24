@@ -560,6 +560,18 @@ function renderLimits() {
   }).join("");
 }
 function renderScore() {
+  if (CUR_TYPE === "outbound") {
+    document.getElementById("scoreBody").innerHTML = `
+      <label class="fld">批次分配顺序<select id="outboundStrategy">
+        <option value="">沿用作业默认</option>
+        <option value="own_first">本客户专属优先，组内按失效日期</option>
+        <option value="strict_fefo">按失效日期优先</option>
+      </select></label>
+      <label><input type="checkbox" id="outboundPickFirst" ${EDIT_SCORE.prefer_picking ? "checked" : ""}> 同效期优先拣选位</label>
+      <label><input type="checkbox" id="outboundExpiry" ${EDIT_LIMITS.quality_state?.reject_expired ? "checked" : ""}> 跳过已失效批次</label>`;
+    document.getElementById("outboundStrategy").value = EDIT_SCORE.strategy || "";
+    return;
+  }
   document.getElementById("scoreBody").innerHTML = TYPES.score_rules.map(s =>
     `<label class="fld"><span>${esc(s.label)} <span class="dim">建议 ${s.weight} 分</span></span>
       <input id="score_${s.value}" type="number" min="0" step="1"
@@ -635,7 +647,11 @@ function collectRule() {
   });
   limits.mix_owner.direct_same_article = document.getElementById("directSameArticle").value;
   const score = {};
-  TYPES.score_rules.forEach(s => {
+  if (CUR_TYPE === "outbound") {
+    score.strategy = document.getElementById("outboundStrategy").value;
+    score.prefer_picking = document.getElementById("outboundPickFirst").checked;
+    limits.quality_state.reject_expired = document.getElementById("outboundExpiry").checked;
+  } else TYPES.score_rules.forEach(s => {
     const v = Number(document.getElementById("score_" + s.value).value || 0);
     if (v > 0) score[s.value] = v;
   });

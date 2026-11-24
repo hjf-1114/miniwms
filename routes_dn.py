@@ -25,6 +25,7 @@ from inventory_service import BATCH_DIMS, StockError, adjust_stock, spread_batch
 from main import current_scope, get_control_db, get_db, gen_doc_no, request_payload
 from routes_asn import LINE_SNAPSHOT_FIELDS, _check_customer_owner, _line_snapshot, _parse_customer_id
 from dn_transfer_service import prepare_destination, create_transfer_asn
+from outbound_allocation import AllocationError, _under_review, unallocate
 import reservation_audit as RA
 
 dn_bp = Blueprint("dn", __name__, url_prefix="/api/dns")
@@ -83,7 +84,11 @@ def _check_location(db, location_id, allowed_types, label, warehouse=None):
 def _advance_status(db, dn_id, lines):
     """根据行拣货进度推进状态（open → picking；shipped 由发货显式设置）。"""
     any_picked = any(l["picked_qty"] > 0 for l in lines)
-    status = C.DN_PICKING if any_picked else C.DN_OPEN
+    if all(line["ordered_qty"] - line["picked_qty"] <= 1e-9 for line in lines):
+        pending = db.execute("SELECT 1 FROM dn_pick WHERE dn_id = ? AND wave_no != '' LIMIT 1", (dn_id,)).fetchone()
+        status = C.DN_ALLOCATED if pending else C.DN_PICKED
+    else:
+        status = C.DN_PICKING if any_picked else C.DN_OPEN
     db.execute(
         "UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
         (status, dn_id),
@@ -249,6 +254,8 @@ def create_dn():
         + tuple(flags[k] for k in C.DOC_FLAG_FIELDS) + (external_doc_type, target_warehouse) + contacts,
     )
     dn_id = cur.lastrowid
+    if payload.get("workflow_required") is True:
+        db.execute("UPDATE dn SET workflow_required = 1 WHERE id = ?", (dn_id,))
     db.executemany(
         "INSERT INTO dn_line (dn_id, product_id, ordered_qty, extra) VALUES (?, ?, ?, ?)",
         [(dn_id, pid, qty, json.dumps(snapshot, ensure_ascii=False)) for pid, qty, snapshot in parsed_lines],
@@ -360,8 +367,10 @@ def pick(dn_id):
         dn = _load_dn(db, dn_id)
         if dn is None:
             raise ValueError("DN 不存在")
-        if dn["status"] in (C.DN_SHIPPED, C.DN_CANCELLED):
+        if dn["status"] in (C.DN_PICKED, C.DN_REVIEWED, C.DN_SHIPPED, C.DN_CANCELLED):
             raise ValueError(f"单据状态为 {dn['status']}，不可拣货")
+        if _under_review(db, dn_id):
+            raise ValueError("复核中的出库单不可修改拣货")
         line = db.execute("SELECT * FROM dn_line WHERE id = ? AND dn_id = ?",
                           (line_id, dn_id)).fetchone()
         if line is None:
@@ -425,6 +434,25 @@ def reservation_check(dn_id):
     return jsonify(ok=True, **data)
 
 
+@dn_bp.route("/<int:dn_id>/confirm-pick", methods=["POST"])
+def confirm_pick(dn_id):
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        dn = _load_dn(db, dn_id)
+        if not dn or dn["status"] != C.DN_ALLOCATED:
+            raise ValueError("仅分配完毕的出库单可确认拣货")
+        if any(line["remaining_pick"] > 1e-9 for line in map(_dict_line, _load_lines(db, dn_id))):
+            raise ValueError("仍有待分配数量，无法确认拣货")
+        db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                   (C.DN_PICKED, dn_id))
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        return jsonify(ok=False, error=str(exc)), 409
+    return jsonify(ok=True, status=C.DN_PICKED)
+
+
 @dn_bp.route("/<int:dn_id>/ship", methods=["POST"])
 def ship(dn_id):
     """发货：所有行拣满后，按拣货明细逐库位扣减在手与分配，状态 → shipped。
@@ -453,6 +481,10 @@ def ship(dn_id):
         short = [l["sku"] for l in lines if l["picked_qty"] < l["ordered_qty"]]
         if short:
             raise ValueError(f"存在未拣满的行，不可发货: {', '.join(short)}")
+        active_review = db.execute("SELECT 1 FROM dn_review WHERE dn_id = ? AND status IN (?, ?)",
+                                   (dn_id, C.REVIEW_DRAFT, C.REVIEW_REVIEWING)).fetchone()
+        if active_review or (dn["workflow_required"] and dn["status"] != C.DN_REVIEWED):
+            raise ValueError("出库单需完成复核后才能发货")
 
         # 按拣货明细逐库位扣减（qty 与 allocated 同步清掉）
         picks = _load_picks(db, dn_id)
@@ -495,20 +527,28 @@ def ship(dn_id):
 
 @dn_bp.route("/<int:dn_id>/cancel", methods=["POST"])
 def cancel_dn(dn_id):
-    """取消：仅未拣货的 DN 可取消。"""
+    """复核前取消单据，新流程同步释放库存分配。"""
     db = get_db()
-    dn = _load_dn(db, dn_id)
-    if dn is None:
-        return jsonify({"ok": False, "error": "DN 不存在"}), 404
-    if dn["status"] not in (C.DN_OPEN, C.DN_PICKING):
-        return jsonify({"ok": False, "error": f"状态为 {dn['status']}，不可取消"}), 409
-    picked = db.execute(
-        "SELECT COUNT(*) AS n FROM dn_line WHERE dn_id = ? AND picked_qty > 0",
-        (dn_id,),
-    ).fetchone()["n"]
-    if picked:
-        return jsonify({"ok": False, "error": "已拣货的单据不可取消，请先释放拣货分配"}), 409
-    db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
-               (C.DN_CANCELLED, dn_id))
-    db.commit()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        dn = _load_dn(db, dn_id)
+        if dn is None:
+            db.rollback()
+            return jsonify(ok=False, error="DN 不存在"), 404
+        if dn["status"] in (C.DN_REVIEWED, C.DN_SHIPPED, C.DN_CANCELLED):
+            raise ValueError("已复核、已发货或已取消的单据不可取消")
+        if db.execute("SELECT 1 FROM dn_review WHERE dn_id = ? AND status != ?",
+                      (dn_id, C.REVIEW_CANCELLED)).fetchone():
+            raise ValueError("请先取消正在进行的复核单")
+        picked = any(line["picked_qty"] > 1e-9 for line in _load_lines(db, dn_id))
+        if picked:
+            if not dn["workflow_required"]:
+                raise ValueError("已拣货的单据不可取消，请先释放拣货分配")
+            unallocate(db, dn_id, operator=_operator(), cancelling=True)
+        db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                   (C.DN_CANCELLED, dn_id))
+        db.commit()
+    except (AllocationError, ValueError, StockError) as exc:
+        db.rollback()
+        return jsonify(ok=False, error=str(exc)), 409
     return jsonify({"ok": True, "status": C.DN_CANCELLED})

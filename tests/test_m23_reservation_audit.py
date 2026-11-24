@@ -256,7 +256,7 @@ class M23ReservationAuditTest(unittest.TestCase):
         self.assertEqual(stock[0]["qty"], 6.0)
         self.assertEqual(self._logs()["total"], 0)
         self.assertEqual(self.client.get(f"/api/dns/{did}").get_json()["dn"]
-                         ["status"], C.DN_PICKING)
+                         ["status"], C.DN_PICKED)
 
     def test_10_repeat_ship_does_not_duplicate_log(self):
         self._stock(designated=self.cus1)

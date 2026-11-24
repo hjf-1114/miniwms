@@ -9,7 +9,7 @@
 - GET  /api/dn-reviews/logs            差异留痕查询（分页 + 过滤 + 统计）
 - GET  /api/dn-reviews/dict            字典（状态 / 结果 / 原因码 / 权限码）
 
-差异只写日志：不生成调整单、不改库存、不改 DN 状态机；写操作统一 BEGIN IMMEDIATE。
+逐行差异只留痕；完成复核更新出库状态。写操作统一 BEGIN IMMEDIATE。
 """
 import sqlite3
 

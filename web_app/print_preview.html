@@ -40,14 +40,14 @@ iframe { width:100%; height:660px; border:0; display:block; background:white; }
         <div class="filters">
           <label>打印节点<select id="selNode"></select></label>
           <label>单据来源<select id="selSource"></select></label>
-          <label>单据 ID<input id="docId" type="number" min="1" placeholder="如 12"></label>
+          <label>单号或 ID<input id="docId" type="text" placeholder="如 DN-DEMO-001"></label>
+          <label>打印模板<select id="selTemplate"><option value="">当前生效模板</option></select></label>
           <button class="btn sm" id="btnLoad" onclick="loadPreview()">加载单据</button>
         </div>
       </div>
 
       <p class="warn">
-        <b>临时编辑只作用于本次打印件</b>：右侧 PDF 重新生成，左侧修改<b>不会写回业务单据</b>，
-        库存、单据状态与数量均不变。PDF 由系统 Chrome headless 生成，无需安装任何组件。
+        临时编辑仅用于本次打印。可通过浏览器打印或另存为 PDF。
       </p>
 
       <div class="grid2">
@@ -57,13 +57,13 @@ iframe { width:100%; height:660px; border:0; display:block; background:white; }
           <h3 style="font-size:13px;margin:12px 0 6px">明细行</h3>
           <div id="editLines"></div>
           <div class="toolbar" style="margin-top:12px">
-            <button class="btn" id="btnRefresh" onclick="refreshPdf()">刷新 PDF</button>
+            <button class="btn" id="btnRefresh" onclick="refreshPdf()">刷新预览</button>
             <button class="btn secondary" id="btnPrint" onclick="doPrint()">打印</button>
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><h2>PDF 预览</h2><span class="dim">Chrome headless · A4 · 人工确认出纸</span></div>
-          <div id="iframeWrap"><iframe id="pdfFrame" title="PDF 预览"></iframe></div>
+          <div class="card-head"><h2>打印预览</h2></div>
+          <div id="iframeWrap"><iframe id="pdfFrame" title="打印预览"></iframe></div>
         </div>
       </div>
     </div>
@@ -72,7 +72,7 @@ iframe { width:100%; height:660px; border:0; display:block; background:white; }
 <script src="/js/api.js"></script>
 <script src="/js/layout.js"></script>
 <script>
-let D = {}, doc = null, timer = null;
+let D = {}, doc = null, timer = null, version = 0;
 const qs = new URLSearchParams(location.search);
 
 function msg(text, kind) { showMsg(document.getElementById("msg"), text, kind || "success"); }
@@ -91,9 +91,9 @@ function apiPath(extra) {
   const q = new URLSearchParams({
     node: document.getElementById("selNode").value,
     source: document.getElementById("selSource").value,
-    doc_id: document.getElementById("docId").value || "0",
+    doc_id: document.getElementById("docId").value.trim(),
   });
-  const tid = qs.get("template_id");
+  const tid = document.getElementById("selTemplate").value;
   if (tid) q.set("template_id", tid);
   const ov = extra || collectOverrides();
   q.set("overrides", JSON.stringify(ov));
@@ -133,35 +133,50 @@ function collectOverrides() {
   });
   return {fields, lines};
 }
-function refreshPdf() {
+async function refreshPdf() {
   if (!doc) return;
-  const url = "/api/print/pdf?" + apiPath();
-  document.getElementById("pdfFrame").src = url;
+  const request = ++version;
+  try {
+    const result = await GET("/api/print/preview?" + apiPath());
+    if (request === version) document.getElementById("pdfFrame").srcdoc = result.html;
+  } catch (e) { if (request === version) msg("预览更新失败：" + e.message, "error"); }
 }
 function scheduleRefresh() {
   clearTimeout(timer);
   timer = setTimeout(refreshPdf, 400);
 }
 async function loadPreview() {
+  clearTimeout(timer);
+  const request = ++version;
   try {
-    const q = new URLSearchParams({
-      node: document.getElementById("selNode").value,
-      source: document.getElementById("selSource").value,
-      doc_id: document.getElementById("docId").value || "0",
-    });
-    const tid = qs.get("template_id");
-    if (tid) q.set("template_id", tid);
-    const d = await GET("/api/print/preview?" + q.toString());
+    const d = await GET("/api/print/preview?" + apiPath({}));
+    if (request !== version) return;
     doc = d.document;
     renderEdit();
-    refreshPdf();
+    document.getElementById("pdfFrame").srcdoc = d.html;
     msg("单据已加载，可临时微调后打印");
-  } catch (e) { msg("加载失败：" + e.message, "error"); }
+  } catch (e) {
+    if (request !== version) return;
+    doc = null;
+    document.getElementById("pdfFrame").removeAttribute("srcdoc");
+    document.getElementById("editFields").replaceChildren();
+    document.getElementById("editLines").replaceChildren();
+    msg("加载失败：" + e.message, "error");
+  }
 }
 function doPrint() {
+  if (!doc) return msg("请先加载单据", "error");
   const f = document.getElementById("pdfFrame");
   try { f.contentWindow.focus(); f.contentWindow.print(); }
-  catch (e) { window.open(f.src, "_blank"); msg("请在打开的 PDF 标签中打印", "error"); }
+  catch (e) { msg("浏览器未能打开打印窗口：" + e.message, "error"); }
+}
+
+async function loadTemplates(selected) {
+  const node = document.getElementById("selNode").value;
+  const data = await GET("/api/print/templates?" + new URLSearchParams({node}));
+  const select = document.getElementById("selTemplate");
+  select.replaceChildren(new Option("当前生效模板", ""), ...data.templates.map(t => new Option(t.name, t.id)));
+  select.value = [...select.options].some(option => option.value === selected) ? selected : "";
 }
 
 (async function init() {
@@ -172,6 +187,15 @@ function doPrint() {
     document.getElementById("selNode").value = qs.get("node") || D.nodes[0].code;
     document.getElementById("selSource").value = qs.get("source") || D.sources[0].code;
     document.getElementById("docId").value = qs.get("doc_id") || "";
+    await loadTemplates(qs.get("template_id") || "");
+    document.getElementById("selTemplate").addEventListener("change", refreshPdf);
+    document.getElementById("selNode").addEventListener("change", async () => {
+      try {
+        await loadTemplates("");
+        if (document.getElementById("docId").value.trim()) await loadPreview();
+      } catch (e) { msg(e.message, "error"); }
+    });
+    document.getElementById("docId").addEventListener("keydown", e => { if (e.key === "Enter") loadPreview(); });
     document.getElementById("editFields").addEventListener("input", scheduleRefresh);
     document.getElementById("editLines").addEventListener("input", scheduleRefresh);
     if (qs.get("doc_id")) await loadPreview();

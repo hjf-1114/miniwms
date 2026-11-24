@@ -204,11 +204,11 @@ async function loadReviews(page) {
 async function loadDns() {
   try {
     const d = await api("GET", "/api/dns?page_size=100");
-    const picks = new Set();
     // 用详情接口的 picks 判断是否有拣货记录（列表接口不带 picks）
     const candidates = [];
     for (const x of d.dns) {
-      if (x.status !== "picking" && x.status !== "shipped") continue;
+      if (x.workflow_required ? x.status !== "picked" :
+          !["picking", "allocated", "picked", "shipped"].includes(x.status)) continue;
       const det = await api("GET", "/api/dns/" + x.id);
       if (det.picks && det.picks.length) candidates.push(x);
       if (candidates.length >= 50) break;
@@ -217,6 +217,8 @@ async function loadDns() {
     sel.innerHTML = candidates.length
       ? candidates.map((x) => `<option value="${x.id}">${esc(x.code)} · ${esc(x.owner_code || "")} · ${x.total_qty}</option>`).join("")
       : `<option value="">暂无已拣货的出库单</option>`;
+    const linked = new URLSearchParams(location.search).get("dn_id");
+    if (linked && candidates.some(row => String(row.id) === linked)) sel.value = linked;
   } catch (e) { msg("出库单加载失败：" + e.message, "error"); }
 }
 

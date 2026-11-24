@@ -2244,8 +2244,24 @@ def init_db(path=None):
             ("customer_contact", "TEXT NOT NULL DEFAULT ''"),
             ("customer_phone", "TEXT NOT NULL DEFAULT ''"),
             ("customer_address", "TEXT NOT NULL DEFAULT ''"),
+            ("workflow_required", "INTEGER NOT NULL DEFAULT 0"),
         ))
         _ensure_columns(conn, "dn_line", (("extra", "TEXT NOT NULL DEFAULT ''"),))
+        conn.execute("""
+            UPDATE dn SET status = CASE WHEN EXISTS (
+                SELECT 1 FROM dn_pick WHERE dn_id = dn.id AND wave_no != ''
+            ) THEN ? ELSE ? END
+            WHERE status = ? AND EXISTS (SELECT 1 FROM dn_line WHERE dn_id = dn.id)
+            AND NOT EXISTS (
+                SELECT 1 FROM dn_line WHERE dn_id = dn.id AND ordered_qty - picked_qty > 1e-9
+            )
+        """, (C.DN_ALLOCATED, C.DN_PICKED, C.DN_PICKING))
+        conn.execute("""
+            UPDATE dn SET status = ?
+            WHERE status NOT IN (?, ?, ?) AND EXISTS (
+                SELECT 1 FROM dn_review WHERE dn_id = dn.id AND status = ?
+            )
+        """, (C.DN_REVIEWED, C.DN_REVIEWED, C.DN_SHIPPED, C.DN_CANCELLED, C.REVIEW_COMPLETED))
         conn.execute("""
             UPDATE asn SET status = ?
             WHERE status = ? AND EXISTS (
