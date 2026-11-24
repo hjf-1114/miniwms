@@ -11,6 +11,10 @@
 
 ## 在 GitHub 上试用
 
+**[打开 MiniWMS 在线演示](https://hjf-1114.github.io/miniwms/)**。直接浏览样例入库单、批次库存和上架规则，可筛选并查看明细。此页面为只读演示。
+
+需要提交收货、验收或上架操作时，使用 Codespaces 演示库。
+
 1. 在 GitHub 仓库选择 **Code → Codespaces → Create codespace on master**。
 2. 等初始化完成，在 Codespace 的 **Ports（端口）** 面板打开 **MiniWMS 工作台（5100）**。使用演示管理员 `admin / admin123` 登录。
 3. 将当前仓库切为 **上架规则测试仓（DEMO-PA-WH）**，在「上架作业」搜索 `DEMO-PA-`。打开 `DEMO-PA-01`，切换两个验收批次，可对比同批号货位和同巷道空位的推荐。
