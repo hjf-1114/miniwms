@@ -36,6 +36,10 @@
     </div>
     <div class="toolbar">
       <input id="kw" placeholder="出库单号 / 外部订单号">
+      <form id="shipByBox" class="flex">
+        <input name="box_code" placeholder="扫描箱码发货" aria-label="扫描箱码" required>
+        <button class="btn secondary sm">确认箱码</button>
+      </form>
       <label>货主 <select id="dnOwner"><option value="">全部</option></select></label>
       <label>客户 <select id="dnCustomer" disabled><option value="">请先选择货主</option></select></label>
       <label>创建自 <input id="dnDateFrom" type="date"></label>
@@ -69,23 +73,22 @@
     </table>
     </div>
     <div class="toolbar">
-      <select id="pickLocSel"></select><span class="muted">← 拣货来源位（存储/拣货区）</span>
-      <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
+      <button class="btn" id="autoAllocateBtn" onclick="autoAllocate()">自动分配库存</button>
+      <span id="legacyPickTools"><select id="pickLocSel" aria-label="拣货来源位"></select></span>
       <button class="btn secondary" onclick="refreshDnDetail()">刷新明细</button>
-      <button class="btn secondary" id="confirmPickBtn" onclick="confirmPick()" hidden>确认拣货完成</button>
       <button class="btn secondary" id="reviewBtn" onclick="openWorkTab('出库复核','/dn_review.html?dn_id=' + currentDn.dn.id)" hidden>去复核</button>
         <button class="btn" id="shipBtn" onclick="doShip()">确认发货</button>
     </div>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>行</th><th>SKU</th><th>货品</th><th>规格 / 单位</th><th>订购</th><th>已拣</th><th>待拣</th><th>单据明细</th><th>拣货</th></tr></thead>
+      <thead><tr><th>行</th><th>SKU</th><th>货品</th><th>规格 / 单位</th><th>订单数量</th><th>取消数量</th><th>分配数量</th><th>拣货数量</th><th>待分配</th><th>单据明细</th><th>操作</th></tr></thead>
       <tbody id="lineBody"></tbody>
     </table>
     </div>
-    <h3 style="margin-top:14px">拣货明细</h3>
+    <h3 style="margin-top:14px">分配与拣货明细</h3>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>明细</th><th>行</th><th>库位</th><th>数量</th><th>批次信息</th></tr></thead>
+      <thead><tr><th>明细</th><th>订单行</th><th>库位</th><th>分配数量</th><th>已拣数量</th><th>批次信息</th><th>拣货确认</th></tr></thead>
       <tbody id="pickBody"></tbody>
     </table>
     </div>
@@ -106,6 +109,7 @@
     <script src="/js/order_lines.js"></script>
     <script src="/js/layout.js"></script>
     <script src="/js/batch_details.js"></script>
+    <script src="/js/dn_work.js"></script>
 <script>
 let pickBatchFields = [];
 let currentDn = null;
@@ -195,7 +199,7 @@ function dnStatusLabel(status) {
 }
 
 async function showDetail(id) {
-  const [data, fields] = await Promise.all([api("GET", "/api/dns/" + id), loadBatchFields()]);
+  const [data, fields] = await Promise.all([api("GET", "/api/dns/" + id), loadBatchFields().catch(() => [])]);
   pickBatchFields = fields;
   currentDn = data;
   document.getElementById("detailCard").style.display = "";
@@ -203,7 +207,9 @@ async function showDetail(id) {
     `出库单明细 · ${data.dn.code}`;
   const d = data.dn;
   const short = data.lines.some(line => line.remaining_pick > 1e-9);
-  document.getElementById("confirmPickBtn").hidden = d.status !== "allocated" || short;
+  document.getElementById("autoAllocateBtn").disabled = !canAllocate(d)
+    || !data.lines.some(line => line.remaining_allocate > 1e-9);
+  document.getElementById("legacyPickTools").hidden = !!d.workflow_required;
   document.getElementById("reviewBtn").hidden = d.status !== "picked";
   document.getElementById("shipBtn").disabled = d.status !== "reviewed" || short;
   document.getElementById("dnMeta").innerHTML = [
@@ -223,7 +229,7 @@ async function showDetail(id) {
     `<tr><td class="muted">${k1}</td><td>${esc(v1)}</td><td class="muted">${k2}</td><td>${esc(v2)}</td></tr>`
   ).join("");
   renderLines();
-  await loadLocs();
+  if (!d.workflow_required) await loadLocs();
   await loadRiskLogs(id);
   await showRiskNotice(id, d.status);
 }
@@ -279,22 +285,28 @@ async function loadRiskLogs(dnId) {
 
 function renderLines() {
   const d = currentDn;
-  document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
-    `<tr>
-      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.line_snapshot.product_name || l.product_name)}</td>
-      <td>${esc(l.line_snapshot.spec || "—")} / ${esc(l.line_snapshot.unit || "—")}</td>
-      <td>${l.ordered_qty}</td><td><b>${l.picked_qty}</b></td><td>${l.remaining_pick}</td>
-      <td><details><summary>查看</summary>${batchDetails(SNAP_FIELDS.concat(BATCH_FIELDS), l.line_snapshot)}</details></td>
-      <td>
-        <input id="pk-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
-        <button class="btn sm" onclick="doPick(${l.id})" ${l.remaining_pick <= 1e-9 || !["open", "picking", "allocated"].includes(d.dn.status) ? "disabled" : ""}>拣货</button>
-      </td>
-    </tr>`).join("");
-  document.getElementById("pickBody").innerHTML = d.picks.length
-    ? d.picks.map((p) =>
-      `<tr><td>${p.id}</td><td>${p.line_id}</td><td>${esc(p.location_code)}</td><td>${p.qty}</td>
-        <td><details><summary>${esc(p.batch_no || "无批次号")}</summary>${batchDetails(pickBatchFields, p.batch_info)}</details></td></tr>`).join("")
-    : `<tr><td colspan="5" class="muted">暂无拣货明细</td></tr>`;
+  const canPick = d.dn.workflow_required && ["allocated", "picking"].includes(d.dn.status)
+    && d.lines.every(line => line.remaining_allocate <= 1e-9);
+  document.getElementById("lineBody").innerHTML = d.lines.map(l => `<tr>
+    <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.line_snapshot.product_name || l.product_name)}</td>
+    <td>${esc(l.line_snapshot.spec || "—")} / ${esc(l.line_snapshot.unit || "—")}</td>
+    <td>${l.ordered_qty}</td><td>${l.cancelled_qty}</td><td>${l.allocated_qty}</td>
+    <td><b>${l.picked_qty}</b></td><td>${l.remaining_allocate}</td>
+    <td><details><summary>查看</summary>${batchDetails(SNAP_FIELDS.concat(BATCH_FIELDS), l.line_snapshot)}</details></td>
+    <td>${l.remaining_allocate > 1e-9 && canAllocate(d.dn) ? `
+      <button class="btn secondary sm" onclick="openManual(${l.id})">手工分配</button>
+      <button class="btn secondary sm" onclick="cancelLineQty(${l.id})">取消数量</button>
+      ${!d.dn.workflow_required ? `<input id="pk-${l.id}" type="number" min="0" step="any" placeholder="数量" style="width:80px">
+        <button class="btn secondary sm" onclick="doPick(${l.id})">旧单拣货</button>` : ""}` : "—"}</td>
+  </tr>`).join("") || '<tr><td colspan="11">暂无订单明细</td></tr>';
+  document.getElementById("pickBody").innerHTML = d.picks.map(p => `<tr>
+    <td>${p.id}</td><td>${p.line_id}</td><td>${esc(p.location_code)}</td><td>${p.qty}</td><td>${p.confirmed_qty || 0}</td>
+    <td><details><summary>${esc(p.batch_no || "无批次号")}</summary>${batchDetails(pickBatchFields, p.batch_info)}</details></td>
+    <td>${canPick && p.qty - (p.confirmed_qty || 0) > 1e-9 ? `
+      <input id="confirmed-${p.id}" type="number" min="0" step="any" value="${p.qty - (p.confirmed_qty || 0)}"
+        aria-label="本次拣货数量" style="width:85px">
+      <button class="btn sm" onclick="confirmAllocatedPick(${p.id}, this)">确认拣货</button>` : "—"}</td>
+  </tr>`).join("") || '<tr><td colspan="7" class="muted">暂无库存分配</td></tr>';
 }
 
 async function doPick(lineId) {
@@ -309,15 +321,6 @@ async function doPick(lineId) {
   } catch (e) {
     showMsg(document.getElementById("msg"), "拣货失败：" + e.message, "error");
   }
-}
-
-async function confirmPick() {
-  const id = currentDn.dn.id;
-  try {
-    await api("POST", `/api/dns/${id}/confirm-pick`, {});
-    await Promise.all([showDetail(id), load()]);
-    showMsg(document.getElementById("msg"), "已确认拣货，可以复核");
-  } catch (e) { showMsg(document.getElementById("msg"), e.message, "error"); }
 }
 
 async function refreshDnDetail() {

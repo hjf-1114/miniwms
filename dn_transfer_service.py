@@ -60,6 +60,9 @@ def create_transfer_asn(db, schema, dn, lines, picks):
 
     target_lines = []
     for line in lines:
+        qty = line["ordered_qty"] - line["cancelled_qty"]
+        if qty <= 1e-9:
+            continue
         product = db.execute(f"SELECT id FROM {schema}.product WHERE owner_id = ? AND sku = ?",
                              (owner, line["sku"])).fetchone()
         if not product:
@@ -78,7 +81,7 @@ def create_transfer_asn(db, schema, dn, lines, picks):
             customers = {batch["designated_customer_id"] for batch in batches}
             snap["designated_customer_id"] = str(next(iter(customers)) or "") if len(customers) == 1 else ""
         snap["transfer_batches"] = batches
-        target_lines.append((product["id"], line["ordered_qty"], json.dumps(snap, ensure_ascii=False)))
+        target_lines.append((product["id"], qty, json.dumps(snap, ensure_ascii=False)))
 
     code = gen_doc_no(db, f"{schema}.asn", "ASN-TR")
     # Count-based legacy numbering may encounter a gap after an administrator removes a draft.
@@ -94,7 +97,7 @@ def create_transfer_asn(db, schema, dn, lines, picks):
         ) VALUES (?, ?, '调拨', ?, '仓库调拨', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'TR')
     """, (code, owner, dn["code"], dn["target_warehouse"], mapped_customer(dn["customer_id"]),
           dn["customer_name"], dn["customer_contact"], dn["customer_phone"], dn["customer_address"],
-          dn["carrier_name"], round(sum(line["ordered_qty"] for line in lines), 6), len(lines),
+          dn["carrier_name"], round(sum(line[1] for line in target_lines), 6), len(target_lines),
           dn["extra1"], dn["extra2"], dn["extra3"], f"由调拨出库单 {dn['code']} 发货生成",
           *(dn[key] for key in C.DOC_FLAG_FIELDS)))
     asn_id = row.lastrowid

@@ -375,6 +375,7 @@ OUTBOUND_SKIP_LABELS = {
     OUTBOUND_SKIP_LOCATION: "库位停用或类型不符",
     OUTBOUND_SKIP_RESERVED: "专属客户不匹配（自动分配跳过）",
     OUTBOUND_SKIP_EXPIRED: "已过失效日期",
+    "ORDER_BATCH_MISMATCH": "不符合订单指定的批号或日期",
     "SHORTAGE": "可用量不足，已部分分配",
 }
 

@@ -2246,7 +2246,37 @@ def init_db(path=None):
             ("customer_address", "TEXT NOT NULL DEFAULT ''"),
             ("workflow_required", "INTEGER NOT NULL DEFAULT 0"),
         ))
-        _ensure_columns(conn, "dn_line", (("extra", "TEXT NOT NULL DEFAULT ''"),))
+        _ensure_columns(conn, "dn_line", (
+            ("extra", "TEXT NOT NULL DEFAULT ''"),
+            ("cancelled_qty", "REAL NOT NULL DEFAULT 0"),
+        ))
+        _ensure_columns(conn, "dn_pick", (("confirmed_qty", "REAL"),))
+        _ensure_columns(conn, "product_barcode", (("package_id", "INTEGER REFERENCES product_package(id) ON DELETE SET NULL"),))
+        conn.execute("""
+            UPDATE dn_pick SET confirmed_qty = qty
+            WHERE confirmed_qty IS NULL AND dn_id IN (
+                SELECT id FROM dn WHERE workflow_required = 0 OR status IN (?, ?, ?)
+            )
+        """, (C.DN_PICKED, C.DN_REVIEWED, C.DN_SHIPPED))
+        conn.execute("UPDATE dn_pick SET confirmed_qty = 0 WHERE confirmed_qty IS NULL")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS dn_package (
+                id INTEGER PRIMARY KEY,
+                dn_id INTEGER NOT NULL REFERENCES dn(id),
+                review_id INTEGER NOT NULL REFERENCES dn_review(id),
+                code TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                material_id INTEGER REFERENCES product(id),
+                shipped_scan_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_dn_package_dn ON dn_package(dn_id);
+            CREATE TABLE IF NOT EXISTS dn_package_line (
+                package_id INTEGER NOT NULL REFERENCES dn_package(id) ON DELETE CASCADE,
+                review_line_id INTEGER NOT NULL REFERENCES dn_review_line(id),
+                qty REAL NOT NULL CHECK (qty > 0),
+                PRIMARY KEY (package_id, review_line_id)
+            );
+        """)
         conn.execute("""
             UPDATE dn SET status = CASE WHEN EXISTS (
                 SELECT 1 FROM dn_pick WHERE dn_id = dn.id AND wave_no != ''

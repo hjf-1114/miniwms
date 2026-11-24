@@ -71,6 +71,8 @@ def _assert_splittable(db, dn):
         )
     lines = _load_lines(db, dn["id"])
     for ln in lines:
+        if ln["cancelled_qty"] > C.SPLIT_QTY_EPS:
+            raise DNOrderError(f"出库单 {dn['code']} 已有明细取消数量，不可拆合", "LINE_CANCELLED")
         if ln["picked_qty"] > C.SPLIT_QTY_EPS:
             raise DNOrderError(
                 f"出库单 {dn['code']} 已有拣货量，不可拆合", "ALREADY_PICKED"

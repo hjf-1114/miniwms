@@ -344,10 +344,11 @@ async function manageProductAttrs(id) {
         <div class="toolbar">
           <input id="bcInput" placeholder="输入条码">
           <label class="inline"><input type="checkbox" id="bcPrim"> 设为主条码</label>
+          <select id="bcPackage" aria-label="条码包装层级"><option value="">单件</option></select>
           <button class="btn sm" id="bcAdd">+ 添加</button>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>条码</th><th>主</th><th>操作</th></tr></thead>
+          <thead><tr><th>条码</th><th>主</th><th>包装层级</th><th>操作</th></tr></thead>
           <tbody id="bcBody"></tbody>
         </table></div>
 
@@ -379,15 +380,17 @@ async function manageProductAttrs(id) {
 
   const bcBody = ov.querySelector("#bcBody");
   const pkgBody = ov.querySelector("#pkgBody");
+  let packaging = [];
 
   async function refreshBc() {
     const d = await api("GET", `/api/products/${id}/barcodes`);
     bcBody.innerHTML = d.barcodes.map((b) =>
       `<tr><td>${esc(b.barcode)}</td><td>${b.is_primary ? "★" : ""}</td>` +
-      `<td><button class="btn secondary sm" data-editbc="${b.id}" data-bc="${esc(b.barcode)}" data-prim="${b.is_primary}">编辑</button> ` +
+      `<td>${esc(packaging.find(row => row.value === b.package_id)?.label || "单件")}</td>` +
+      `<td><button class="btn secondary sm" data-editbc="${b.id}" data-bc="${esc(b.barcode)}" data-prim="${b.is_primary}" data-pack="${b.package_id || ""}">编辑</button> ` +
       `<button class="btn danger sm" data-delbc="${b.id}">删</button></td></tr>`).join("");
     bcBody.querySelectorAll("[data-editbc]").forEach((btn) => btn.addEventListener("click", () => {
-      editBarcode(Number(btn.dataset.editbc), btn.dataset.bc, btn.dataset.prim === "1");
+      editBarcode(Number(btn.dataset.editbc), btn.dataset.bc, btn.dataset.prim === "1", btn.dataset.pack);
     }));
     bcBody.querySelectorAll("[data-delbc]").forEach((btn) => btn.addEventListener("click", async () => {
       await api("DELETE", `/api/products/${id}/barcodes/${btn.dataset.delbc}`); refreshBc();
@@ -395,6 +398,11 @@ async function manageProductAttrs(id) {
   }
   async function refreshPkg() {
     const d = await api("GET", `/api/products/${id}/packages`);
+    packaging = d.packages.filter(row => row.qty_per_package > 0).map(row => ({
+      value: row.id, label: `${row.pkg_level} · ${row.qty_per_package} 件`,
+    }));
+    ov.querySelector("#bcPackage").replaceChildren(new Option("单件", ""),
+      ...packaging.map(row => new Option(row.label, row.value)));
     pkgBody.innerHTML = d.packages.map((q) =>
       `<tr><td>${esc(q.pkg_level)}</td><td>${q.length_cm}</td><td>${q.width_cm}</td><td>${q.height_cm}</td>` +
       `<td>${q.volume}</td><td>${q.weight_kg}</td><td>${q.qty_per_package}</td>` +
@@ -405,14 +413,16 @@ async function manageProductAttrs(id) {
       editPackage(q.id, q);
     }));
     pkgBody.querySelectorAll("[data-delpk]").forEach((btn) => btn.addEventListener("click", async () => {
-      await api("DELETE", `/api/products/${id}/packages/${btn.dataset.delpk}`); refreshPkg();
+      await api("DELETE", `/api/products/${id}/packages/${btn.dataset.delpk}`);
+      await refreshPkg();
+      await refreshBc();
     }));
   }
   ov.querySelector("#bcAdd").addEventListener("click", async () => {
     const barcode = ov.querySelector("#bcInput").value.trim();
     if (!barcode) return;
     const is_primary = ov.querySelector("#bcPrim").checked ? 1 : 0;
-    await api("POST", `/api/products/${id}/barcodes`, { barcode, is_primary });
+    await api("POST", `/api/products/${id}/barcodes`, { barcode, is_primary, package_id: ov.querySelector("#bcPackage").value });
     ov.querySelector("#bcInput").value = "";
     refreshBc();
   });
@@ -429,18 +439,19 @@ async function manageProductAttrs(id) {
     ["#pkL", "#pkW", "#pkH", "#pkWt", "#pkQty"].forEach((s) => { ov.querySelector(s).value = ""; });
     refreshPkg();
   });
-  async function editBarcode(bid, curVal, curPrim) {
+  async function editBarcode(bid, curVal, curPrim, packageId) {
     openForm({
       title: "编辑条码", submitText: "保存", width: 420,
       fields: [
         { name: "barcode", label: "条码 *", required: true },
         { name: "is_primary", label: "设为主条码", type: "select",
           options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+        { name: "package_id", label: "包装层级", type: "select", placeholder: "单件", options: packaging },
       ],
-      values: { barcode: curVal, is_primary: curPrim ? 1 : 0 },
+      values: { barcode: curVal, is_primary: curPrim ? 1 : 0, package_id: packageId },
       onSubmit: async (p) => {
         await api("PUT", `/api/products/${id}/barcodes/${bid}`,
-          { barcode: p.barcode, is_primary: p.is_primary ? 1 : 0 });
+          { barcode: p.barcode, is_primary: p.is_primary ? 1 : 0, package_id: p.package_id });
         refreshBc();
       },
     });
@@ -464,8 +475,8 @@ async function manageProductAttrs(id) {
       },
     });
   }
-  await refreshBc();
   await refreshPkg();
+  await refreshBc();
 }
 
 async function del(id) {

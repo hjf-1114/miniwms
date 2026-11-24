@@ -477,11 +477,15 @@ def add_product_barcode(product_id):
     db = get_db()
     if db.execute("SELECT id FROM product WHERE id = ?", (product_id,)).fetchone() is None:
         return jsonify({"ok": False, "error": "商品不存在"}), 404
+    try:
+        package_id = _barcode_package(db, product_id, payload, is_primary)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
     if is_primary:
         db.execute("UPDATE product_barcode SET is_primary = 0 WHERE product_id = ?", (product_id,))
     cur = db.execute(
-        "INSERT INTO product_barcode (product_id, barcode, is_primary) VALUES (?, ?, ?)",
-        (product_id, barcode, is_primary),
+        "INSERT INTO product_barcode (product_id, barcode, is_primary, package_id) VALUES (?, ?, ?, ?)",
+        (product_id, barcode, is_primary, package_id),
     )
     db.commit()
     row = db.execute("SELECT * FROM product_barcode WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -504,25 +508,40 @@ def delete_product_barcode(product_id, barcode_id):
 @product_bp.route("/<int:product_id>/barcodes/<int:barcode_id>", methods=["PUT"])
 def update_product_barcode(product_id, barcode_id):
     db = get_db()
-    if db.execute(
-        "SELECT id FROM product_barcode WHERE id = ? AND product_id = ?",
+    existing = db.execute(
+        "SELECT id, package_id FROM product_barcode WHERE id = ? AND product_id = ?",
         (barcode_id, product_id),
-    ).fetchone() is None:
+    ).fetchone()
+    if existing is None:
         return jsonify({"ok": False, "error": "条码不存在"}), 404
     payload = request_payload()
     barcode = str(payload.get("barcode") or "").strip()
     if not barcode:
         return jsonify({"ok": False, "errors": ["barcode 必填"]}), 400
     is_primary = 1 if payload.get("is_primary") else 0
+    try:
+        package_id = _barcode_package(db, product_id, {**dict(existing), **payload}, is_primary)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
     if is_primary:
         db.execute("UPDATE product_barcode SET is_primary = 0 WHERE product_id = ?", (product_id,))
     db.execute(
-        "UPDATE product_barcode SET barcode = ?, is_primary = ? WHERE id = ?",
-        (barcode, is_primary, barcode_id),
+        "UPDATE product_barcode SET barcode = ?, is_primary = ?, package_id = ? WHERE id = ?",
+        (barcode, is_primary, package_id, barcode_id),
     )
     db.commit()
     row = db.execute("SELECT * FROM product_barcode WHERE id = ?", (barcode_id,)).fetchone()
     return jsonify({"ok": True, "barcode": dict(row)})
+
+
+def _barcode_package(db, product_id, payload, is_primary):
+    if is_primary or not payload.get("package_id"):
+        return None
+    package = db.execute("SELECT id FROM product_package WHERE id = ? AND product_id = ? AND qty_per_package > 0",
+                         (payload["package_id"], product_id)).fetchone()
+    if package is None:
+        raise ValueError("包装层级必须属于当前商品，换算数量必须大于零")
+    return package["id"]
 
 
 # ── M10 物料包装层级（多层级规格：主箱/内箱/中箱，含长宽高体积重量）──

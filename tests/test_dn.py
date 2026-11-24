@@ -359,6 +359,55 @@ class DnApiTest(unittest.TestCase):
         self.assertIn("停用", resp.get_json()["error"])
 
     # ---------- 发货 ----------
+    def test_allocate_pick_scan_two_boxes_and_ship(self):
+        owner = self._mk_owner()
+        product = self._mk_product(owner)
+        store = self._mk_location("PACK-ST", "storage")
+        self._inbound(owner, product, store, 10)
+        sku_path = f"/api/products/{product}"
+        package = self.client.post(sku_path + "/packages", json={
+            "pkg_level": "2级", "qty_per_package": 2,
+        }).get_json()["package"]["id"]
+        for payload in ({"barcode": "ITEM-1", "is_primary": True},
+                        {"barcode": "PACK-2", "package_id": package}):
+            self.assertEqual(self.client.post(sku_path + "/barcodes", json=payload).status_code, 201)
+        self.client.post("/api/products", json={
+            "sku": "BOX-MAT", "owner_id": owner, "name": "纸箱", "category": "包装耗材", "barcode": "CARTON",
+        })
+        body = self._mk_dn(owner, product, ordered=4, workflow_required=True)
+        dn_id, line_id = body["dn"]["id"], body["lines"][0]["id"]
+        path = f"/api/dns/{dn_id}"
+        self.assertEqual(self.client.post(path + "/lines/" + str(line_id) + "/cancel", json={"qty": 1}).status_code, 200)
+        self.assertEqual(self.client.post(path + "/confirm-pick", json={"pick_id": 1, "qty": 1}).status_code, 409)
+        dry = self.client.post("/api/outbound/plan", json={"dn_ids": [dn_id], "pick_group": "missing"}).get_json()
+        self.assertEqual(dry["shortages"][0]["short_qty"], 3)
+        row = self.client.get(path + f"/allocation-candidates?line_id={line_id}").get_json()["stocks"][0]
+        allocation = self.client.post(path + "/allocate", json={"line_id": line_id, "stock_id": row["id"], "qty": 3})
+        self.assertEqual(allocation.status_code, 200, allocation.get_json())
+        detail = self.client.get(path).get_json()
+        line = detail["lines"][0]
+        self.assertEqual((line["ordered_qty"], line["cancelled_qty"], line["allocated_qty"], line["picked_qty"]),
+                         (4, 1, 3, 0))
+        pick_id = detail["picks"][0]["id"]
+        for quantity, status in ((1, "picking"), (2, "picked")):
+            picked = self.client.post(path + "/confirm-pick", json={"pick_id": pick_id, "qty": quantity})
+            self.assertEqual(picked.get_json()["status"], status)
+        review = self.client.post("/api/dn-reviews", json={"dn_id": dn_id}).get_json()
+        review_path = f"/api/dn-reviews/{review['id']}"
+        for code, barcode, qty in (("BOX-A", "PACK-2", 2), ("BOX-B", "ITEM-1", 1)):
+            box = self.client.post(review_path + "/packages", json={"code": code, "material_barcode": "CARTON"})
+            self.assertEqual(box.status_code, 200, box.get_json())
+            scanned = self.client.post(review_path + "/scan", json={"barcode": barcode, "package_id": box.get_json()["id"]})
+            self.assertEqual(scanned.get_json()["added_qty"], qty)
+        self.assertEqual(self.client.post(review_path + "/complete").status_code, 200)
+        first = self.client.post("/api/dns/ship-box", json={"box_code": "BOX-A"}).get_json()
+        self.assertEqual(first["remaining_boxes"], 1)
+        self.assertEqual(self._stock_row(owner, product, store)["qty"], 10)
+        self.assertEqual(self.client.post("/api/dns/ship-box", json={"box_code": "BOX-A"}).status_code, 400)
+        second = self.client.post("/api/dns/ship-box", json={"box_code": "BOX-B"}).get_json()
+        self.assertEqual(second["status"], "shipped")
+        self.assertEqual(self._stock_row(owner, product, store)["qty"], 7)
+
     def test_transfer_creates_destination_asn_once(self):
         from unittest.mock import patch
 

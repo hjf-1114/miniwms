@@ -59,6 +59,7 @@ def plan():
         result = OA.plan(
             db, payload.get("dn_ids"), line_ids=payload.get("line_ids"),
             strategy=payload.get("strategy"), operator=_operator(),
+            pick_group=payload.get("pick_group"),
             wave_no=payload.get("wave_no"), dry_run=True, apply=False,
         )
     except OA.AllocationError as e:
@@ -79,8 +80,11 @@ def allocate():
         result = OA.plan(
             db, payload.get("dn_ids"), line_ids=payload.get("line_ids"),
             strategy=strategy, operator=_operator(), wave_no=payload.get("wave_no"),
+            pick_group=payload.get("pick_group"),
             dry_run=False, apply=True,
         )
+        if payload.get("require_complete") and result["shortages"]:
+            raise OA.AllocationError("所选货位范围不足以全量分配，整波次未提交；请先试算查看缺货")
         return jsonify(**result), 201
 
     return _run(action)

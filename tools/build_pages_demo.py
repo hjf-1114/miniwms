@@ -36,6 +36,12 @@ def seed_browser_database():
     source = next(row for row in warehouses if row["code"] == "WH-SZ")
     basic_owner = next(row for row in get("/api/owners?page_size=100")["owners"] if row["code"] == "OW-TMALL")
     basic_product = next(row for row in get("/api/products?page_size=100")["products"] if row["sku"] == "SKU-001")
+    level = post(f"/api/products/{basic_product['id']}/packages", {
+        "pkg_level": "2级", "qty_per_package": 2,
+    })["package"]
+    post(f"/api/products/{basic_product['id']}/barcodes", {"barcode": "DEMO-PACK-2", "package_id": level["id"]})
+    post("/api/products", {"sku": "DEMO-BOX-MATERIAL", "name": "示例纸箱", "category": "包装耗材",
+                           "barcode": "DEMO-CARTON", "owner_id": basic_owner["id"]})
     storage = next(row for row in get("/api/locations?page_size=100")["locations"] if row["code"] == "A-01-01")
     transfer = post("/api/dns", {
         "code": "DEMO-TR-OUT", "doc_type": "调拨", "owner_id": basic_owner["id"],
@@ -52,6 +58,7 @@ def seed_browser_database():
         target = post("/api/locations", {
             "code": f"DEMO-ALLOC-{suffix}", "name": f"DEMO-ALLOC-{suffix}",
             "loc_type": "picking", "warehouse_id": source["id"],
+            "location_group": "DEMO-ACTIVITY" if suffix == "EARLY" else "DEMO-FULL",
         })["location"]
         order = post("/api/asns", {
             "code": f"ASN-DEMO-{suffix}", "owner_id": basic_owner["id"], "source_warehouse": source["id"],

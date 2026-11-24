@@ -128,6 +128,28 @@ def complete_review(review_id):
     return _run(RS.complete, review_id, _operator())
 
 
+@rv_bp.post("/<int:review_id>/packages")
+def open_package(review_id):
+    payload = request_payload()
+    return _run(RS.open_package, review_id, payload.get("code"), str(payload.get("material_barcode") or "").strip())
+
+
+@rv_bp.delete("/<int:review_id>/packages/<int:package_id>")
+def remove_empty_package(review_id, package_id):
+    return _run(RS.remove_empty_package, review_id, package_id)
+
+
+@rv_bp.post("/<int:review_id>/scan")
+def scan(review_id):
+    payload = request_payload()
+    try:
+        line_id = int(payload["line_id"]) if payload.get("line_id") else None
+        package_id = int(payload["package_id"]) if payload.get("package_id") else None
+    except (ValueError, TypeError):
+        return jsonify(ok=False, error="批次明细或箱码无效"), 400
+    return _run(RS.scan_product, review_id, payload.get("barcode"), line_id, package_id, _operator())
+
+
 @rv_bp.route("/<int:review_id>/cancel", methods=["POST"])
 def cancel_review(review_id):
     return _run(RS.cancel, review_id, _operator())

@@ -282,6 +282,15 @@ def complete(db, review_id, operator=""):
     total, reviewed, diffs = _delta_counts(db, review_id)
     if reviewed < total:
         raise ReviewError(f"还有 {total - reviewed} 行未复核，不可完成", "UNREVIEWED_LINES")
+    if db.execute("SELECT 1 FROM dn_package WHERE review_id = ?", (review_id,)).fetchone():
+        mismatch = db.execute("""
+            SELECT 1 FROM dn_review_line l WHERE l.review_id = ? AND
+            ABS(l.actual_qty - COALESCE((SELECT SUM(qty) FROM dn_package_line WHERE review_line_id = l.id), 0)) > 1e-9
+        """, (review_id,)).fetchone()
+        empty = db.execute("""SELECT 1 FROM dn_package b WHERE b.review_id = ?
+            AND NOT EXISTS (SELECT 1 FROM dn_package_line WHERE package_id = b.id)""", (review_id,)).fetchone()
+        if mismatch or empty:
+            raise ReviewError("每件复核货品都须装箱，空箱请先移除", "PACK_QTY_MISMATCH")
     db.execute(
         """UPDATE dn_review SET status = ?, reviewed_lines = ?, diff_lines = ?,
                reviewed_at = datetime('now','localtime'), operator = ?,
@@ -321,7 +330,102 @@ def _review_out(db, review_id):
         (review_id,),
     ).fetchall()]
     d["diff_logs"] = logs
+    d["packages"] = [dict(row) for row in db.execute("""
+        SELECT b.*, p.name AS material_name, COALESCE(SUM(l.qty), 0) AS packed_qty
+        FROM dn_package b LEFT JOIN product p ON p.id = b.material_id
+        LEFT JOIN dn_package_line l ON l.package_id = b.id
+        WHERE b.review_id = ? GROUP BY b.id ORDER BY b.id
+    """, (review_id,))]
     return d
+
+
+def _packing_review(db, review_id):
+    review = _review_row(db, review_id)
+    if review is None or review["status"] in C.REVIEW_TERMINAL:
+        raise ReviewError("复核单不存在或已关闭")
+    dn = db.execute("SELECT status FROM dn WHERE id = ?", (review["dn_id"],)).fetchone()
+    if dn is None or dn["status"] in (C.DN_CANCELLED, C.DN_SHIPPED):
+        raise ReviewError("出库单已取消或发货")
+    return review
+
+
+def open_package(db, review_id, code, material_barcode=""):
+    import uuid
+
+    review = _packing_review(db, review_id)
+    code = str(code or "").strip() or f"BOX-{uuid.uuid4().hex[:12].upper()}"
+    if len(code) > 80 or db.execute("SELECT 1 FROM dn_package WHERE code = ?", (code,)).fetchone():
+        raise ReviewError("箱码过长或已经使用")
+    material = None
+    if material_barcode:
+        rows = db.execute("""
+            SELECT p.id FROM product p WHERE p.owner_id = ?
+              AND COALESCE(NULLIF(p.category_l1, ''), p.category) = '包装耗材'
+              AND (p.barcode = ? OR EXISTS (
+                SELECT 1 FROM product_barcode WHERE product_id = p.id AND barcode = ?
+              ))
+        """, (review["owner_id"], material_barcode, material_barcode)).fetchall()
+        if len(rows) != 1:
+            raise ReviewError("耗材条码须唯一匹配当前货主的「包装耗材」分类物料")
+        material = rows[0]["id"]
+    cur = db.execute("INSERT INTO dn_package (dn_id, review_id, code, material_id) VALUES (?, ?, ?, ?)",
+                     (review["dn_id"], review_id, code, material))
+    return {"id": cur.lastrowid, "code": code}
+
+
+def remove_empty_package(db, review_id, package_id):
+    _packing_review(db, review_id)
+    removed = db.execute("""
+        DELETE FROM dn_package WHERE id = ? AND review_id = ?
+          AND NOT EXISTS (SELECT 1 FROM dn_package_line WHERE package_id = dn_package.id)
+    """, (package_id, review_id))
+    if removed.rowcount != 1:
+        raise ReviewError("只可移除本单的空箱")
+    return {"ok": True}
+
+
+def scan_product(db, review_id, barcode, line_id=None, package_id=None, operator=""):
+    review = _packing_review(db, review_id)
+    code = str(barcode or "").strip()
+    if not code:
+        raise ReviewError("请扫描商品条码")
+    rows = db.execute("""
+        SELECT l.*, CASE WHEN p.barcode = ? OR EXISTS (
+            SELECT 1 FROM product_barcode b WHERE b.product_id = p.id AND b.barcode = ? AND b.is_primary = 1
+        ) THEN 1 ELSE COALESCE((
+            SELECT k.qty_per_package FROM product_barcode b
+            JOIN product_package k ON k.id = b.package_id
+            WHERE b.barcode = ? AND b.product_id = p.id ORDER BY b.id LIMIT 1
+        ), 1) END AS scan_qty
+        FROM dn_review_line l JOIN product p ON p.id = l.product_id
+        WHERE l.review_id = ? AND (l.id = ? OR ? IS NULL)
+          AND (p.barcode = ? OR EXISTS (SELECT 1 FROM product_barcode b WHERE b.product_id = p.id AND b.barcode = ?))
+        ORDER BY l.id
+    """, (code, code, code, review_id, line_id, line_id, code, code)).fetchall()
+    eligible = [row for row in rows if row["result"] != C.REVIEW_RESULT_DIFF
+                and (row["actual_qty"] or 0) + row["scan_qty"] <= row["expected_qty"] + 1e-9]
+    if not eligible:
+        raise ReviewError("条码不匹配，或本次扫码会超过待复核数量")
+    if len(eligible) > 1:
+        raise ReviewError("同一商品对应多个拣货批次，请先选择明细行")
+    line = eligible[0]
+    boxes = db.execute("SELECT id FROM dn_package WHERE review_id = ?", (review_id,)).fetchall()
+    if boxes and package_id not in {row["id"] for row in boxes}:
+        raise ReviewError("请先选中本复核单的箱码")
+    if package_id and not boxes:
+        raise ReviewError("当前复核单没有该箱")
+    if package_id:
+        db.execute("""
+            INSERT INTO dn_package_line (package_id, review_line_id, qty) VALUES (?, ?, ?)
+            ON CONFLICT(package_id, review_line_id) DO UPDATE SET qty = qty + excluded.qty
+        """, (package_id, line["id"], line["scan_qty"]))
+    total = (line["actual_qty"] or 0) + line["scan_qty"]
+    if abs(total - line["expected_qty"]) <= 1e-9:
+        record(db, review_id, line["id"], line["expected_qty"], C.REVIEW_RESULT_PASS, operator=operator)
+    else:
+        db.execute("UPDATE dn_review_line SET actual_qty = ?, operator = ? WHERE id = ?",
+                   (total, _operator_safe(operator), line["id"]))
+    return {"line_id": line["id"], "added_qty": line["scan_qty"], "actual_qty": total}
 
 
 def get_detail(db, review_id):

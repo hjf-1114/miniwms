@@ -23,6 +23,8 @@ import constants as C
 import putaway_rules as PR
 from inventory_service import EPS, BATCH_DIMS, adjust_stock
 from reservation_rules import check_customer_reservation
+from flask import g, has_request_context
+import scope as S
 
 # 流水类型：取消分配是分配动作的反向，qty_delta 恒 0、allocated_delta < 0
 MOVEMENT_DN_UNPICK = "dn_unpick"
@@ -200,7 +202,7 @@ def _sort_key(row, customer_id, strategy, prefer_picking=False):
     return (own,) + fefo
 
 
-def _candidates(db, info, scope):
+def _candidates(db, info, scope, pick_group=""):
     """读取可用批次明细快照（可写 dict，供试算在本地递减，不写库）。"""
     sql = """SELECT sb.*, l.code AS location_code, l.status AS loc_status,
                     l.loc_type, l.zone_id,
@@ -223,7 +225,22 @@ def _candidates(db, info, scope):
     elif kind == "group":
         sql += " AND l.location_group = ?"
         params.append(value)
+    if pick_group:
+        sql += " AND l.location_group = ?"
+        params.append(pick_group)
     return [dict(r) for r in db.execute(sql, params).fetchall()]
+
+
+def _order_match(db, line, stock):
+    snapshot = _j(line.get("extra"), dict)
+    for field in ("internal_batch_no", "production_date", "expiry_date"):
+        if snapshot.get(field) and stock[field] != snapshot[field]:
+            return False
+    lot = snapshot.get("batch_no")
+    if lot and lot != stock["batch_no"]:
+        receipt = db.execute("SELECT info FROM batch_receipt WHERE batch_no = ?", (stock["batch_no"],)).fetchone()
+        return bool(receipt and _j(receipt["info"], dict).get("batch_no") == lot)
+    return True
 
 
 def _batch_dims(row):
@@ -273,6 +290,11 @@ def _validate_dn_ids(db, dn_ids):
         dn = db.execute(_DN_SELECT, (n,)).fetchone()
         if dn is None:
             raise AllocationError(f"DN 不存在: id={n}")
+        if has_request_context():
+            S.assert_owner_allowed(S.current_scope(), dn["owner_id"])
+            warehouse = getattr(g, "warehouse_id", None)
+            if warehouse and dn["source_warehouse"] not in (None, warehouse):
+                raise AllocationError(f"出库单 {dn['code']} 不属于当前仓库")
         if dn["status"] in (C.DN_PICKED, C.DN_REVIEWED, C.DN_SHIPPED, C.DN_CANCELLED):
             raise AllocationError(f"DN {dn['code']} 状态为 {dn['status']}，不可分配")
         if _under_review(db, n):
@@ -281,7 +303,7 @@ def _validate_dn_ids(db, dn_ids):
     return out
 
 
-def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
+def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="", pick_group="",
          wave_no=None, dry_run=False, apply=False):
     """生成（或执行）一次波次分配。
 
@@ -290,6 +312,9 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
     两者互斥；调用方负责开启 ``BEGIN IMMEDIATE``（apply）或普通只读连接（dry_run）。
     """
     dns = _validate_dn_ids(db, dn_ids)
+    pick_group = str(pick_group or "").strip()
+    if len({dn["source_warehouse"] for dn in dns if dn["source_warehouse"]}) > 1:
+        raise AllocationError("同一波次只能包含同一出库仓的订单")
     chosen_ids = None
     if line_ids:
         try:
@@ -303,14 +328,14 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
 
     allocations, skipped, shortages, dns_out = [], [], [], []
     # 试算时同一波次内多张 DN 会争同一批次：用本地快照按 (owner, product) 共享余额
-    snapshot = {}
+    consumed = {}
     for dn in dns:
         lines = [dict(r) for r in db.execute(_LINE_SELECT, (dn["id"],)).fetchall()]
         dn_alloc, dn_skipped, dn_short = [], [], []
         for line in lines:
             if chosen_ids is not None and line["id"] not in chosen_ids:
                 continue
-            remaining = float(line["ordered_qty"] - line["picked_qty"])
+            remaining = float(line["ordered_qty"] - line["cancelled_qty"] - line["picked_qty"])
             if remaining <= EPS:
                 continue
             info = build_context(db, dn["id"], line["id"])
@@ -318,13 +343,10 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
             options = _j(rule["score"], dict) if rule else {}
             reject_expired = bool((limits.get("quality_state") or {}).get("reject_expired"))
             scope = _step_scope(db, rule)
-            key = (info["owner_id"], info["product_id"])
+            rows = _candidates(db, info, scope, pick_group)
             if dry_run:
-                if key not in snapshot:
-                    snapshot[key] = _candidates(db, info, scope)
-                rows = snapshot[key]
-            else:
-                rows = _candidates(db, info, scope)
+                for row in rows:
+                    row["available"] -= consumed.get(row["id"], 0)
 
             ordered = sorted(rows, key=lambda r: _sort_key(r, dn["customer_id"], strat, bool(options.get("prefer_picking"))))
             # 跳批留痕与「剩余量」解耦：先全量扫描红线候选，再按排序分配。
@@ -336,6 +358,8 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                 if avail <= EPS:
                     continue
                 code = _skip_reason(row, dn["customer_id"], reject_expired)
+                if not code and not _order_match(db, line, row):
+                    code = "ORDER_BATCH_MISMATCH"
                 if code:
                     skip_map[row["id"]] = (code, avail)
             for row in ordered:
@@ -368,7 +392,6 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                 if avail <= EPS or row["id"] in skip_map:
                     continue
                 take = min(avail, remaining)
-                dims = _batch_dims(row)
                 rec = {"dn_id": dn["id"], "dn_code": dn["code"], "line_id": line["id"],
                        "sku": line["sku"], "product_id": info["product_id"],
                        "location_id": row["location_id"], "location_code": row["location_code"],
@@ -383,28 +406,11 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                 dn_alloc.append(rec)
                 remaining -= take
                 row["available"] = avail - take
+                if dry_run:
+                    consumed[row["id"]] = consumed.get(row["id"], 0) + take
                 picked_any = True
                 if apply:
-                    item = dict(dims, qty=0.0, allocated=take)
-                    adjust_stock(db, info["owner_id"], info["product_id"],
-                                 row["location_id"], 0, C.MOVEMENT_DN_PICK, dn["id"],
-                                 allocated_delta=take, batches=[item],
-                                 note=f"DN {dn['code']} 波次 {wave} 自动分配",
-                                 operator=operator)
-                    db.execute(
-                        """INSERT INTO dn_pick
-                           (dn_id, line_id, location_id, qty, batch_no, batch_key,
-                            internal_batch_no, designated_customer_id, goods_property,
-                            stock_status, expiry_date, production_date, wave_no, rule_id)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (dn["id"], line["id"], row["location_id"], take,
-                         dims["batch_no"], dims["batch_key"], dims["internal_batch_no"],
-                         dims["designated_customer_id"], dims["goods_property"],
-                         dims["stock_status"], dims["expiry_date"], dims["production_date"],
-                         wave, rule["id"] if rule else None),
-                    )
-                    db.execute("UPDATE dn_line SET picked_qty = picked_qty + ? WHERE id = ?",
-                               (take, line["id"]))
+                    reserve_batch(db, dn, line, row, take, wave, rule, operator)
                     _log(db, action="allocated", wave_no=wave, dn_id=dn["id"],
                          line_id=line["id"], row=row, qty=take, rule=rule,
                          strategy=strat, engine=engine, operator=operator,
@@ -423,7 +429,7 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                          product_id=info["product_id"])
             if apply and picked_any:
                 lines_now = db.execute(
-                    "SELECT picked_qty, ordered_qty FROM dn_line WHERE dn_id = ?", (dn["id"],)
+                    "SELECT picked_qty, ordered_qty - cancelled_qty AS ordered_qty FROM dn_line WHERE dn_id = ?", (dn["id"],)
                 ).fetchall()
                 status = C.DN_ALLOCATED if all(r["ordered_qty"] - r["picked_qty"] <= EPS for r in lines_now) else C.DN_PICKING
                 db.execute(
@@ -439,6 +445,7 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                         "skipped": len(dn_skipped), "shortages": len(dn_short)})
     return {
         "ok": True, "wave_no": wave, "dry_run": bool(dry_run),
+        "pick_group": pick_group,
         "strategy": strategy or C.OUTBOUND_STRATEGY_OWN_FIRST,
         "dns": dns_out, "allocations": allocations, "skipped": skipped,
         "shortages": shortages,
@@ -446,6 +453,54 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="",
                    "allocated_qty": round(sum(a["qty"] for a in allocations), 6),
                    "skipped_batches": len(skipped), "shortages": len(shortages)},
     }
+
+
+def reserve_batch(db, dn, line, row, qty, wave="", rule=None, operator=""):
+    dims = _batch_dims(row)
+    adjust_stock(db, dn["owner_id"], line["product_id"], row["location_id"], 0,
+                 C.MOVEMENT_DN_PICK, dn["id"], allocated_delta=qty,
+                 batches=[dict(dims, qty=0, allocated=qty)], operator=operator,
+                 note=f"DN {dn['code']} 库存分配")
+    db.execute("""
+        INSERT INTO dn_pick (
+            dn_id, line_id, location_id, qty, batch_no, batch_key, internal_batch_no,
+            designated_customer_id, goods_property, stock_status, expiry_date, production_date,
+            wave_no, rule_id, confirmed_qty
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (dn["id"], line["id"], row["location_id"], qty, dims["batch_no"], dims["batch_key"],
+          dims["internal_batch_no"], dims["designated_customer_id"], dims["goods_property"],
+          dims["stock_status"], dims["expiry_date"], dims["production_date"], wave, rule["id"] if rule else None,
+          0 if dn["workflow_required"] else qty))
+    db.execute("UPDATE dn_line SET picked_qty = picked_qty + ? WHERE id = ?", (qty, line["id"]))
+
+
+def manual_candidates(db, dn_id, line_id):
+    info = build_context(db, dn_id, line_id)
+    rows = _candidates(db, info, ("all", None))
+    return [{**row, "blocked": C.OUTBOUND_SKIP_LABELS.get(_skip_reason(row, info["customer_id"], True), "")
+             or ("" if _order_match(db, info["line"], row) else C.OUTBOUND_SKIP_LABELS["ORDER_BATCH_MISMATCH"])}
+            for row in rows]
+
+
+def manual_allocate(db, dn_id, line_id, stock_id, qty, operator=""):
+    dn = _validate_dn_ids(db, [dn_id])[0]
+    line = build_context(db, dn_id, line_id)["line"]
+    remaining = line["ordered_qty"] - line["cancelled_qty"] - line["picked_qty"]
+    if not math.isfinite(qty) or not EPS < qty <= remaining + EPS:
+        raise AllocationError(f"分配数量必须大于零且不超过待分配量 {max(0, remaining):g}")
+    row = next((row for row in manual_candidates(db, dn_id, line_id) if row["id"] == stock_id), None)
+    if row is None or qty > row["available"] + EPS:
+        raise AllocationError("库存不存在、已分配或可用数量不足")
+    if row["blocked"]:
+        raise AllocationError(row["blocked"])
+    reserve_batch(db, dn, line, row, qty, operator=operator)
+    _log(db, action="allocated", wave_no="", dn_id=dn_id, line_id=line_id, row=row, qty=qty,
+         reason="人工选批分配", operator=operator, product_id=line["product_id"])
+    pending = db.execute("""SELECT 1 FROM dn_line WHERE dn_id = ?
+                         AND ordered_qty - cancelled_qty - picked_qty > ?""", (dn_id, EPS)).fetchone()
+    status = C.DN_PICKING if pending else C.DN_ALLOCATED
+    db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?", (status, dn_id))
+    return status
 
 
 def _under_review(db, dn_id):
@@ -478,6 +533,8 @@ def unallocate(db, dn_id, pick_ids=None, operator="", wave_no="", *, cancelling=
         sql += " AND dp.id IN (" + ",".join("?" for _ in ids) + ")"
         params += ids
     picks = [dict(r) for r in db.execute(sql + " ORDER BY dp.id", params).fetchall()]
+    if dn["workflow_required"] and not cancelling and any((p["confirmed_qty"] or 0) > EPS for p in picks):
+        raise AllocationError("已拣货的库存不可直接释放分配")
     released = 0.0
     for p in picks:
         dims = None
@@ -498,7 +555,7 @@ def unallocate(db, dn_id, pick_ids=None, operator="", wave_no="", *, cancelling=
              engine=C.OUTBOUND_ENGINE_LEGACY, operator=operator,
              product_id=p["product_id"])
         released += float(p["qty"])
-    lines = db.execute("SELECT picked_qty, ordered_qty FROM dn_line WHERE dn_id = ?", (dn_id,)).fetchall()
+    lines = db.execute("SELECT picked_qty, ordered_qty - cancelled_qty AS ordered_qty FROM dn_line WHERE dn_id = ?", (dn_id,)).fetchall()
     if lines and all(r["ordered_qty"] - r["picked_qty"] <= EPS for r in lines):
         status = C.DN_ALLOCATED
     else:

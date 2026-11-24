@@ -25,7 +25,7 @@ from inventory_service import BATCH_DIMS, StockError, adjust_stock, spread_batch
 from main import current_scope, get_control_db, get_db, gen_doc_no, request_payload
 from routes_asn import LINE_SNAPSHOT_FIELDS, _check_customer_owner, _line_snapshot, _parse_customer_id
 from dn_transfer_service import prepare_destination, create_transfer_asn
-from outbound_allocation import AllocationError, _under_review, unallocate
+from outbound_allocation import AllocationError, _under_review, manual_allocate, manual_candidates, unallocate
 import reservation_audit as RA
 
 dn_bp = Blueprint("dn", __name__, url_prefix="/api/dns")
@@ -46,10 +46,11 @@ def _load_dn(db, dn_id):
 
 def _load_lines(db, dn_id):
     return db.execute(
-        """SELECT dl.*, p.sku, p.name AS product_name, p.spec, p.article_no, p.unit,
+        """SELECT dl.*, d.workflow_required, p.sku, p.name AS product_name, p.spec, p.article_no, p.unit,
+                  COALESCE((SELECT SUM(dp.confirmed_qty) FROM dn_pick dp WHERE dp.line_id = dl.id), 0) AS confirmed_qty,
                   p.brand, p.mfg_enterprise, p.origin, p.reg_cert_no, p.registrant,
                   p.mfg_license, p.shelf_life_days
-           FROM dn_line dl JOIN product p ON p.id = dl.product_id
+           FROM dn_line dl JOIN product p ON p.id = dl.product_id JOIN dn d ON d.id = dl.dn_id
            WHERE dl.dn_id = ? ORDER BY dl.id""",
         (dn_id,),
     ).fetchall()
@@ -84,7 +85,7 @@ def _check_location(db, location_id, allowed_types, label, warehouse=None):
 def _advance_status(db, dn_id, lines):
     """根据行拣货进度推进状态（open → picking；shipped 由发货显式设置）。"""
     any_picked = any(l["picked_qty"] > 0 for l in lines)
-    if all(line["ordered_qty"] - line["picked_qty"] <= 1e-9 for line in lines):
+    if all(line["ordered_qty"] - line["cancelled_qty"] - line["picked_qty"] <= 1e-9 for line in lines):
         pending = db.execute("SELECT 1 FROM dn_pick WHERE dn_id = ? AND wave_no != '' LIMIT 1", (dn_id,)).fetchone()
         status = C.DN_ALLOCATED if pending else C.DN_PICKED
     else:
@@ -100,7 +101,12 @@ def _dict_line(l):
     d = dict(l)
     snap = _line_snapshot(l)
     d["line_snapshot"] = {key: snap.get(key) or d.get(key, "") for key in LINE_SNAPSHOT_FIELDS}
-    d["remaining_pick"] = max(0, l["ordered_qty"] - l["picked_qty"])
+    d["allocated_qty"] = l["picked_qty"]
+    d["required_qty"] = l["ordered_qty"] - l["cancelled_qty"]
+    d["remaining_allocate"] = max(0, d["required_qty"] - d["allocated_qty"])
+    if l["workflow_required"]:
+        d["picked_qty"] = l["confirmed_qty"]
+    d["remaining_pick"] = max(0, d["required_qty"] - d["picked_qty"])
     return d
 
 
@@ -371,11 +377,13 @@ def pick(dn_id):
             raise ValueError(f"单据状态为 {dn['status']}，不可拣货")
         if _under_review(db, dn_id):
             raise ValueError("复核中的出库单不可修改拣货")
+        if dn["workflow_required"]:
+            raise ValueError("请先分配库存，再按分配明细确认拣货")
         line = db.execute("SELECT * FROM dn_line WHERE id = ? AND dn_id = ?",
                           (line_id, dn_id)).fetchone()
         if line is None:
             raise ValueError("行不存在或不属于该 DN")
-        remaining = line["ordered_qty"] - line["picked_qty"]
+        remaining = line["ordered_qty"] - line["cancelled_qty"] - line["picked_qty"]
         if math.isnan(qty) or qty <= 0 or qty > remaining:
             raise ValueError(f"拣货数量必须为正且不超过剩余待拣 {remaining}")
         _check_location(db, location_id, ("storage", "picking"), "拣货来源", dn["source_warehouse"] or g.warehouse_id)
@@ -403,11 +411,11 @@ def pick(dn_id):
             db.execute("""
                 INSERT INTO dn_pick (dn_id, line_id, location_id, qty, batch_no, batch_key,
                     internal_batch_no, designated_customer_id, goods_property, stock_status,
-                    expiry_date, production_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    expiry_date, production_date, confirmed_qty)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (dn_id, line_id, location_id, batch["allocated"], batch["batch_no"], batch["batch_key"],
                   batch["internal_batch_no"], batch["designated_customer_id"], batch["goods_property"],
-                  batch["stock_status"], batch["expiry_date"], batch["production_date"]))
+                  batch["stock_status"], batch["expiry_date"], batch["production_date"], batch["allocated"]))
         db.execute("UPDATE dn_line SET picked_qty = picked_qty + ? WHERE id = ?",
                    (qty, line_id))
         lines = _load_lines(db, dn_id)
@@ -437,32 +445,120 @@ def reservation_check(dn_id):
 @dn_bp.route("/<int:dn_id>/confirm-pick", methods=["POST"])
 def confirm_pick(dn_id):
     db = get_db()
+    payload = request_payload()
     try:
         db.execute("BEGIN IMMEDIATE")
         dn = _load_dn(db, dn_id)
-        if not dn or dn["status"] != C.DN_ALLOCATED:
+        if not dn or dn["status"] not in (C.DN_ALLOCATED, C.DN_PICKING):
             raise ValueError("仅分配完毕的出库单可确认拣货")
-        if any(line["remaining_pick"] > 1e-9 for line in map(_dict_line, _load_lines(db, dn_id))):
+        if _under_review(db, dn_id):
+            raise ValueError("已进入复核的单据不可修改拣货")
+        if any(line["remaining_allocate"] > 1e-9 for line in map(_dict_line, _load_lines(db, dn_id))):
             raise ValueError("仍有待分配数量，无法确认拣货")
+        if payload.get("pick_id"):
+            record = db.execute("SELECT * FROM dn_pick WHERE id = ? AND dn_id = ?",
+                                (int(payload["pick_id"]), dn_id)).fetchone()
+            qty = float(payload.get("qty"))
+            if not record or not math.isfinite(qty) or not 0 < qty <= record["qty"] - (record["confirmed_qty"] or 0) + 1e-9:
+                raise ValueError("拣货数量不得超过该分配批次的剩余数量")
+            db.execute("UPDATE dn_pick SET confirmed_qty = MIN(qty, COALESCE(confirmed_qty, 0) + ?) WHERE id = ?",
+                       (qty, record["id"]))
+        elif not dn["workflow_required"]:
+            db.execute("UPDATE dn_pick SET confirmed_qty = qty WHERE dn_id = ?", (dn_id,))
+        else:
+            raise ValueError("请选择要拣货的分配明细")
+        left = db.execute("SELECT 1 FROM dn_pick WHERE dn_id = ? AND qty - COALESCE(confirmed_qty, 0) > 1e-9",
+                          (dn_id,)).fetchone()
+        status = C.DN_PICKING if left else C.DN_PICKED
         db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
-                   (C.DN_PICKED, dn_id))
+                   (status, dn_id))
         db.commit()
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         db.rollback()
         return jsonify(ok=False, error=str(exc)), 409
-    return jsonify(ok=True, status=C.DN_PICKED)
+    return jsonify(ok=True, status=status)
+
+
+@dn_bp.get("/<int:dn_id>/allocation-candidates")
+def allocation_candidates(dn_id):
+    db = get_db()
+    if _load_dn(db, dn_id) is None:
+        return jsonify(ok=False, error="出库单不存在"), 404
+    try:
+        return jsonify(ok=True, stocks=manual_candidates(db, dn_id, request.args.get("line_id", type=int)))
+    except AllocationError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+@dn_bp.post("/<int:dn_id>/allocate")
+def allocate_line(dn_id):
+    db = get_db()
+    payload = request_payload()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        status = manual_allocate(db, dn_id, int(payload.get("line_id")), int(payload.get("stock_id")),
+                                 float(payload.get("qty")), _operator())
+        db.commit()
+    except (AllocationError, ValueError, TypeError, StockError) as exc:
+        db.rollback()
+        return jsonify(ok=False, error=str(exc)), 400
+    return jsonify(ok=True, status=status)
+
+
+@dn_bp.post("/<int:dn_id>/lines/<int:line_id>/cancel")
+def cancel_line(dn_id, line_id):
+    db = get_db()
+    try:
+        qty = float(request_payload().get("qty"))
+        db.execute("BEGIN IMMEDIATE")
+        dn = _load_dn(db, dn_id)
+        if not dn or dn["status"] not in (C.DN_OPEN, C.DN_ALLOCATED, C.DN_PICKING) or _under_review(db, dn_id):
+            raise ValueError("当前出库单状态不允许取消明细数量")
+        line = db.execute("SELECT * FROM dn_line WHERE id = ? AND dn_id = ?", (line_id, dn_id)).fetchone()
+        if not line or not math.isfinite(qty) or not 0 < qty <= line["ordered_qty"] - line["cancelled_qty"] - line["picked_qty"] + 1e-9:
+            raise ValueError("仅可取消未分配数量，已分配库存请先释放")
+        db.execute("UPDATE dn_line SET cancelled_qty = cancelled_qty + ? WHERE id = ?", (qty, line_id))
+        lines = [_dict_line(row) for row in _load_lines(db, dn_id)]
+        if all(row["required_qty"] <= 1e-9 for row in lines):
+            status = C.DN_CANCELLED
+        elif all(row["remaining_allocate"] <= 1e-9 for row in lines):
+            status = C.DN_PICKED if all(row["remaining_pick"] <= 1e-9 for row in lines) else C.DN_ALLOCATED
+        else:
+            status = dn["status"]
+        db.execute("UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?", (status, dn_id))
+        db.commit()
+    except (ValueError, TypeError) as exc:
+        db.rollback()
+        return jsonify(ok=False, error=str(exc)), 400
+    return jsonify(ok=True, status=status)
 
 
 @dn_bp.route("/<int:dn_id>/ship", methods=["POST"])
 def ship(dn_id):
+    return _ship_dn(dn_id, request_payload())
+
+
+@dn_bp.post("/ship-box")
+def ship_box():
+    db = get_db()
+    code = str(request_payload().get("box_code") or "").strip()
+    box = db.execute("""SELECT b.dn_id, d.owner_id FROM dn_package b JOIN dn d ON d.id = b.dn_id
+                       WHERE b.code = ?""", (code,)).fetchone()
+    if not box:
+        return jsonify(ok=False, error="未找到箱码"), 404
+    S.assert_owner_allowed(current_scope(), box["owner_id"])
+    return _ship_dn(box["dn_id"], {"box_code": code})
+
+
+def _ship_dn(dn_id, payload):
     """发货：所有行拣满后，按拣货明细逐库位扣减在手与分配，状态 → shipped。
 
     M23 补充：专属库存发给其他客户**允许继续**；发货前把风险清单写入
     ``customer_reservation_log``（与扣减同事务），响应带 warnings 供前端回显。
     """
     db = get_db()
-    payload = request_payload() or {}
     acknowledged = bool(payload.get("risk_acknowledged"))
+    box_code = payload.get("box_code")
     operator = _operator()
     risks, logged = [], 0
     dn = _load_dn(db, dn_id)
@@ -478,13 +574,31 @@ def ship(dn_id):
         if dn["status"] in (C.DN_SHIPPED, C.DN_CANCELLED):
             raise ValueError(f"单据状态为 {dn['status']}，不可重复发货")
         lines = _load_lines(db, dn_id)
-        short = [l["sku"] for l in lines if l["picked_qty"] < l["ordered_qty"]]
+        short = [l["sku"] for l in lines if l["picked_qty"] + l["cancelled_qty"] + 1e-9 < l["ordered_qty"]]
         if short:
             raise ValueError(f"存在未拣满的行，不可发货: {', '.join(short)}")
         active_review = db.execute("SELECT 1 FROM dn_review WHERE dn_id = ? AND status IN (?, ?)",
                                    (dn_id, C.REVIEW_DRAFT, C.REVIEW_REVIEWING)).fetchone()
         if active_review or (dn["workflow_required"] and dn["status"] != C.DN_REVIEWED):
             raise ValueError("出库单需完成复核后才能发货")
+        if box_code:
+            if dn["status"] != C.DN_REVIEWED:
+                raise ValueError("复核完成后才能扫箱码发货")
+            scan = db.execute("""
+                UPDATE dn_package SET shipped_scan_at = datetime('now','localtime')
+                WHERE code = ? AND dn_id = ? AND shipped_scan_at IS NULL AND review_id IN (
+                    SELECT id FROM dn_review WHERE dn_id = ? AND status = ?
+                )
+            """, (box_code, dn_id, dn_id, C.REVIEW_COMPLETED))
+            if scan.rowcount != 1:
+                raise ValueError("该箱已扫描，或箱码不属于已完成的复核单")
+            left = db.execute("""
+                SELECT COUNT(*) FROM dn_package b JOIN dn_review r ON r.id = b.review_id
+                WHERE b.dn_id = ? AND r.status = ? AND b.shipped_scan_at IS NULL
+            """, (dn_id, C.REVIEW_COMPLETED)).fetchone()[0]
+            if left:
+                db.commit()
+                return jsonify(ok=True, status=C.DN_REVIEWED, remaining_boxes=left, box_code=box_code)
 
         # 按拣货明细逐库位扣减（qty 与 allocated 同步清掉）
         picks = _load_picks(db, dn_id)
@@ -513,6 +627,10 @@ def ship(dn_id):
             "UPDATE dn SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
             (C.DN_SHIPPED, dn_id),
         )
+        db.execute("""
+            UPDATE dn_package SET shipped_scan_at = COALESCE(shipped_scan_at, datetime('now','localtime'))
+            WHERE dn_id = ? AND review_id IN (SELECT id FROM dn_review WHERE dn_id = ? AND status = ?)
+        """, (dn_id, dn_id, C.REVIEW_COMPLETED))
         db.commit()
     except (ValueError, StockError, sqlite3.Error) as e:
         db.rollback()
