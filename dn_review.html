@@ -20,6 +20,7 @@
 .review-line input[type=number] { width:82px; padding:5px 7px; border:1px solid #d5dbe4; border-radius:6px; }
 .review-line select { padding:5px 6px; border:1px solid #d5dbe4; border-radius:6px; }
 .batch-cell { font-family:monospace; font-size:12px; }
+#reviewScanForm[hidden], #reviewBoxForm[hidden] { display:none; }
 </style>
 </head>
 <body>
@@ -83,10 +84,24 @@
           <span id="detailStatus" class="dim"></span>
         </div>
         <div id="detailStats"></div>
+        <div id="scanStation">
+          <form class="toolbar" id="reviewScanForm">
+            <label>商品条码 <input name="barcode" placeholder="扫码后回车" required></label>
+            <label>拣货明细 <select name="line_id"><option value="">自动定位</option></select></label>
+            <label>当前箱 <select name="package_id"><option value="">不装箱</option></select></label>
+            <button class="btn" type="submit">确认扫码</button>
+          </form>
+          <form class="toolbar" id="reviewBoxForm">
+            <label>新箱码 <input name="code" placeholder="留空自动生成"></label>
+            <label>耗材条码 <input name="material_barcode" placeholder="选填，包装耗材"></label>
+            <button class="btn secondary" type="submit">新增并切换到箱</button>
+          </form>
+          <div id="reviewBoxes" class="toolbar"></div>
+        </div>
         <div class="toolbar" style="margin-top:6px">
           <button class="btn secondary sm" onclick="loadDetail(currentReview.id)">刷新明细</button>
-          <button class="btn" onclick="completeReview()">完成复核</button>
-          <button class="btn secondary sm" onclick="cancelReview()">取消复核单</button>
+          <button class="btn" id="completeReviewBtn" onclick="completeReview()">完成复核</button>
+          <button class="btn secondary sm" id="cancelReviewBtn" onclick="cancelReview()">取消复核单</button>
         </div>
         <h3>拣货明细（逐条复核）</h3>
         <div class="table-wrap"><table>
@@ -131,7 +146,7 @@
   </div>
 </div>
 
-<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/preview-api.js?v=246ee46e9087"></script>
 <script src="/miniwms/js/api.js"></script>
 <script src="/miniwms/js/layout.js"></script>
 <script>
@@ -249,6 +264,7 @@ async function loadDetail(id) {
     ].map(([k, v]) => `<span class="stat">${esc(k)}<b>${esc(v)}</b></span>`).join("");
 
     const closed = d.status === "completed" || d.status === "cancelled";
+    renderScanStation(d, closed);
     const lb = document.getElementById("lineBody");
     if (!d.lines.length) { emptyRow("lineBody", 11, "复核单无明细"); }
     else lb.innerHTML = d.lines.map((l) => `<tr class="review-line" data-line="${l.id}">
@@ -258,7 +274,7 @@ async function loadDetail(id) {
       <td>${esc(l.expiry_date || "—")}</td>
       <td class="dim">${esc(l.goods_property || "—")} / ${esc(l.stock_status || "—")}</td>
       <td><b>${esc(l.expected_qty)}</b></td>
-      <td><input type="number" step="any" min="0" class="actual" value="${l.actual_qty ?? l.expected_qty}" ${closed ? "disabled" : ""}></td>
+      <td><input type="number" step="any" min="0" class="actual" value="${l.actual_qty ?? ""}" ${closed ? "disabled" : ""}></td>
       <td>${resultTag(l.result)}</td>
       <td><select class="reason" ${closed ? "disabled" : ""}>
         <option value="">—</option>
@@ -280,12 +296,14 @@ async function loadDetail(id) {
       <td class="dim">${esc(g.operator || "—")}</td>
     </tr>`).join("") : `<tr><td colspan="9" class="muted">无差异留痕</td></tr>`;
 
-    document.querySelector('#detailCard button.btn:not(.secondary)').disabled = closed;
+    document.getElementById("completeReviewBtn").disabled = closed;
+    document.getElementById("cancelReviewBtn").disabled = closed;
   } catch (e) { msg("复核详情加载失败：" + e.message, "error"); }
 }
 
 async function checkLine(lineId) {
   const tr = document.querySelector(`tr[data-line="${lineId}"]`);
+  if (!tr.querySelector(".actual").value.trim()) return msg("请填写实拣数量或扫描商品条码", "error");
   const actual = Number(tr.querySelector(".actual").value);
   const reason = tr.querySelector(".reason").value;
   const note = tr.querySelector(".lnote").value;
@@ -304,6 +322,69 @@ async function checkLine(lineId) {
     await loadDetail(currentReview.id);
     await loadLogs(1);
   } catch (e) { msg("提交复核失败：" + e.message, "error"); }
+}
+
+const scanForm = document.getElementById("reviewScanForm");
+const boxForm = document.getElementById("reviewBoxForm");
+let scanReviewId = null;
+
+function renderScanStation(review, closed) {
+  const sameReview = scanReviewId === review.id;
+  scanReviewId = review.id;
+  const batch = scanForm.elements.line_id;
+  const box = scanForm.elements.package_id;
+  const previousBatch = sameReview ? batch.value : "";
+  const previousBox = sameReview ? box.value : "";
+  batch.replaceChildren(new Option("自动定位", ""), ...review.lines.map(line =>
+    new Option(`${line.sku} · ${line.batch_no || "无批号"} · ${line.location_code}`, line.id)));
+  batch.value = previousBatch;
+  box.replaceChildren(new Option(review.packages.length ? "请选择箱码" : "不装箱", ""),
+    ...review.packages.map(row => new Option(`${row.code} · ${row.packed_qty} 件`, row.id)));
+  box.value = previousBox;
+  scanForm.hidden = boxForm.hidden = closed;
+  document.getElementById("reviewBoxes").innerHTML = review.packages.map(row => `
+    <span>${esc(row.code)} · ${row.packed_qty} 件${row.material_name ? " · " + esc(row.material_name) : ""}
+    ${!closed && !row.packed_qty ? `<button class="btn secondary sm" onclick="removeBox(${row.id})">移除空箱</button>` : ""}</span>`).join("");
+}
+
+scanForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const input = scanForm.elements.barcode;
+  const submit = scanForm.querySelector("button");
+  if (submit.disabled) return;
+  submit.disabled = true;
+  try {
+    const result = await api("POST", `/api/dn-reviews/${currentReview.id}/scan`, {
+      barcode: input.value.trim(), line_id: scanForm.elements.line_id.value,
+      package_id: scanForm.elements.package_id.value,
+    });
+    input.value = "";
+    await loadDetail(currentReview.id);
+    const row = document.querySelector(`tr[data-line="${result.line_id}"]`);
+    row?.scrollIntoView({block: "nearest"});
+    msg(`本次 ${result.added_qty} 件，该批次已复核 ${result.actual_qty} 件`);
+  } catch (e) { msg(e.message, "error"); input.select(); }
+  finally { submit.disabled = false; input.focus(); }
+});
+
+boxForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const result = await api("POST", `/api/dn-reviews/${currentReview.id}/packages`,
+      Object.fromEntries(new FormData(boxForm)));
+    boxForm.reset();
+    await loadDetail(currentReview.id);
+    scanForm.elements.package_id.value = result.id;
+    scanForm.elements.barcode.focus();
+    msg(`当前箱：${result.code}`);
+  } catch (e) { msg(e.message, "error"); }
+});
+
+async function removeBox(id) {
+  try {
+    await api("DELETE", `/api/dn-reviews/${currentReview.id}/packages/${id}`);
+    await loadDetail(currentReview.id);
+  } catch (e) { msg(e.message, "error"); }
 }
 
 async function completeReview() {

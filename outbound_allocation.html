@@ -45,6 +45,8 @@
           <select id="strategySel" style="min-width:230px"></select>
           <label class="muted text-sm">波次号（选填）</label>
           <input id="waveNo" placeholder="留空自动生成 WV-YYYYMMDD-NNN" style="min-width:250px">
+          <label>拣货范围 <select id="waveGroup"><option value="">全仓可用货位</option></select></label>
+          <label><input id="waveComplete" type="checkbox"> 必须全量分配</label>
           <button class="btn secondary" onclick="doPlan()">只读试算</button>
           <button class="btn" onclick="doAllocate()">执行分配（占用库存）</button>
         </div>
@@ -131,7 +133,7 @@
   </div>
 </div>
 
-<script src="/miniwms/js/preview-api.js?v=a3c8e5cf89f0"></script>
+<script src="/miniwms/js/preview-api.js?v=246ee46e9087"></script>
 <script src="/miniwms/js/api.js"></script>
 <script src="/miniwms/js/layout.js"></script>
 <script>
@@ -166,6 +168,17 @@ async function loadDict() {
   } catch (e) { msg("字典加载失败：" + e.message, "error"); }
 }
 
+async function loadWaveGroups() {
+  try {
+    const context = await api("GET", "/api/scope/context");
+    const q = new URLSearchParams({status: "active", page_size: "100"});
+    if (context.current_warehouse_id) q.set("warehouse_id", context.current_warehouse_id);
+    const data = await api("GET", "/api/location-groups?" + q);
+    const selector = document.getElementById("waveGroup");
+    for (const group of data.location_groups || []) selector.add(new Option(`${group.code} · ${group.name}`, group.code));
+  } catch (e) { msg("货位组加载失败：" + e.message, "error"); }
+}
+
 async function loadDns() {
   try {
     const d = await api("GET", "/api/dns?page_size=100");
@@ -196,6 +209,8 @@ function selectedDnIds() {
 function payload() {
   const wave = document.getElementById("waveNo").value.trim();
   const p = { dn_ids: selectedDnIds(), strategy: document.getElementById("strategySel").value };
+  p.pick_group = document.getElementById("waveGroup").value;
+  p.require_complete = document.getElementById("waveComplete").checked;
   if (wave) p.wave_no = wave;
   return p;
 }
@@ -330,6 +345,7 @@ async function loadLogs(page) {
 
 (async function init() {
   await loadDict();
+  await loadWaveGroups();
   await loadDns();
   await loadWaves();
   await loadLogs(1);
