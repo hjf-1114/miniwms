@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from batch_fields import FIELD_NAMES
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -109,7 +111,7 @@ class FreshDbSchemaTest(unittest.TestCase):
             for col in ("batch_no", "batch_id", "internal_batch_no", "internal_source",
                         "asn_id", "asn_line_id", "qty", "goods_property"):
                 self.assertIn(col, data["receipt"], f"全新库 batch_receipt 缺列: {col}")
-            self.assertEqual(data["config_n"], 20)
+            self.assertEqual(data["config_n"], len(FIELD_NAMES))
             self.assertEqual(data["key_n"], 7)
         finally:
             if os.path.exists(db):

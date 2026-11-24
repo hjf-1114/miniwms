@@ -50,7 +50,7 @@
         { href: "/stock_batch.html", label: "批次库存", ico: "🧾" },
         { href: "/stocktake_plans.html", label: "盘点方案", ico: "🗂️" },
         { href: "/stock_adjustments.html", label: "库存调整", ico: "⚖️" },
-        { href: "/inventory_transfers.html", label: "库存转移", ico: "🔀" },
+        { href: "/inventory_transfers.html", label: "批次调整", ico: "🔀" },
         { href: "/care.html", label: "养护管理", ico: "🌡️" },
       ]},
     ]},
@@ -167,8 +167,10 @@
         if (btn) btn.setAttribute("aria-expanded", isOpen ? "true" : "false");
       });
       el.querySelectorAll(".nav-item").forEach((a) => {
-        a.classList.toggle("active",
-          a.dataset.href === base && String(currentHref).indexOf("detail=") === -1);
+        const active = a.dataset.href === base;
+        a.classList.toggle("active", active);
+        if (active) a.setAttribute("aria-current", "page");
+        else a.removeAttribute("aria-current");
       });
       return open;
     }
@@ -193,13 +195,17 @@
     });
 
     el.querySelectorAll(".nav-item").forEach((a) => {
+      const href = a.dataset.href;
+      const entry = new URLSearchParams({ open: href });
+      if (mode === "link" && location.pathname !== href) {
+        entry.set("from", location.pathname + location.search);
+      }
+      a.href = "/app.html?" + entry;
       a.addEventListener("click", (e) => {
-        if (mode !== "tabs") return;
+        if (mode !== "tabs" || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
         const label = a.querySelector(".nav-label").textContent;
-        const href = a.dataset.href;
         if (typeof opts.onLeaf === "function") opts.onLeaf(label, href);
-        reveal(href);
       });
     });
 

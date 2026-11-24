@@ -122,7 +122,11 @@ class M25PutawayRulesTest(unittest.TestCase):
         self.assertEqual(len(C.PUTAWAY_LIMIT_KEYS), 8)
         self.assertEqual(len(C.PUTAWAY_SCORE_RULES), 9)
         # 8 种预设寻址 + 1 种 M20 兼容型
-        self.assertEqual(len(C.PUTAWAY_STEP_TYPES), 9)
+        self.assertEqual(set(C.PUTAWAY_STEP_TYPES), {
+            "zone_by_product", "zone_by_code", "fixed_location", "empty_in_zone",
+            "same_product", "same_category", "last_putaway", "batch_location", "all_active",
+            "empty_in_product_zone", "bound_location", "location_group", "near_same_product", "same_lot",
+        })
         self.assertIn("all_active", C.PUTAWAY_STEP_TYPES)
         self.assertEqual(C.RULE_TYPES, ("putaway", "outbound"))
 
@@ -283,7 +287,7 @@ class M25PutawayRulesTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         d = r.get_json()
         self.assertEqual(len(d["condition_dims"]), 14)
-        self.assertEqual(len(d["step_types"]), 9)
+        self.assertEqual([step["value"] for step in d["step_types"]], list(C.PUTAWAY_STEP_TYPES))
         self.assertEqual(len(d["limit_keys"]), 8)
         self.assertEqual(len(d["score_rules"]), 9)
         self.assertEqual(len(d["rule_types"]), 2)

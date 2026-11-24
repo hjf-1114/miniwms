@@ -74,7 +74,7 @@
     <h3 style="margin-top:14px">拣货明细</h3>
     <div class="table-wrap">
       <table>
-      <thead><tr><th>明细</th><th>行</th><th>库位</th><th>数量</th></tr></thead>
+      <thead><tr><th>明细</th><th>行</th><th>库位</th><th>数量</th><th>批次信息</th></tr></thead>
       <tbody id="pickBody"></tbody>
     </table>
     </div>
@@ -93,7 +93,9 @@
     <script src="/js/api.js"></script>
     <script src="/js/modal.js"></script>
     <script src="/js/layout.js"></script>
+    <script src="/js/batch_details.js"></script>
 <script>
+let pickBatchFields = [];
 let currentDn = null;
 let ownerOptions = [];
 let productOptions = [];
@@ -167,7 +169,8 @@ function dnStatusTag(s) {
 }
 
 async function showDetail(id) {
-  const data = await api("GET", "/api/dns/" + id);
+  const [data, fields] = await Promise.all([api("GET", "/api/dns/" + id), loadBatchFields()]);
+  pickBatchFields = fields;
   currentDn = data;
   document.getElementById("detailCard").style.display = "";
   document.getElementById("detailTitle").textContent =
@@ -252,8 +255,9 @@ function renderLines() {
     </tr>`).join("");
   document.getElementById("pickBody").innerHTML = d.picks.length
     ? d.picks.map((p) =>
-      `<tr><td>${p.id}</td><td>${p.line_id}</td><td>${esc(p.location_code)}</td><td>${p.qty}</td></tr>`).join("")
-    : `<tr><td colspan="4" class="muted">暂无拣货明细</td></tr>`;
+      `<tr><td>${p.id}</td><td>${p.line_id}</td><td>${esc(p.location_code)}</td><td>${p.qty}</td>
+        <td><details><summary>${esc(p.batch_no || "无批次号")}</summary>${batchDetails(pickBatchFields, p.batch_info)}</details></td></tr>`).join("")
+    : `<tr><td colspan="5" class="muted">暂无拣货明细</td></tr>`;
 }
 
 async function doPick(lineId) {

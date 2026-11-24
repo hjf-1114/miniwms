@@ -12,7 +12,9 @@
     <button class="ws-toggle" id="wsToggle" onclick="togglePin()" type="button" title="收起 / 展开导航">
       <span class="ws-toggle-ico" id="wsToggleIco">«</span><span class="nav-label ws-toggle-text" id="wsToggleText">收起导航</span>
     </button>
-    <div class="brand"><span class="logo">📦</span><span class="nav-label">MiniWMS 工作台</span></div>
+    <a class="brand ws-home" id="wsHome" href="/app.html?open=%2Findex.html" aria-label="打开概览">
+      <span class="logo">📦</span><span class="nav-label">MiniWMS 工作台</span>
+    </a>
     <nav class="nav" id="wsNav"></nav>
     <div class="side-foot nav-label">轻量多货主 WMS · 本地演示</div>
   </aside>
@@ -22,7 +24,10 @@
       <div class="wh-pick ws-wh-pick" id="wsWhPick"></div>
       <div class="ws-top-user" id="wsUserBox"></div>
     </div>
-    <div class="ws-tabs" id="wsTabs"></div>
+    <div class="ws-tab-bar">
+      <div class="ws-tabs" id="wsTabs" aria-label="打开的标签页"></div>
+      <select class="ws-tab-picker" id="wsTabPicker" aria-label="切换已打开的页面"></select>
+    </div>
     <div class="ws-stage" id="wsStage">
       <div class="ws-empty"><div><span class="ico">🗂️</span>从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>
     </div>
@@ -35,7 +40,7 @@
 const EMBED = new URLSearchParams(location.search).get("embed") === "1";
 
 // 防套娃：工作台自身不允许被塞进 iframe（否则「进入工作台」可无限点击嵌套）
-if (EMBED) {
+if (EMBED || window.self !== window.top) {
   document.getElementById("wsRoot").innerHTML =
     '<div class="ws-empty"><div><span class="ico">🗂️</span>' +
     "工作台不能嵌套在标签页内。<br>" +
@@ -46,6 +51,7 @@ if (EMBED) {
   const navEl = document.getElementById("wsNav");
   const tabsEl = document.getElementById("wsTabs");
   const stageEl = document.getElementById("wsStage");
+  const tabPicker = document.getElementById("wsTabPicker");
 
   // ── 顶栏账号区：有 token 显示账号名 + 退出登录；未登录显示登录入口 ──
   // 与独立页面 layout.js 保持一致：本项目登录是可选增强，未登录仍可浏览，故不强制跳转。
@@ -105,36 +111,72 @@ if (EMBED) {
   // 折叠 / 叶子点击 / 当前页高亮均由 MWS_NAV_TOOLS.mount() 统一绑定，此处不再重复注册。
 
   // ── 标签页管理 ──
-  let tabs = [];
+  const tabs = [];
   let seq = 0;
   let activeId = null;
+  const workspaceKey = "miniwms_workspace";
+  const account = getToken() ? currentUser().username || "" : null;
+  const pageTitles = new Map(window.MWS_NAV_FLAT.map(page => [page.href, page.label]));
+  pageTitles.set("/index.html", "概览");
 
-  function ensureEmbed(url) {
-    if (url.indexOf("embed=1") !== -1) return url;
-    return url + (url.indexOf("?") === -1 ? "?" : "&") + "embed=1";
+  function normalizeUrl(value) {
+    if (typeof value !== "string" || !value) return null;
+    let url;
+    try { url = new URL(value, location.origin); } catch (e) { return null; }
+    if (url.origin !== location.origin || !pageTitles.has(url.pathname)) return null;
+    url.searchParams.delete("embed");
+    url.searchParams.delete("__whrefresh");
+    url.searchParams.sort();
+    return url;
   }
 
-  function openTab(title, url) {
-    // 工作台自身绝不作为标签内容打开
-    if (url.split("?")[0] === "/app.html") url = "/index.html";
-    const key = url;
-    const existing = tabs.find((x) => x.key === key);
-    if (existing) { activate(existing.id); return; }
+  function getOrCreateTab(title, value) {
+    const url = normalizeUrl(value);
+    if (!url) return null;
+    const key = url.pathname + url.search + url.hash;
+    const existing = tabs.find(t => t.url === key);
+    if (existing) return existing;
     const id = "tab" + (++seq);
     const iframe = document.createElement("iframe");
     iframe.className = "ws-iframe";
-    iframe.src = ensureEmbed(url);
+    iframe.title = title || pageTitles.get(url.pathname);
     iframe.style.display = "none";
     stageEl.appendChild(iframe);
-    tabs.push({ id, title, url, key, iframe });
-    activate(id);
-    highlightNav(url);
+    const tab = { id, title: iframe.title, url: key, iframe };
+    tabs.push(tab);
+    return tab;
+  }
+
+  function frameUrl(tab) {
+    const url = new URL(tab.url, location.origin);
+    url.searchParams.set("embed", "1");
+    return url;
+  }
+
+  function openTab(title, url) {
+    const tab = getOrCreateTab(title, url);
+    if (tab) activate(tab.id);
+  }
+
+  function saveWorkspace() {
+    try {
+      const active = tabs.find(t => t.id === activeId);
+      sessionStorage.setItem(workspaceKey, JSON.stringify({
+        account, active: active?.url,
+        tabs: tabs.map(({ title, url }) => ({ title, url })),
+      }));
+    } catch (e) {}
   }
 
   function activate(id) {
+    const tab = tabs.find(t => t.id === id);
+    if (!tab) return;
     activeId = id;
+    if (!tab.iframe.hasAttribute("src")) tab.iframe.src = frameUrl(tab);
     tabs.forEach((t) => { t.iframe.style.display = t.id === id ? "" : "none"; });
+    navCtl.reveal(new URL(tab.url, location.origin).pathname);
     renderTabs();
+    saveWorkspace();
   }
 
   function closeTab(id) {
@@ -144,28 +186,30 @@ if (EMBED) {
     const wasActive = activeId === id;
     tabs.splice(i, 1);
     if (wasActive) {
-      if (tabs.length) activate(tabs[tabs.length - 1].id);
-      else { activeId = null; renderEmpty(); }
+      if (tabs.length) activate(tabs[Math.min(i, tabs.length - 1)].id);
+      else { activeId = null; navCtl.reveal("/index.html"); renderTabs(); }
+    } else {
+      renderTabs();
     }
-    renderTabs();
-  }
-
-  function highlightNav(url) {
-    // 切换标签时展开该页所在分支并同步高亮
-    if (navCtl) navCtl.reveal(url);
+    saveWorkspace();
   }
 
   function renderTabs() {
     tabsEl.innerHTML = tabs.map((t) =>
       `<div class="ws-tab${t.id === activeId ? " active" : ""}" data-id="${t.id}">` +
-      `<span>${esc(t.title)}</span>` +
-      `<span class="ws-tab-close" data-close="${t.id}" title="关闭">×</span></div>`).join("");
+      `<button type="button" class="ws-tab-select" aria-pressed="${t.id === activeId}">${esc(t.title)}</button>` +
+      `<button type="button" class="ws-tab-close" data-close="${t.id}" aria-label="关闭 ${esc(t.title)}">×</button></div>`).join("");
     tabsEl.querySelectorAll(".ws-tab").forEach((el) => {
       el.addEventListener("click", (e) => {
         if (e.target.dataset.close) { closeTab(e.target.dataset.close); return; }
         activate(el.dataset.id);
       });
     });
+    const active = tabsEl.querySelector(".ws-tab.active");
+    if (active) active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    tabPicker.replaceChildren(new Option(`已打开 ${tabs.length} 页`, ""),
+      ...tabs.map(t => new Option(t.title, t.id)));
+    tabPicker.disabled = tabs.length < 2;
     if (!tabs.length) renderEmpty();
   }
 
@@ -179,9 +223,11 @@ if (EMBED) {
   // 已打开的标签必须全部重载，否则旧仓数据会残留在 iframe 里造成串仓错觉。
   function refreshAllTabs() {
     const stamp = Date.now();
-    tabs.forEach((t, i) => {
-      const u = t.iframe.src.split("&__whrefresh=")[0];
-      t.iframe.src = u + (u.indexOf("?") === -1 ? "?" : "&") + "__whrefresh=" + stamp + "_" + i;
+    tabs.forEach(t => {
+      if (!t.iframe.hasAttribute("src")) return;
+      const url = frameUrl(t);
+      url.searchParams.set("__whrefresh", String(stamp));
+      t.iframe.src = url;
     });
   }
 
@@ -189,8 +235,25 @@ if (EMBED) {
   window.openTab = openTab;
   window.togglePin = togglePin;
 
-  // 默认打开概览
-  openTab("概览", "/index.html");
+  document.getElementById("wsHome").addEventListener("click", e => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    openTab("概览", "/index.html");
+  });
+  tabPicker.addEventListener("change", () => activate(tabPicker.value));
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(workspaceKey)); } catch (e) {}
+  if (saved?.account === account && Array.isArray(saved.tabs)) {
+    for (const tab of saved.tabs) {
+      if (tab && typeof tab.title === "string") getOrCreateTab(tab.title, tab.url);
+    }
+  }
+  if (!tabs.length) getOrCreateTab("概览", "/index.html");
+  const entry = new URLSearchParams(location.search);
+  if (entry.has("from")) getOrCreateTab("", entry.get("from"));
+  const requested = getOrCreateTab("", entry.get("open"));
+  if (entry.has("open") || entry.has("from")) history.replaceState(null, "", "/app.html");
+  activate((requested || tabs.find(t => t.url === saved?.active) || tabs[0]).id);
   mountWarehousePicker(document.getElementById("wsWhPick"), refreshAllTabs);
 }
 </script>

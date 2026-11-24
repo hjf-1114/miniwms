@@ -13,7 +13,7 @@ import scope as S
 from flask import Blueprint, jsonify, request
 
 import constants as C
-from batch_fields import (BATCH_INFO_FIELDS, FIELD_NAMES, build_batch_key,
+from batch_fields import (BATCH_INFO_FIELDS, FIELD_NAMES, build_batch_key, decode_batch_info,
                           ensure_config, key_fields)
 from batch_service import create_profile, prepare_info
 from main import get_db, request_payload
@@ -34,14 +34,16 @@ def _parse_json(raw):
 
 def _dict_profile(r):
     d = dict(r)
-    d["key_info"] = _parse_json(d.get("key_info"))
-    d["info"] = _parse_json(d.get("info"))
+    d["key_info"] = {k: v for k, v in _parse_json(d.get("key_info")).items()
+                     if k in FIELD_NAMES or k in ("owner_id", "product_id")}
+    d["info"] = decode_batch_info(d.get("info"))
     return d
 
 
 def _dict_receipt(r):
     d = dict(r)
-    d["info"] = _parse_json(d.pop("info", ""))
+    d["info"] = decode_batch_info(d.get("info"))
+    d["info"]["internal_batch_no"] = d["internal_batch_no"]
     return d
 
 
@@ -84,7 +86,7 @@ def get_config():
     db.commit()
     rows = [dict(r) for r in db.execute(
         "SELECT * FROM batch_config ORDER BY sort_order, id"
-    ).fetchall()]
+    ).fetchall() if r["field_name"] in FIELD_NAMES]
     return jsonify({"ok": True, "config": rows,
                     "key_fields": key_fields(db),
                     "fields": _field_dicts()})
@@ -97,7 +99,7 @@ def update_config(field_name):
     row = db.execute(
         "SELECT * FROM batch_config WHERE field_name = ?", (field_name,)
     ).fetchone()
-    if row is None:
+    if row is None or field_name not in FIELD_NAMES:
         return jsonify({"ok": False, "error": f"批次字段不存在: {field_name}"}), 404
 
     payload = request_payload()
@@ -106,9 +108,7 @@ def update_config(field_name):
         if "is_key" in payload:
             cleaned["is_key"] = _flag(payload.get("is_key"), "is_key")
             if cleaned["is_key"] == 0 and row["is_key"] == 1:
-                n = db.execute(
-                    "SELECT COUNT(*) AS n FROM batch_config WHERE enabled = 1 AND is_key = 1"
-                ).fetchone()[0]
+                n = len(key_fields(db))
                 if n <= 1:
                     return jsonify({"ok": False, "errors": [
                         "至少需要保留一个关键批次信息字段，否则无法判定关键批次信息是否一致"
@@ -116,9 +116,7 @@ def update_config(field_name):
         if "enabled" in payload:
             cleaned["enabled"] = _flag(payload.get("enabled"), "enabled")
             if cleaned["enabled"] == 0 and row["enabled"] == 1 and row["is_key"] == 1:
-                n = db.execute(
-                    "SELECT COUNT(*) AS n FROM batch_config WHERE enabled = 1 AND is_key = 1"
-                ).fetchone()[0]
+                n = len(key_fields(db))
                 if n <= 1:
                     return jsonify({"ok": False, "errors": [
                         "至少需要保留一个启用的关键批次信息字段"

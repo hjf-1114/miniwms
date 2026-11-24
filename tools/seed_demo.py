@@ -57,6 +57,7 @@ PRODUCTS = [
 # location 字段：code,name,zone,loc_type,capacity,aisle,bay,level,barcode
 LOCATIONS = [
     ("RECV-01", "收货暂存区", "收货区", "receiving", 0, "R", "01", "-", "LOC-RECV-01"),
+    ("RECV-SH-01", "上海仓验收暂存区", "收货区", "receiving", 0, "R", "01", "-", "LOC-RECV-SH-01"),
     ("A-01-01", "A区1排1列1层-美妆", "A区", "storage", 500, "A", "01", "L1", "LOC-A0101"),
     ("A-01-02", "A区1排2列1层-数码", "A区", "storage", 500, "A", "02", "L1", "LOC-A0102"),
     ("A-02-01", "A区2排1列1层-食品", "A区", "storage", 500, "A", "03", "L1", "LOC-A0201"),
@@ -129,6 +130,7 @@ FLOWS = [
     {
         "owner": "OW-JD",
         "source_warehouse": "WH-SH",
+        "receiving_location": "RECV-SH-01",
         "supplier": "SUP-JD-DIGITAL",
         "asn_code": "ASN-DEMO-101",
         "asn_lines": [("SKU-101", 20)],
@@ -172,7 +174,7 @@ def _reset(db_path):
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
-        for t in ("batch_receipt", "batch", "product_location",
+        for t in ("batch_receipt", "asn_receiving_count", "asn_cancellation", "batch", "product_location",
                   "dn_pick", "dn_line", "dn", "asn_line", "asn",
                   "transfer_line", "transfer", "stocktake_line", "stocktake",
                   "stock_movement", "stock", "customer", "product",
@@ -274,9 +276,10 @@ def seed(reset):
     zone_rows = _get(c, "/api/zones?keyword=ZONE-SHARED")["zones"]
     if zone_rows:
         zone_id = zone_rows[0]["id"]
-        for lid in loc_ids.values():
+        for code, lid in loc_ids.items():
+            warehouse = "WH-SH" if code in ("RECV-SH-01", PUTAWAY_PLAN["SKU-101"]) else "WH-SZ"
             _put(c, f"/api/locations/{lid}",
-                 {"zone_id": zone_id, "warehouse_id": wh_ids["WH-SZ"]})
+                 {"zone_id": zone_id, "warehouse_id": wh_ids[warehouse]})
         for pid in product_ids.values():
             _put(c, f"/api/products/{pid}", {"default_zone_id": zone_id})
         for sku, dest in PUTAWAY_PLAN.items():
@@ -291,7 +294,7 @@ def seed(reset):
     flow_count = 0
     for flow in FLOWS:
         oid = owner_ids[flow["owner"]]
-        recv_loc = loc_ids["RECV-01"]
+        recv_loc = loc_ids[flow.get("receiving_location", "RECV-01")]
         wh_id = wh_ids.get(flow.get("source_warehouse"))
         sup_id = sup_ids.get(flow.get("supplier"))
 
@@ -307,7 +310,7 @@ def seed(reset):
         asn_id = asn_body["asn"]["id"]
         asn_lines = {ln["product_id"]: ln for ln in asn_body["lines"]}
 
-        # 5.2 逐行收货到 RECV-01
+        # 5.2 逐行收货到订单仓库的验收暂存位
         for sku, qty in flow["asn_lines"]:
             ln_id = asn_lines[product_ids[sku]]["id"]
             _post(c, f"/api/asns/{asn_id}/receive",

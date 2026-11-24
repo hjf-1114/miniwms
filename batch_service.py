@@ -14,7 +14,7 @@ import datetime
 import json
 
 import constants as C
-from batch_fields import FIELD_NAMES, build_batch_key, clean_info, ensure_config
+from batch_fields import FIELD_NAMES, build_batch_key, clean_info, decode_batch_info, ensure_config
 
 
 def _next_no(db, table, column, prefix):
@@ -43,6 +43,64 @@ def prepare_info(db, line_info):
         if not str(info.get(name) or "").strip() and defaults.get(name):
             info[name] = str(defaults[name]).strip()
     return info
+
+
+def inventory_batch_info(db, owner_id, product_id, dimensions):
+    """读取库存或出库明细对应的不可变批次快照。"""
+    row = db.execute("""
+        SELECT b.info AS profile_info, br.info AS receipt_info
+        FROM batch b LEFT JOIN batch_receipt br ON br.batch_id = b.id AND br.batch_no = ?
+        WHERE b.owner_id = ? AND b.product_id = ? AND b.batch_key = ?
+    """, (dimensions["batch_no"], owner_id, product_id, dimensions["batch_key"])).fetchone()
+    info = clean_info({})
+    if row:
+        for raw in (row["receipt_info"], row["profile_info"]):
+            info = decode_batch_info(raw)
+            if any(info.values()):
+                break
+    for key in ("internal_batch_no", "goods_property", "production_date", "expiry_date"):
+        if dimensions.get(key):
+            info[key] = dimensions[key]
+    return info
+
+
+def save_adjusted_batch(db, owner_id, product_id, batch_key, info):
+    key_info = {key: info[key] for key in FIELD_NAMES if info[key]}
+    key_info.update(owner_id=owner_id, product_id=product_id)
+    db.execute("""
+        INSERT OR IGNORE INTO batch (code, batch_key, owner_id, product_id, key_info, info)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (_next_no(db, "batch", "code", C.BATCH_PROFILE_PREFIX), batch_key, owner_id, product_id,
+          json.dumps(key_info, ensure_ascii=False), json.dumps(info, ensure_ascii=False)))
+
+
+# The warehouse label uses the unique batch_receipt.batch_no.
+ASN_RECEIPTS_SQL = """
+    SELECT br.*, b.batch_key, l.code AS location_code,
+           c.code AS designated_customer_code, c.name AS designated_customer_name,
+           MAX(0, MIN(br.qty - COALESCE((
+               SELECT SUM(bl.qty) FROM batch_location bl
+               WHERE bl.asn_line_id = br.asn_line_id AND bl.batch_no = br.batch_no
+                 AND bl.ref_type = 'asn_putaway_in'
+           ), 0), COALESCE((
+               SELECT SUM(sb.qty - sb.allocated_qty) FROM stock_batch sb
+               WHERE sb.owner_id = br.owner_id AND sb.product_id = br.product_id
+                 AND sb.location_id = br.location_id AND sb.batch_no = br.batch_no
+           ), 0))) AS remaining_putaway
+    FROM batch_receipt br
+    JOIN batch b ON b.id = br.batch_id
+    JOIN location l ON l.id = br.location_id
+    LEFT JOIN customer c ON c.id = br.designated_customer_id AND c.owner_id = br.owner_id
+"""
+
+
+def get_asn_receipt(db, asn_id, line_id, barcode):
+    row = db.execute(ASN_RECEIPTS_SQL + """
+        WHERE br.asn_id = ? AND br.asn_line_id = ? AND br.batch_no = ?
+    """, (asn_id, line_id, barcode)).fetchone()
+    if row is None:
+        raise ValueError("批次号不属于当前收货单明细")
+    return row
 
 
 def validate_external_batch_no(doc_type, value):
@@ -87,13 +145,15 @@ def _resolve_internal(db, batch_id, batch_no, doc_type, provided, info):
 
 def record_receipt(db, *, owner_id, product_id, location_id, asn_id, asn_line_id,
                    qty, doc_type, line_info, internal_batch_no="",
-                   designated_customer_id=None, external_batch_no=""):
+                   designated_customer_id=None, external_batch_no="", operator="", stock_status=""):
     """登记一次验收入库。调用方须已开启事务（库存增加与批次写入同事务）。
 
     M23：``designated_customer_id`` 是验收时的「指定客户」录入值（默认空＝通用库存）；
     ``external_batch_no`` 是销退单外部传入的原内部批次号，``/`` 表示显式声明没有。
     """
     info = prepare_info(db, line_info)
+    for field in ("receipt_note", "receipt_customer", "receipt_supplier"):
+        info[field] = str(line_info.get(field) or "").strip()
     key_hash, key_info = build_batch_key(db, owner_id, product_id, info)
 
     profile = db.execute(
@@ -129,12 +189,12 @@ def record_receipt(db, *, owner_id, product_id, location_id, asn_id, asn_line_id
         """INSERT INTO batch_receipt
            (batch_no, batch_id, internal_batch_no, internal_source, owner_id, product_id,
             location_id, asn_id, asn_line_id, qty, doc_type, goods_property, info,
-            designated_customer_id, external_batch_no, warning)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            designated_customer_id, external_batch_no, warning, operator, stock_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (batch_no, profile_id, internal, source, owner_id, product_id,
          location_id, asn_id, asn_line_id, qty, doc_type,
          info.get("goods_property", ""), json.dumps(info, ensure_ascii=False),
-         designated_customer_id, ext_norm, warning),
+         designated_customer_id, ext_norm, warning, operator, stock_status),
     )
     db.execute(
         "UPDATE batch SET receipt_count = receipt_count + 1, "

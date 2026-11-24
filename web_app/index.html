@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MiniWMS — 轻量仓库管理系统</title>
 <link rel="stylesheet" href="/css/style.css">
+<script>
+  if (window.self === window.top) location.replace("/app.html");
+</script>
 </head>
 <body>
 <div class="app">
@@ -30,9 +33,6 @@
       服务地址：<code>http://localhost:5100</code> ·
       启动方式：<code>python main.py</code> ·
       API 文档见仓库 <code>README.md</code>
-    </p>
-    <p style="margin-top:14px" data-embed-hide>
-      <a class="btn" href="/app.html" onclick="if(window.parent!==window){window.parent.location.href='/app.html';return false;}">进入工作台（标签页 + 可折叠导航）</a>
     </p>
   </div>
 

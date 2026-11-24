@@ -245,7 +245,7 @@ class M26RuleEditorTest(unittest.TestCase):
     def test_engine_and_flags_dict_regression(self):
         d = self.client.get("/api/putaway-rule-types").get_json()
         self.assertEqual(len(d["condition_dims"]), 14)
-        self.assertEqual(len(d["step_types"]), 9)
+        self.assertEqual([step["value"] for step in d["step_types"]], list(C.PUTAWAY_STEP_TYPES))
         self.assertEqual(len(d["limit_keys"]), 8)
         self.assertEqual(len(d["rule_types"]), 2)
 

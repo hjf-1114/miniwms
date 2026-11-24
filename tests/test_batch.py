@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import main  # noqa: E402  (须在环境变量设置之后)
 
 import constants as C  # noqa: E402
-from batch_fields import DEFAULT_KEY_FIELDS, seed_batch_config  # noqa: E402
+from batch_fields import DEFAULT_KEY_FIELDS, FIELD_NAMES, seed_batch_config  # noqa: E402
 
 FULL_INFO = {
     "batch_no": "LOT-2026-A", "production_date": "2026-01-10",
@@ -105,9 +105,10 @@ class BatchApiTest(unittest.TestCase):
     # ---------- ① 批次配置 ----------
     def test_fields_and_config_seeded(self):
         fields = self.client.get("/api/batch/fields").get_json()["fields"]
-        self.assertEqual(len(fields), 20)
+        self.assertEqual([f["name"] for f in fields], list(FIELD_NAMES))
+        self.assertFalse({"product_name", "spec", "unit"} & {f["name"] for f in fields})
         cfg = self.client.get("/api/batch/config").get_json()
-        self.assertEqual(len(cfg["config"]), 20)
+        self.assertEqual({f["field_name"] for f in cfg["config"]}, set(FIELD_NAMES))
         self.assertEqual(cfg["key_fields"], list(DEFAULT_KEY_FIELDS))
         goods = next(r for r in cfg["config"] if r["field_name"] == "goods_property")
         self.assertEqual(goods["default_value"], "合格")

@@ -93,6 +93,7 @@ function logout() {
     localStorage.removeItem("miniwms_user");
     localStorage.removeItem(WH_KEY);
   } catch (e) {}
+  try { sessionStorage.removeItem("miniwms_workspace"); } catch (e) {}
   try {
     const top = (window.parent && window.parent !== window) ? window.parent : window;
     top.location.href = "/login.html";
@@ -103,7 +104,7 @@ function logout() {
 
 /** 若未登录则跳转到登录页（用于需要权限的页面）。 */
 function requireLogin() {
-  if (!getToken()) location.href = "/login.html";
+  if (!getToken()) window.top.location.href = "/login.html";
 }
 
 async function api(method, path, body) {
@@ -165,15 +166,16 @@ function openDetail(title, url) {
 
 /**
  * 打开一个作业标签页（验收 / 上架等独立作业页）。
- * 在工作台里交给父窗口的 openTab 复用同一标签栏；独立打开页面时退化为新窗口，
- * 保证不依赖工作台也能作业。URL 上带 asn_id / line_id，不同单据可同时开多张标签。
+ * 在工作台里复用同一标签栏；从独立页面进入时也带上来源页面。
+ * URL 上带 asn_id / line_id，不同单据可同时开多张标签。
  */
 function openWorkTab(title, url) {
   if (window.parent && window.parent !== window &&
       typeof window.parent.openTab === "function") {
     window.parent.openTab(title, url);
   } else {
-    window.open(url, "_blank");
+    const links = new URLSearchParams({ from: location.pathname + location.search, open: url });
+    location.href = "/app.html?" + links;
   }
 }
 

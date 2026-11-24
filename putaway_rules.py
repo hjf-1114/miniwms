@@ -55,7 +55,7 @@ def _list(rows):
 
 
 # ── 13 维单据上下文 ────────────────────────────────────────────────────
-def build_context(db, asn_id, line_id, qty=0.0):
+def build_context(db, asn_id, line_id, qty=0.0, receipt=None):
     """从 ASN 单据 / 明细 / 货品构造 13 维 ctx，并带回推荐需要的辅助信息。"""
     asn = db.execute("SELECT * FROM asn WHERE id = ?", (asn_id,)).fetchone()
     if asn is None:
@@ -71,6 +71,14 @@ def build_context(db, asn_id, line_id, qty=0.0):
         raise RuleError("货品不存在")
 
     extra = _j(line["extra"], dict)
+    if receipt is not None:
+        extra = _j(receipt["info"], dict)
+        extra.update(internal_batch_no=receipt["internal_batch_no"], batch_key=receipt["batch_key"],
+                     designated_customer_id=receipt["designated_customer_id"])
+        stock = db.execute("SELECT stock_status FROM stock_batch WHERE batch_no = ? AND location_id = ? AND qty > 0",
+                           (receipt["batch_no"], receipt["location_id"])).fetchone()
+        if stock:
+            extra["stock_status"] = stock["stock_status"]
     asn_d = _dict(asn)
     prod_d = _dict(product)
     batch_no = str(extra.get("batch_no") or "").strip()
@@ -98,6 +106,7 @@ def build_context(db, asn_id, line_id, qty=0.0):
     return {
         "ctx": ctx, "asn": asn_d, "line": dict(line), "product": prod_d,
         "extra": extra, "batch_no": batch_no,
+        "receipt_barcode": receipt["batch_no"] if receipt is not None else "",
         "goods_property": goods_property,
         "internal_batch_no": str(extra.get("internal_batch_no") or ""),
         "batch_key": str(extra.get("batch_key") or ""),
@@ -192,10 +201,11 @@ def _loc_rows(db, where="", params=()):
 
 
 def _occupancy(db):
-    stock, batches, designated, batchkeys = {}, {}, {}, {}
+    stock, batches, designated, batchkeys, lots, unknown_batches = {}, {}, {}, {}, {}, {}
     for r in db.execute(
-        "SELECT location_id, product_id, owner_id, SUM(qty) AS q FROM stock "
-        "WHERE qty > 0 GROUP BY location_id, product_id, owner_id"
+        "SELECT s.location_id, s.product_id, s.owner_id, p.article_no, SUM(s.qty) AS q "
+        "FROM stock s JOIN product p ON p.id = s.product_id WHERE s.qty > 0 "
+        "GROUP BY s.location_id, s.product_id, s.owner_id"
     ).fetchall():
         stock.setdefault(r["location_id"], []).append(dict(r))
     for r in db.execute("SELECT location_id, info FROM batch_receipt").fetchall():
@@ -206,18 +216,25 @@ def _occupancy(db):
         if bn:
             batches.setdefault(r["location_id"], set()).add(bn)
     for r in db.execute(
-        "SELECT location_id, batch_no, batch_key, designated_customer_id, "
-        "expiry_date, qty FROM stock_batch WHERE qty > 0"
+        "SELECT sb.location_id, sb.batch_no, sb.batch_key, sb.designated_customer_id, "
+        "sb.product_id, sb.owner_id, br.info AS receipt_info FROM stock_batch sb "
+        "LEFT JOIN batch_receipt br ON br.batch_no = sb.batch_no WHERE sb.qty > 0"
     ).fetchall():
         if r["batch_no"]:
             batches.setdefault(r["location_id"], set()).add(str(r["batch_no"]))
         if r["batch_key"]:
             batchkeys.setdefault(r["location_id"], set()).add(str(r["batch_key"]))
+        lot = str(_j(r["receipt_info"], dict).get("batch_no") or "")
+        if lot:
+            lots.setdefault(r["location_id"], set()).add((r["owner_id"], r["product_id"], lot))
+        elif r["batch_no"]:
+            unknown_batches.setdefault(r["location_id"], set()).add(r["batch_no"])
         if r["designated_customer_id"]:
             designated.setdefault(r["location_id"], set()).add(
                 int(r["designated_customer_id"]))
     return {"stock": stock, "batches": batches,
-            "designated": designated, "batchkeys": batchkeys}
+            "designated": designated, "batchkeys": batchkeys, "lots": lots,
+            "unknown_batches": unknown_batches}
 
 
 def _used(occ, loc_id):
@@ -233,19 +250,24 @@ def _temp_required(product):
     return None
 
 
+_MIX_LOCATION_SETTINGS = (
+    ("mix_product", "allow_mix_product", "z_mp"),
+    ("mix_batch", "allow_mix_batch", "z_mb"),
+    ("mix_owner", "allow_mix_owner", "z_mo"),
+)
+
+
 def _effective_mix(loc):
     out = {}
-    for f in C.MIX_FIELDS:
+    for _, f, zb in _MIX_LOCATION_SETTINGS:
         own = loc.get(f)
-        zb = {"allow_mix_product": "z_mp", "allow_mix_batch": "z_mb",
-              "allow_mix_owner": "z_mo"}[f]
         val = own if own is not None else loc.get(zb)
         out[f] = int(val or 0)
     return out
 
 
 def _step_candidates(db, step, info, occ):
-    """9 种寻址（8 预设 + all_active）；返回候选库位 dict 列表（未过 limits）。"""
+    """按当前寻址步骤返回候选库位（尚未过硬约束过滤）。"""
     typ = str(step.get("type") or "")
     ctx, prod = info["ctx"], info["product"]
     all_locs = _loc_rows(db)
@@ -269,6 +291,32 @@ def _step_candidates(db, step, info, occ):
     if typ == "zone_by_product":
         zid = prod.get("default_zone_id")
         return [l for l in all_locs if zid and l["zone_id"] == zid]
+
+    if typ == "empty_in_product_zone":
+        zid = prod.get("default_zone_id")
+        return [l for l in all_locs if zid and l["zone_id"] == zid and _used(occ, l["id"]) <= 0]
+
+    if typ == "bound_location":
+        return pick([r["location_id"] for r in db.execute(
+            "SELECT location_id FROM product_location WHERE product_id = ?", (info["product_id"],)
+        )])
+
+    if typ == "location_group":
+        code = str(step.get("group_code") or "").strip()
+        return [l for l in all_locs if code and l["location_group"] == code]
+
+    if typ == "same_lot":
+        if not info["batch_no"]:
+            return []
+        key = (info["owner_id"], info["product_id"], info["batch_no"])
+        return pick([lid for lid, lots in occ["lots"].items() if key in lots])
+
+    if typ == "near_same_product":
+        aisles = {(l["warehouse_id"], l["zone_id"], l["aisle"]) for l in all_locs
+                  if l["aisle"] and any(r["product_id"] == info["product_id"]
+                                        for r in occ["stock"].get(l["id"], []))}
+        return [l for l in all_locs if _used(occ, l["id"]) <= 0
+                and (l["warehouse_id"], l["zone_id"], l["aisle"]) in aisles]
 
     if typ == "empty_in_zone":
         code = str(step.get("zone_code") or "")
@@ -309,7 +357,9 @@ def _step_candidates(db, step, info, occ):
             return []
         ids = [r["to_location_id"] for r in db.execute(
             "SELECT DISTINCT to_location_id FROM batch_location "
-            "WHERE batch_no = ? OR ref_id = ?", (ib, info["asn_id"])
+            "WHERE batch_no IN (SELECT batch_no FROM batch_receipt "
+            "WHERE owner_id = ? AND product_id = ? AND internal_batch_no = ?)",
+            (info["owner_id"], info["product_id"], ib)
         ).fetchall()]
         return pick(ids)
 
@@ -337,6 +387,12 @@ def filter_location(db, loc, info, limits, occ, qty, for_post=False):
     ``for_post=True`` 由 ``validate_location()`` 传入；推荐阶段走默认的 False。
     """
     limits = limits or {}
+    if info.get("receipt_barcode"):
+        # 按条码作业执行货位的显式配置。货位未设时继承储区，均未设则沿用规则。
+        limits = dict(limits)
+        for check, field, zone_field in _MIX_LOCATION_SETTINGS:
+            if loc.get(field) is not None or loc.get(zone_field) is not None:
+                limits[check] = dict(limits.get(check) or {}, enabled=True)
     ctx = info["ctx"]
     held = occ["stock"].get(loc["id"], [])
     used = _used(occ, loc["id"])
@@ -394,8 +450,16 @@ def filter_location(db, loc, info, limits, occ, qty, for_post=False):
         if cap > 0 and used + float(qty or 0) > cap + 1e-9:
             return _reject("capacity", f"剩余容量不足（已用 {used}，容量 {cap}）", loc)
 
-    other_product = [r for r in held if r["product_id"] != info["product_id"]]
-    other_owner = [r for r in held if r["owner_id"] != info["owner_id"]]
+    owner_cfg = limits.get("mix_owner") or {}
+    direct_mode = owner_cfg.get("direct_same_article") if ctx.get("is_direct") else None
+    article = str(info["product"].get("article_no") or "").strip()
+    same_article = [r for r in held if r["owner_id"] != info["owner_id"]
+                    and article and str(r.get("article_no") or "").strip() == article]
+    allow_direct = _active(owner_cfg) and direct_mode == "allow"
+    other_product = [r for r in held if r["product_id"] != info["product_id"]
+                     and not (allow_direct and r in same_article)]
+    other_owner = [r for r in held if r["owner_id"] != info["owner_id"]
+                   and not (allow_direct and r in same_article)]
     other_batches = {b for b in occ["batches"].get(loc["id"], set())
                      if b and b != info["batch_no"]}
 
@@ -410,12 +474,20 @@ def filter_location(db, loc, info, limits, occ, qty, for_post=False):
     cfg = limits.get("mix_batch") or {}
     if _active(cfg):
         by = str(cfg.get("by") or "batch_no")
-        pool = occ["batchkeys"].get(loc["id"], set()) if by == "batch_key" else other_batches
+        if by == "batch_key":
+            pool = occ["batchkeys"].get(loc["id"], set()) - {info["batch_key"]}
+        elif info.get("receipt_barcode"):
+            recorded_lots = occ["lots"].get(loc["id"], set())
+            target = (info["owner_id"], info["product_id"], info["batch_no"])
+            pool = (recorded_lots - {target}) or (
+                occ["unknown_batches"].get(loc["id"], set()) - {info["receipt_barcode"]})
+        else:
+            pool = other_batches
         if pool and not mix["allow_mix_batch"]:
             return _reject("mix_batch", C.PUTAWAY_REJECT_LABELS["MIX_BATCH_FORBIDDEN"], loc)
 
-    cfg = limits.get("mix_owner") or {}
-    if _active(cfg) and other_owner and not mix["allow_mix_owner"]:
+    if _active(owner_cfg) and ((other_owner and not mix["allow_mix_owner"])
+                               or (direct_mode == "deny" and same_article)):
         return _reject("mix_owner", C.PUTAWAY_REJECT_LABELS["MIX_OWNER_FORBIDDEN"], loc)
 
     cfg = limits.get("designated_customer") or {}
@@ -489,7 +561,9 @@ def score_location(db, loc, info, occ, weights=None):
     add(C.PUTAWAY_R_SAME_PRODUCT, "同产品聚拢", 30,
         any(r["product_id"] == info["product_id"] for r in held))
     add(C.PUTAWAY_R_SAME_BATCH, "同批号聚拢", 20,
-        bool(info["batch_no"] and info["batch_no"] in occ["batches"].get(loc["id"], set())))
+        bool(info["batch_no"] and (
+            (info["owner_id"], info["product_id"], info["batch_no"]) in occ["lots"].get(loc["id"], set())
+            or info["batch_no"] in occ["batches"].get(loc["id"], set()))))
     add(C.PUTAWAY_R_EMPTY, "空库位", 10, used <= 0)
     add(C.PUTAWAY_R_CAPACITY, "容量贴合", 5, cap > 0 and used + info["qty"] <= cap)
     for rule, weight in (weights or {}).items():
@@ -503,9 +577,9 @@ def score_location(db, loc, info, occ, weights=None):
 
 
 # ── 推荐主入口 ─────────────────────────────────────────────────────────
-def recommend(db, asn_id, line_id, qty=None, top_n=5):
+def recommend(db, asn_id, line_id, qty=None, top_n=5, receipt=None):
     """规则驱动推荐；返回值兼容 M20 前端字段，并附 M25 可解释信息。"""
-    info = build_context(db, asn_id, line_id, qty)
+    info = build_context(db, asn_id, line_id, qty, receipt=receipt)
     ctx = info["ctx"]
     s = resolve_rule_set(db, info)
     rule = match_rule(db, s["id"], info) if s else None
@@ -528,6 +602,7 @@ def recommend(db, asn_id, line_id, qty=None, top_n=5):
         "rule_set": s["code"] if s else "",
         "rule_set_id": s["id"] if s else None,
         "hit_rule": rule["id"] if rule else None,
+        "hit_rule_name": rule["name"] if rule else "",
         "hit_priority": rule["priority"] if rule else None,
         "hit_condition": _j(rule["condition"], dict) if rule else {},
         "hit_step": None, "step_name": "", "fallback": False,
@@ -544,6 +619,13 @@ def recommend(db, asn_id, line_id, qty=None, top_n=5):
         candidates = _step_candidates(db, step, info, occ)
         passed = []
         for loc in candidates:
+            if receipt is not None and (loc["id"] == receipt["location_id"]
+                                        or loc["status"] != "active"
+                                        or loc["loc_type"] not in ("storage", "picking")):
+                continue
+            warehouse = info["asn"].get("source_warehouse")
+            if receipt is not None and warehouse and loc["warehouse_id"] not in (None, warehouse):
+                continue
             if loc["id"] in used_ids:
                 continue
             ok, code, msg, row = filter_location(db, loc, info, limits, occ, q)
@@ -585,6 +667,7 @@ def recommend(db, asn_id, line_id, qty=None, top_n=5):
         "candidate_count": len(_loc_rows(db)),
         "hit_step": hit_step,
         "step_name": (steps[hit_step - 1].get("type") if hit_step else ""),
+        "step_label": C.PUTAWAY_STEP_LABELS.get(steps[hit_step - 1].get("type"), "") if hit_step else "",
         "error_code": "NO_CANDIDATE" if not top else "",
         "error_message": C.PUTAWAY_REJECT_LABELS["NO_CANDIDATE"] if not top else "",
     })
@@ -599,32 +682,32 @@ def log_recommendation(db, info, result, action="preview", operator="",
     cur = db.execute(
         """INSERT INTO putaway_recommendation
            (asn_id, asn_line_id, rule_set_id, rule_id, hit_priority, hit_step,
-            top_json, chosen_location_id, action, operator, override_reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            top_json, chosen_location_id, action, operator, override_reason, receipt_barcode)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (info["asn_id"], info["line_id"], result.get("rule_set_id"),
          result.get("hit_rule"), result.get("hit_priority"), result.get("hit_step"),
          json.dumps(result.get("recommendations") or [], ensure_ascii=False),
-         chosen_location_id, action, operator, override_reason),
+         chosen_location_id, action, operator, override_reason, info.get("receipt_barcode", "")),
     )
     return cur.lastrowid
 
 
-def validate_location(db, asn_id, line_id, to_location_id, qty):
+def validate_location(db, asn_id, line_id, to_location_id, qty, receipt=None):
     """上架过账前的硬约束校验入口。返回 (ok, reason_code, message)。
 
-    没有启用规则 / 规则行 limits 未启用任何检查项 → 直接放行（v3.3 3B：没配就不拦）。
+    执行命中规则的硬约束，按条码作业时同时执行目标货位或储区的混放配置。
     """
-    info = build_context(db, asn_id, line_id, qty)
+    info = build_context(db, asn_id, line_id, qty, receipt=receipt)
     s = resolve_rule_set(db, info)
     rule = match_rule(db, s["id"], info) if s else None
-    if not rule:
+    if not rule and receipt is None:
         return True, "", ""
     rows = _loc_rows(db, "WHERE l.id = ?", (to_location_id,))
     if not rows:
         return True, "", ""          # 库位不存在由调用方 _check_location 负责报错
     ok, code, msg, _ = filter_location(
-        db, rows[0], info, _j(rule["limits"], dict), _occupancy(db), info["qty"],
-        for_post=True)   # 只执行 enforce 级检查项；recommend_only 不参与过账拦截
+        db, rows[0], info, _j(rule["limits"], dict) if rule else {}, _occupancy(db),
+        info["qty"], for_post=True)
     return ok, code, msg
 
 
@@ -865,7 +948,7 @@ def seed_rules(conn):
 
 # ── M26 规则配置编辑器：推荐动作 / 统计 / 排序 / 外部单据字典 ────────────
 def set_recommendation_action(db, rid, action, chosen_location_id=None,
-                              override_reason="", operator=""):
+                              override_reason="", operator="", *, for_putaway=False):
     """对一条 preview 日志登记采纳 / 驳回（改位），**不新增第二条日志**。
 
     命中率 / 采纳率 / 驳回率都按日志行的最终 action 统计；重复点击只更新同一行，
@@ -884,8 +967,8 @@ def set_recommendation_action(db, rid, action, chosen_location_id=None,
         except (TypeError, ValueError):
             raise RuleError("采纳推荐必须给出整数 chosen_location_id")
     else:
-        chosen = row["chosen_location_id"]
-        if not reason:
+        chosen = int(chosen_location_id) if for_putaway else row["chosen_location_id"]
+        if not reason and not for_putaway:
             raise RuleError("驳回推荐 / 人工改位必须填写 override_reason 原因码")
     db.execute(
         "UPDATE putaway_recommendation SET action=?, chosen_location_id=?, "
@@ -894,6 +977,21 @@ def set_recommendation_action(db, rid, action, chosen_location_id=None,
     )
     return _dict(db.execute(
         "SELECT * FROM putaway_recommendation WHERE id = ?", (rid,)).fetchone())
+
+
+def record_putaway_choice(db, asn_id, line_id, barcode, target, recommendation_id, reason, operator):
+    row = db.execute("""
+        SELECT top_json FROM putaway_recommendation
+        WHERE id = ? AND asn_id = ? AND asn_line_id = ? AND receipt_barcode = ?
+    """, (recommendation_id, asn_id, line_id, barcode)).fetchone()
+    top = _j(row["top_json"], list) if row else []
+    if row:
+        action = C.PUTAWAY_ACTION_ADOPT if any(r["location_id"] == target for r in top) else C.PUTAWAY_ACTION_REJECT
+        set_recommendation_action(db, recommendation_id, action, target, reason, operator, for_putaway=True)
+    elif reason:
+        log_recommendation(db, {"asn_id": asn_id, "line_id": line_id, "receipt_barcode": barcode},
+                           {}, action=C.PUTAWAY_ACTION_REJECT, operator=operator,
+                           chosen_location_id=target, override_reason=reason)
 
 
 def recommendation_rates(db, where="", params=()):

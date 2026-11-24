@@ -4,11 +4,11 @@
 """
 
 # ASN（到货通知/收货单）状态机: open → receiving → putaway → closed
-ASN_OPEN = "open"              # 已创建，未收货
-ASN_RECEIVING = "receiving"    # 部分或全部已收货，未（完全）上架
-ASN_PUTAWAY = "putaway"        # 已收满，上架进行中
-ASN_CLOSED = "closed"          # 已收满且上架完成
-ASN_CANCELLED = "cancelled"    # 已取消（未收货部分作废）
+ASN_OPEN = "open"              # 待收货
+ASN_RECEIVING = "receiving"    # 已有点收/验收，仍有待验收额度
+ASN_PUTAWAY = "putaway"        # 无待验收额度，已验库存仍待上架
+ASN_CLOSED = "closed"          # 无待验收额度，已验库存已上架
+ASN_CANCELLED = "cancelled"    # 无验收库存，订单数量已取消
 ASN_STATUSES = (ASN_OPEN, ASN_RECEIVING, ASN_PUTAWAY, ASN_CLOSED, ASN_CANCELLED)
 
 # DN（出库单/发货单）状态机: open → picking → shipped
@@ -257,31 +257,35 @@ PUTAWAY_CONDITION_LABELS = {
     "category_l1": "一级分类", "product_type": "产品类型",
 }
 
-# 9 种寻址步骤（业界 6 种 + 本项目 zone_by_product / same_category + M20 兼容型 all_active）
+# 可排序的货位寻址步骤，供规则引擎和编辑器共用。
 PUTAWAY_STEP_TYPES = (
     "zone_by_product", "zone_by_code", "fixed_location", "empty_in_zone",
     "same_product", "same_category", "last_putaway", "batch_location",
+    "empty_in_product_zone", "bound_location", "location_group", "near_same_product", "same_lot",
     # 第 9 种为 M20 兼容型：全部启用库位一起打分，避免规则一上线就改变既有排序口径。
     # 删掉它、改用上面的递降链，即按 v3.3 §10.3「三者递降 fallback」执行。
     "all_active",
 )
 PUTAWAY_STEP_LABELS = {
+    "empty_in_product_zone": "货品默认储区空位", "bound_location": "货品绑定货位",
+    "location_group": "指定货位组", "near_same_product": "同品货位附近空位",
+    "same_lot": "同货品同厂家批号",
     "zone_by_product": "货品默认储区找位", "zone_by_code": "指定储区找位",
     "fixed_location": "固定库位", "empty_in_zone": "推荐空位",
     "same_product": "同品集中", "same_category": "同分类聚拢",
     "last_putaway": "最近一次上架位", "batch_location": "同内部批次号原库位",
-    "all_active": "全部启用库位（M20 兼容）",
+    "all_active": "全部可用货位",
 }
 
 # 9 条内置评分规则（R07–R15，只用于同一 fallback 步骤内候选排序，不参与硬约束）
 PUTAWAY_SCORE_RULES = {
-    "R07": ("同关键批次信息 batch_key", 30),
+    "R07": ("同关键批次属性", 30),
     "R08": ("同批号 / 内部批次号", 25),
     "R09": ("同产品集中", 25),
     "R10": ("产品分类聚拢", 15),
-    "R11": ("效期分档（FEFO 友好）", 15),
+    "R11": ("相近效期", 15),
     "R12": ("ABC 周转 / 黄金位", 20),
-    "R13": ("容积 best-fit", 10),
+    "R13": ("优先利用剩余库容", 10),
     "R14": ("动线距离", 10),
     "R15": ("零散库位合并", 10),
 }

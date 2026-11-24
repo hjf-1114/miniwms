@@ -11,6 +11,7 @@ M6 的定位是「只读账房」——不写库存，只回答三个问题：
 import scope as S
 from flask import Blueprint, jsonify, request
 
+from batch_fields import FIELD_NAMES, decode_batch_info
 from main import get_db
 
 stock_bp = Blueprint("stock", __name__)
@@ -31,6 +32,13 @@ def _paging_args(args):
     except ValueError:
         raise ValueError("page/page_size 必须为整数")
     return page, page_size
+
+
+def _product_search(args, where, params):
+    keyword = (args.get("product_keyword") or "").strip()
+    if keyword:
+        where.append("(p.sku LIKE ? OR p.name LIKE ? OR p.article_no LIKE ? OR p.barcode LIKE ?)")
+        params.extend([f"%{keyword}%"] * 4)
 
 
 @stock_bp.route("/api/stock", methods=["GET"])
@@ -60,19 +68,20 @@ def list_stock():
         params.append(location_id)
     if (args.get("has_stock") or "").strip() == "1":
         where.append("s.qty != 0")
+    _product_search(args, where, params)
     S.scoped_where(where, params, table="s")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
     total = db.execute(
-        f"SELECT COUNT(*) AS n FROM stock s {where_sql}", params
+        f"SELECT COUNT(*) AS n FROM stock s JOIN product p ON p.id = s.product_id {where_sql}", params
     ).fetchone()["n"]
     rows = db.execute(
         f"""SELECT s.id, s.owner_id, s.product_id, s.location_id,
                    s.qty, s.allocated_qty, s.qty - s.allocated_qty AS available_qty,
                    s.updated_at,
                    o.code AS owner_code, o.name AS owner_name,
-                   p.sku, p.name AS product_name,
+                   p.sku, p.name AS product_name, p.spec, p.unit,
                    l.code AS location_code, l.name AS location_name, l.loc_type
             FROM stock s
             JOIN owner o ON o.id = s.owner_id
@@ -119,17 +128,18 @@ def list_movements():
     if ref_id is not None:
         where.append("m.ref_id = ?")
         params.append(ref_id)
+    _product_search(args, where, params)
     S.scoped_where(where, params, table="m")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
     total = db.execute(
-        f"SELECT COUNT(*) AS n FROM stock_movement m {where_sql}", params
+        f"SELECT COUNT(*) AS n FROM stock_movement m JOIN product p ON p.id = m.product_id {where_sql}", params
     ).fetchone()["n"]
     rows = db.execute(
         f"""SELECT m.id, m.owner_id, m.product_id, m.location_id,
                    m.qty_delta, m.ref_type, m.ref_id, m.note, m.created_at,
-                   o.code AS owner_code,
+                   o.code AS owner_code, o.name AS owner_name,
                    p.sku, p.name AS product_name,
                    l.code AS location_code
             FROM stock_movement m
@@ -173,12 +183,13 @@ def reconcile():
 
     def _label(key):
         oid, pid, lid = key
-        o = db.execute("SELECT code FROM owner WHERE id = ?", (oid,)).fetchone()
+        o = db.execute("SELECT code, name FROM owner WHERE id = ?", (oid,)).fetchone()
         p = db.execute("SELECT sku FROM product WHERE id = ?", (pid,)).fetchone()
         l = db.execute("SELECT code FROM location WHERE id = ?", (lid,)).fetchone()
         return {
             "owner_id": oid, "product_id": pid, "location_id": lid,
             "owner_code": o["code"] if o else None,
+            "owner_name": o["name"] if o else None,
             "sku": p["sku"] if p else None,
             "location_code": l["code"] if l else None,
         }
@@ -258,9 +269,24 @@ def list_stock_batch():
         if val is not None:
             where.append(f"sb.{col} = ?")
             params.append(val)
-    if (args.get("batch_no") or "").strip():
-        where.append("sb.batch_no = ?")
-        params.append(args.get("batch_no").strip())
+    batch_info_sql = """CASE WHEN json_valid(br.info) AND original_batch.batch_key = sb.batch_key THEN br.info
+                             WHEN json_valid(b.info) THEN b.info ELSE '{}' END"""
+    batch_query = (args.get("batch_no") or "").strip()
+    if batch_query:
+        where.append(f"""(sb.batch_no = ? OR sb.internal_batch_no = ?
+                      OR json_extract({batch_info_sql}, '$.batch_no') = ?)""")
+        params.extend([batch_query] * 3)
+    batch_field = (args.get("batch_field") or "").strip()
+    batch_value = (args.get("batch_value") or "").strip()
+    if batch_field and batch_value:
+        if batch_field not in FIELD_NAMES:
+            return jsonify(ok=False, error="无效的批次字段"), 400
+        expr = f"json_extract({batch_info_sql}, ?)"
+        if batch_field in ("internal_batch_no", "production_date", "expiry_date", "goods_property"):
+            expr = f"COALESCE(NULLIF(sb.{batch_field}, ''), {expr})"
+        where.append(f"{expr} LIKE ?")
+        params.extend([f"$.{batch_field}", f"%{batch_value}%"])
+    _product_search(args, where, params)
     if (args.get("goods_property") or "").strip():
         where.append("sb.goods_property = ?")
         params.append(args.get("goods_property").strip())
@@ -273,23 +299,43 @@ def list_stock_batch():
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
+    batch_joins = """
+        JOIN product p ON p.id = sb.product_id
+        LEFT JOIN batch_receipt br ON br.batch_no = sb.batch_no
+            AND br.owner_id = sb.owner_id AND br.product_id = sb.product_id
+        LEFT JOIN batch original_batch ON original_batch.id = br.batch_id
+        LEFT JOIN batch b ON b.batch_key = sb.batch_key
+            AND b.owner_id = sb.owner_id AND b.product_id = sb.product_id
+    """
     total = db.execute(
-        f"SELECT COUNT(*) AS n FROM stock_batch sb {where_sql}", params
+        f"SELECT COUNT(*) AS n FROM stock_batch sb {batch_joins} {where_sql}", params
     ).fetchone()["n"]
     rows = db.execute(
         f"""SELECT sb.*, sb.qty - sb.allocated_qty AS available_qty,
-                   o.code AS owner_code, p.sku, p.name AS product_name,
-                   l.code AS location_code, l.name AS location_name
+                   o.code AS owner_code, o.name AS owner_name,
+                   p.sku, p.name AS product_name, p.spec, p.unit,
+                   l.code AS location_code, l.name AS location_name,
+                   {batch_info_sql} AS batch_info,
+                   br.asn_id, br.asn_line_id, br.receiving_count_id,
+                   br.id AS batch_receipt_id, br.external_batch_no
             FROM stock_batch sb
             JOIN owner o ON o.id = sb.owner_id
-            JOIN product p ON p.id = sb.product_id
             JOIN location l ON l.id = sb.location_id
+            {batch_joins}
             {where_sql}
             ORDER BY sb.id LIMIT ? OFFSET ?""",
         params + [page_size, (page - 1) * page_size],
     ).fetchall()
+    stock_batches = []
+    for row in rows:
+        item = dict(row)
+        item["batch_info"] = decode_batch_info(item["batch_info"])
+        for field in ("internal_batch_no", "production_date", "expiry_date", "goods_property"):
+            if item[field]:
+                item["batch_info"][field] = item[field]
+        stock_batches.append(item)
     return jsonify({"ok": True, "total": total, "page": page,
-                    "page_size": page_size, "stock_batches": [dict(r) for r in rows]})
+                    "page_size": page_size, "stock_batches": stock_batches})
 
 
 @stock_bp.route("/api/stock/batch-reconcile", methods=["GET"])
@@ -315,13 +361,14 @@ def batch_reconcile():
 
     def label(key):
         oid, pid, lid, bno, cust, prop = key
-        o = db.execute("SELECT code FROM owner WHERE id = ?", (oid,)).fetchone()
+        o = db.execute("SELECT code, name FROM owner WHERE id = ?", (oid,)).fetchone()
         p = db.execute("SELECT sku FROM product WHERE id = ?", (pid,)).fetchone()
         l = db.execute("SELECT code FROM location WHERE id = ?", (lid,)).fetchone()
         return {"owner_id": oid, "product_id": pid, "location_id": lid,
                 "batch_no": bno, "designated_customer_id": cust,
                 "goods_property": prop,
                 "owner_code": o["code"] if o else None,
+                "owner_name": o["name"] if o else None,
                 "sku": p["sku"] if p else None,
                 "location_code": l["code"] if l else None}
 

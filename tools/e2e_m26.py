@@ -64,22 +64,31 @@ def wait_ready(proc, timeout=30):
 
 
 def seed_business_data():
-    """造最小业务数据并产生一条真实推荐日志，返回 asn / line / location / 日志 id。"""
+    """创建已点收、已验收的单据，生成可用于上架的验收条码和推荐日志。"""
     owner = http("POST", "/api/owners", {"code": "E2E-OW", "name": "E2E 货主"})["owner"]["id"]
     wh = http("POST", "/api/warehouses", {"code": "E2E-WH", "name": "E2E 仓"})["warehouse"]["id"]
     product = http("POST", "/api/products", {
         "sku": "E2E-SKU", "name": "E2E 物料", "owner_id": owner})["product"]["id"]
     zones = http("GET", "/api/zones?page_size=100").get("zones", [])
     shared = next((z["id"] for z in zones if z.get("code") == "ZONE-SHARED"), None)
-    loc = http("POST", "/api/locations", {
+    http("POST", "/api/locations", {
         "code": "E2E-LOC", "name": "E2E 存储位", "loc_type": "storage",
-        "zone_id": shared})["location"]["id"]
+        "zone_id": shared})
+    receiving = http("POST", "/api/locations", {
+        "code": "E2E-RCV", "name": "E2E 收货暂存位", "loc_type": "receiving",
+    })["location"]["id"]
     asn = http("POST", "/api/asns", {
         "code": "E2E-ASN", "owner_id": owner, "source_warehouse": wh,
         "lines": [{"product_id": product, "expected_qty": 5, "batch_no": "E2E-LOT"}]})
     aid, lid = asn["asn"]["id"], asn["lines"][0]["id"]
-    rec = http("GET", f"/api/putaway/recommend?asn_id={aid}&line_id={lid}&qty=1&top_n=5")
-    return aid, lid, loc, rec.get("recommendation_id")
+    receiving_payload = {"line_id": lid, "location_id": receiving, "qty": 5}
+    count = http("POST", f"/api/asns/{aid}/count", receiving_payload)
+    accepted = http("POST", f"/api/asns/{aid}/receive", {
+        **receiving_payload, "receiving_count_id": count["count_id"], "batch_no": "E2E-LOT",
+    })
+    barcode = accepted["batch"]["batch_no"]
+    rec = http("GET", f"/api/putaway/recommend?asn_id={aid}&line_id={lid}&qty=1&receipt_barcode={barcode}")
+    return aid, barcode, rec.get("recommendation_id")
 
 
 def run(port, keep):
@@ -126,6 +135,8 @@ def run(port, keep):
                   page.locator("#ruleBody tr.rule-row").count())
 
             page.locator("button:has-text('新增规则行')").first.click()
+            editor = page.get_by_role("dialog")
+            check("规则在弹框内编辑", editor.is_visible())
             check("14 维条件组控件", page.locator("#condGrid .fld").count() == 14,
                   page.locator("#condGrid .fld").count())
             check("fallback 步骤可见", page.locator("#stepsBox .step-row").count() >= 1)
@@ -133,34 +144,49 @@ def run(port, keep):
             check("9 条扩展评分输入", page.locator("#scoreBody input").count() == 9)
 
             # 试算：冷链条件 vs 冷链上下文
-            page.locator("#trialCond").fill('{"is_cold_chain": 1}')
-            page.locator("#trialCtx").fill('{"is_cold_chain": 1}')
-            page.locator("button:has-text('试算匹配')").click()
-            page.wait_for_timeout(300)
-            check("条件组试算命中", "命中" in page.locator("#trialResult").inner_text(),
-                  page.locator("#trialResult").inner_text())
+            editor.locator("#cond_is_cold_chain").select_option("1")
+            editor.get_by_text("试算当前条件", exact=True).click()
+            editor.locator("#editorTrialCtx").fill('{"is_cold_chain": 1}')
+            editor.get_by_role("button", name="试算匹配").click()
+            page.wait_for_function("document.getElementById('editorTrialResult').textContent.startsWith('✅ 命中')")
+            check("弹框条件试算命中", True)
+            editor.locator("#cond_is_cold_chain").select_option("")
+            editor.locator("#step_type_0").select_option("zone_by_code")
+            editor.locator("[data-param=zone_code]").fill("ZONE-NG")
+            editor.locator("#lim_storage_class").select_option("enforce")
+            editor.locator("#limitZones").fill("ZONE-NG")
 
             # 新增规则行 → 12 行；再删除 → 11 行
             page.locator("#ruleName").fill("E2E 临时规则")
             page.locator("#rulePriority").fill("777")
             page.locator("button:has-text('保存规则行')").click()
-            page.wait_for_timeout(500)
+            page.wait_for_function(
+                "n => document.querySelectorAll('#ruleBody tr.rule-row').length === n", arg=12)
             check("新增规则行写库", page.locator("#ruleBody tr.rule-row").count() == 12,
                   page.locator("#ruleBody tr.rule-row").count())
             rules = http("GET", "/api/putaway-rules")["rules"]
             new_rule = next((r for r in rules if r["name"] == "E2E 临时规则"), None)
             check("新规则带 14 维空条件组", new_rule is not None and
                   json.loads(new_rule["condition"]) == {}, new_rule and new_rule["id"])
+            check("中文储区字段写入规则配置",
+                  json.loads(new_rule["steps"]) == [{"type": "zone_by_code", "zone_code": "ZONE-NG"}]
+                  and json.loads(new_rule["limits"])["storage_class"]["allowed_zone_codes"] == ["ZONE-NG"])
+            page.get_by_role("row").filter(has_text="E2E 临时规则").get_by_role("button", name="编辑").click()
+            check("回显已保存的储区设置",
+                  editor.locator("[data-param=zone_code]").input_value() == "ZONE-NG"
+                  and editor.locator("#lim_storage_class").input_value() == "enforce")
+            editor.get_by_role("button", name="取消").click()
             http("DELETE", f"/api/putaway-rules/{new_rule['id']}")
             page.locator("button:has-text('刷新')").first.click()
-            page.wait_for_timeout(400)
+            page.wait_for_function(
+                "n => document.querySelectorAll('#ruleBody tr.rule-row').length === n", arg=11)
             check("删除规则行后恢复 11 行",
                   page.locator("#ruleBody tr.rule-row").count() == 11)
 
             # 上移：reorder 端点把优先级改成 10/20/…，验证第一行 id 变化
             before = page.locator("#ruleBody tr.rule-row").first.get_attribute("data-idx")
             page.locator("#ruleBody tr.rule-row").nth(1).locator("button[title='上移']").click()
-            page.wait_for_timeout(500)
+            page.wait_for_function("document.querySelector('#ruleBody .rule-row td:nth-child(2)').textContent.trim() === '10'")
             first_priority = page.locator("#ruleBody tr.rule-row").first.locator("td").nth(1).inner_text()
             check("拖拽优先级保存生效", first_priority.strip() == "10", first_priority.strip())
             check("排序前有行索引", before is not None)
@@ -171,18 +197,21 @@ def run(port, keep):
             page.locator("#dtCode").fill("E2E")
             page.locator("#dtName").fill("E2E 外部单据")
             page.get_by_role("button", name="+ 新增", exact=True).click()
-            page.wait_for_timeout(400)
+            page.locator("#docTypeBody").get_by_text("E2E 外部单据", exact=True).wait_for()
             check("字典新增可查", page.locator("#docTypeBody tr").count() >= 7,
                   page.locator("#docTypeBody tr").count())
 
             # ── 业务数据 + 上架作业页 ────────────────────────────────
-            aid, lid, loc, rec_id = seed_business_data()
+            aid, barcode, rec_id = seed_business_data()
             check("推荐接口产生日志 id", bool(rec_id), rec_id)
-            page.goto(BASE + f"/asn_putaway.html?asn_id={aid}&line_id={lid}",
+            page.goto(BASE + f"/asn_putaway.html?asn_id={aid}",
                       wait_until="networkidle")
-            page.wait_for_timeout(600)
+            page.locator("#receiptScan").fill(barcode)
+            page.locator("#receiptScan").press("Enter")
+            page.locator("#recBody button").first.wait_for()
             hint = page.locator("#engineHint").inner_text()
-            check("上架页展示可解释字段", "日志 #" in hint and "引擎" in hint, hint)
+            check("上架页展示中文规则与寻址步骤",
+                  "日志 #" in hint and "命中规则 常规上架" in hint and "全部可用货位" in hint, hint)
             check("改位原因码下拉已加载",
                   page.locator("#overrideReasonSel option").count() >= 2)
 

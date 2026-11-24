@@ -28,6 +28,8 @@ class AsnApiTest(unittest.TestCase):
             conn.execute("DELETE FROM stock_batch")
             conn.execute("DELETE FROM stock_movement")
             conn.execute("DELETE FROM stock")
+            conn.execute("DELETE FROM asn_receiving_count")
+            conn.execute("DELETE FROM asn_cancellation")
             conn.execute("DELETE FROM asn_line")
             conn.execute("DELETE FROM asn")
             conn.execute("DELETE FROM customer")
@@ -151,10 +153,13 @@ class AsnApiTest(unittest.TestCase):
         row = self._stock_row(oid, pid, recv_loc)
         self.assertEqual(row["qty"], 6)
 
-        # 收满 → putaway（已收满未上架）
+        # 验收完成、尚未上架。
         resp = self.client.post(f"/api/asns/{asn_id}/receive", json={
             "line_id": line_id, "location_id": recv_loc, "qty": 4})
         self.assertEqual(resp.get_json()["status"], "putaway")
+        self.assertEqual(self.client.get(f"/api/asns/{asn_id}").get_json()["asn"]["status"], "putaway")
+        self.assertEqual(self.client.get("/api/asns?status=closed").get_json()["total"], 0)
+        self.assertEqual(self.client.get("/api/asns?stage=putaway").get_json()["total"], 1)
 
     def test_receive_wrong_location_type(self):
         oid = self._mk_owner()
@@ -509,6 +514,181 @@ class AsnApiTest(unittest.TestCase):
         b2 = r2.get_json()["batch"]
         self.assertNotEqual(b1["batch_no"], b2["batch_no"])
         self.assertEqual(b1["batch_id"], b2["batch_id"])
+
+    def test_count_split_acceptance_and_barcode_putaway(self):
+        oid = self._mk_owner()
+        pid = self._mk_product(oid)
+        customer = self._mk_customer(oid)
+        supplier = self._mk_supplier(oid)
+        source = self._mk_location("RCV-COUNT", "receiving")
+        dest = self._mk_location("ST-COUNT", "storage")
+        body = self._mk_asn(oid, pid, customer_id=customer, supplier_id=supplier, external_no="EXT-COUNT")
+        asn_id, line_id = body["asn"]["id"], body["lines"][0]["id"]
+        path = f"/api/asns/{asn_id}"
+        payload = dict(line_id=line_id, location_id=source, qty=10)
+        login = self.client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+        self.assertEqual(login.status_code, 200, login.get_json())
+        headers = {"Authorization": "Bearer " + login.get_json()["token"]}
+        count = self.client.post(path + "/count", headers=headers, json={"line_id": line_id, "qty": 10})
+        self.assertEqual(count.status_code, 201, count.get_json())
+        self.assertIsNone(self._stock_row(oid, pid, source))
+        self.assertEqual(self.client.post(path + "/count", json=payload).status_code, 400)
+        self.assertEqual(self.client.post(path + "/receive", json=payload).status_code, 400)
+        queue = self.client.get("/api/asns", query_string={
+            "stage": "acceptance", "owner_id": oid, "customer_id": customer,
+            "keyword": "EXT-COUNT", "date_from": body["asn"]["created_at"][:10],
+        }).get_json()
+        self.assertEqual([a["id"] for a in queue["asns"]], [asn_id])
+
+        receipts = []
+        for qty, lot, expiry in [(4, "LOT-A", "2029-01-01"), (6, "LOT-B", "2030-01-01")]:
+            response = self.client.post(path + "/receive", headers=headers, json=dict(
+                payload, receiving_count_id=count.get_json()["count_id"],
+                qty=qty, batch_no=lot, expiry_date=expiry, stock_status="质检",
+                receipt_note="核对完成", receipt_customer="外部值", receipt_supplier="外部值"))
+            self.assertEqual(response.status_code, 200, response.get_json())
+            receipts.append(response.get_json()["batch"]["batch_no"])
+        self.assertEqual(self.client.get("/api/asns?stage=acceptance").get_json()["total"], 0)
+        self.assertEqual(self.client.get("/api/asns?stage=putaway").get_json()["total"], 1)
+        recommendation = self.client.get("/api/putaway/recommend", query_string={
+            "asn_id": asn_id, "line_id": line_id, "receipt_barcode": receipts[1], "qty": 2,
+        })
+        self.assertEqual(recommendation.status_code, 200, recommendation.get_json())
+        self.assertEqual(recommendation.get_json()["batch_no"], "LOT-B")
+
+        putaway = dict(line_id=line_id, from_location_id=source, to_location_id=dest, qty=2)
+        self.assertEqual(self.client.post(path + "/putaway", json=putaway).status_code, 400)
+        response = self.client.post(path + "/putaway", headers=headers, json=dict(
+            putaway, receipt_barcode=receipts[1], override_reason="改用备用货位"))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        line = self.client.get(path).get_json()["lines"][0]
+        self.assertEqual([(r["info"]["batch_no"], r["remaining_putaway"]) for r in line["batch_receipts"]],
+                         [("LOT-A", 4), ("LOT-B", 4)])
+        for name in ("receiving_counts", "batch_receipts", "putaway_details"):
+            self.assertTrue(line[name])
+            for row in line[name]:
+                self.assertEqual(row["operator"], "admin")
+                self.assertTrue(row["created_at"])
+        self.assertEqual(line["batch_receipts"][0]["stock_status"], "质检")
+        snapshot = line["batch_receipts"][0]["info"]
+        self.assertEqual(snapshot["receipt_note"], "核对完成")
+        self.assertEqual(snapshot["receipt_customer"], body["asn"]["customer_name"])
+        self.assertEqual(snapshot["receipt_supplier"], body["asn"]["supplier_name"])
+        order = self.client.get("/api/asns?keyword=EXT-COUNT").get_json()["asns"][0]
+        self.assertEqual((order["order_qty"], order["counted_total_qty"], order["accepted_total_qty"],
+                          order["putaway_total_qty"], order["pending_putaway_qty"], order["cancelled_total_qty"]),
+                         (10, 10, 10, 2, 8, 0))
+        self.assertEqual(line["putaway_details"][0]["override_reason"], "改用备用货位")
+        import sqlite3
+        with sqlite3.connect(main.DB_PATH) as conn:
+            dest_batches = conn.execute(
+                "SELECT batch_no, qty FROM stock_batch WHERE location_id = ? AND qty > 0", (dest,)
+            ).fetchall()
+        self.assertEqual(dest_batches, [(receipts[1], 2)])
+        inventory_batch = self.client.get("/api/stock/batch", query_string={
+            "location_id": dest, "batch_no": receipts[1],
+            "batch_field": "receipt_note", "batch_value": "核对完成",
+        }).get_json()["stock_batches"][0]["batch_info"]
+        for field in ("receipt_note", "receipt_customer", "receipt_supplier"):
+            self.assertEqual(inventory_batch[field], snapshot[field])
+        self.assertTrue(self.client.get("/api/stock/batch-reconcile").get_json()["consistent"])
+
+    def test_finish_cancels_only_unaccepted_and_keeps_putaway(self):
+        owner = self._mk_owner()
+        item = self._mk_product(owner)
+        receiving = self._mk_location("RCV-FIN", "receiving")
+        dest = self._mk_location("ST-FIN", "storage")
+        asn = self._mk_asn(owner, item)
+        path = f"/api/asns/{asn['asn']['id']}"
+        line_id = asn["lines"][0]["id"]
+        counted = self.client.post(path + "/count", json={"line_id": line_id, "qty": 8})
+        count_id = counted.get_json()["count_id"]
+        accepted = self.client.post(path + "/receive", json={
+            "line_id": line_id, "receiving_count_id": count_id, "location_id": receiving,
+            "qty": 4, "batch_no": "LOT-FIN", "udi": "UDI-FIN",
+        })
+        self.assertEqual(accepted.status_code, 200, accepted.get_json())
+        barcode = accepted.get_json()["batch"]["batch_no"]
+        url = f"{path}/lines/{line_id}/cancel"
+        self.assertEqual(self.client.post(url, json={"qty": 7}).status_code, 400)
+        self.assertEqual(self.client.post(url, json={"qty": 3}).status_code, 400)
+        self.assertEqual(self.client.post(url, json={"qty": 2}).status_code, 200)
+        line = self.client.get(path).get_json()["lines"][0]
+        self.assertEqual((line["remaining_count"], line["pending_acceptance"]), (0, 4))
+        received_url = url + "-receiving"
+        self.assertEqual(self.client.post(received_url, json={"qty": 5}).status_code, 400)
+        self.assertEqual(self.client.post(received_url, json={"qty": 1}).status_code, 200)
+        line = self.client.get(path).get_json()["lines"][0]
+        self.assertEqual((line["cancelled_qty"], line["receivable_qty"], line["pending_acceptance"]), (3, 3, 3))
+        self.assertEqual([(c["action"], c["qty"]) for c in line["cancellations"]],
+                         [("取消待点收", 2), ("取消收货", 1)])
+        self.assertIsNone(line["receiving_counts"][0]["location_id"])
+        self.assertEqual(self.client.post(path + "/finish").get_json()["status"], "putaway")
+        self.assertEqual(self.client.get("/api/asns?stage=putaway").get_json()["total"], 1)
+        self.assertEqual(self._stock_row(owner, item, receiving)["qty"], 4)
+        moved = self.client.post(path + "/putaway", json={
+            "line_id": line_id, "receipt_barcode": barcode, "from_location_id": receiving,
+            "to_location_id": dest, "qty": 4,
+        })
+        self.assertEqual(moved.status_code, 200, moved.get_json())
+        self.assertEqual(moved.get_json()["status"], "closed")
+        line = self.client.get(path).get_json()["lines"][0]
+        receipt = line["batch_receipts"][0]
+        self.assertEqual((line["received_qty"], line["putaway_qty"], line["receivable_qty"]), (4, 4, 0))
+        self.assertEqual(receipt["receiving_count_id"], count_id)
+        self.assertEqual(line["putaway_details"][0]["batch_receipt_id"], receipt["id"])
+        batches = self.client.get("/api/stock/batch?batch_no=LOT-FIN&has_stock=1").get_json()
+        self.assertEqual([(r["qty"], r["batch_info"]["udi"]) for r in batches["stock_batches"]], [(4, "UDI-FIN")])
+        self.assertTrue(self.client.get("/api/stock/batch-reconcile").get_json()["consistent"])
+
+        untouched = self._mk_asn(owner, item, code="ASN-UNTOUCHED")
+        url = f"/api/asns/{untouched['asn']['id']}"
+        self.assertEqual(self.client.post(url + "/finish").get_json()["status"], "cancelled")
+        cancelled = self.client.get(url).get_json()["lines"][0]
+        self.assertEqual((cancelled["cancelled_qty"], cancelled["receivable_qty"]), (10, 0))
+
+    def test_create_uses_current_warehouse(self):
+        owner = self._mk_owner()
+        item = self._mk_product(owner)
+        other = self._mk_warehouse("WH-OTHER")
+        response = self.client.post("/api/asns", headers={"X-WMS-Warehouse": str(self.wh_id)}, json={
+            "owner_id": owner, "source_warehouse": other,
+            "lines": [{"product_id": item, "expected_qty": 10}],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.assertEqual(response.get_json()["asn"]["source_warehouse"], self.wh_id)
+
+    def test_barcode_putaway_enforces_location_mix_policy(self):
+        owner = self._mk_owner()
+        first = self._mk_product(owner, "SKU-A")
+        second = self._mk_product(owner, "SKU-B")
+        receiving = self._mk_location("RCV-MIX", "receiving")
+        storage = self._mk_location("ST-MIX", "storage")
+        result = self.client.put(f"/api/locations/{storage}", json={"allow_mix_product": 0})
+        self.assertEqual(result.status_code, 200, result.get_json())
+
+        def stage(product, code):
+            data = self._mk_asn(owner, product, expected=1, code=code)
+            path = f"/api/asns/{data['asn']['id']}"
+            line = data["lines"][0]["id"]
+            accept = self.client.post(path + "/receive", json={
+                "line_id": line, "location_id": receiving, "qty": 1,
+            })
+            self.assertEqual(accept.status_code, 200, accept.get_json())
+            return path, dict(line_id=line, from_location_id=receiving, to_location_id=storage,
+                              qty=1, receipt_barcode=accept.get_json()["batch"]["batch_no"])
+
+        path, payload = stage(first, "ASN-MIX-A")
+        self.assertEqual(self.client.post(path + "/putaway", json=payload).status_code, 200)
+        path, payload = stage(second, "ASN-MIX-B")
+        rejected = self.client.post(path + "/putaway", json=payload)
+        self.assertEqual(rejected.status_code, 400, rejected.get_json())
+        self.assertIn("MIX_PRODUCT_FORBIDDEN", rejected.get_json()["error"])
+        self.assertEqual(self._stock_row(owner, second, receiving)["qty"], 1)
+        self.assertIsNone(self._stock_row(owner, second, storage))
+        self.client.put(f"/api/locations/{storage}", json={"allow_mix_product": 1})
+        self.assertEqual(self.client.post(path + "/putaway", json=payload).status_code, 200)
+        self.assertTrue(self.client.get("/api/stock/batch-reconcile").get_json()["consistent"])
 
 
 if __name__ == "__main__":

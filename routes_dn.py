@@ -17,7 +17,8 @@ import scope as S
 from flask import Blueprint, jsonify, request
 
 import constants as C
-from inventory_service import BATCH_DIMS, StockError, adjust_stock
+from batch_service import inventory_batch_info
+from inventory_service import BATCH_DIMS, StockError, adjust_stock, spread_batches
 from main import get_db, gen_doc_no, request_payload
 import reservation_audit as RA
 
@@ -265,9 +266,12 @@ def get_dn(dn_id):
     body["customer_code"], body["customer_name"] = (c["code"], c["name"]) if c else (None, None)
     wh = db.execute("SELECT code, name FROM warehouse WHERE id = ?", (dn["source_warehouse"],)).fetchone()
     body["source_warehouse_code"], body["source_warehouse_name"] = (wh["code"], wh["name"]) if wh else (None, None)
+    picks = [dict(p) for p in _load_picks(db, dn_id)]
+    for p in picks:
+        p["batch_info"] = inventory_batch_info(db, dn["owner_id"], p["product_id"], p)
     return jsonify({"ok": True, "dn": body,
                     "lines": [_dict_line(l) for l in _load_lines(db, dn_id)],
-                    "picks": [dict(p) for p in _load_picks(db, dn_id)]})
+                    "picks": picks})
 
 
 @dn_bp.route("/<int:dn_id>/pick", methods=["POST"])
@@ -312,11 +316,20 @@ def pick(dn_id):
                 f"可用 {on_hand - allocated}, 需拣 {qty}"
             )
 
+        picked_batches = spread_batches(db, dn["owner_id"], line["product_id"], location_id,
+                                        qty, for_allocation=True)
         adjust_stock(db, dn["owner_id"], line["product_id"], location_id,
                      0, C.MOVEMENT_DN_PICK, dn_id, allocated_delta=qty,
-                     note=f"DN {dn['code']} 拣货分配")
-        db.execute("INSERT INTO dn_pick (dn_id, line_id, location_id, qty) "
-                   "VALUES (?, ?, ?, ?)", (dn_id, line_id, location_id, qty))
+                     batches=picked_batches, note=f"DN {dn['code']} 拣货分配")
+        for batch in picked_batches:
+            db.execute("""
+                INSERT INTO dn_pick (dn_id, line_id, location_id, qty, batch_no, batch_key,
+                    internal_batch_no, designated_customer_id, goods_property, stock_status,
+                    expiry_date, production_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (dn_id, line_id, location_id, batch["allocated"], batch["batch_no"], batch["batch_key"],
+                  batch["internal_batch_no"], batch["designated_customer_id"], batch["goods_property"],
+                  batch["stock_status"], batch["expiry_date"], batch["production_date"]))
         db.execute("UPDATE dn_line SET picked_qty = picked_qty + ? WHERE id = ?",
                    (qty, line_id))
         lines = _load_lines(db, dn_id)

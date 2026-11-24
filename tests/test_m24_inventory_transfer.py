@@ -337,6 +337,46 @@ class M24InventoryTransferTest(unittest.TestCase):
         self._act(tid, "approve")
         self._all_ok()
 
+    def test_batch_adjustment_changes_only_approved_quantity(self):
+        source = self._stock(qty=8)
+        query = f"/api/stock/batch?location_id={self.sto}&has_stock=1"
+        source_udi = self.client.get(query).get_json()["stock_batches"][0]["batch_info"]["udi"]
+        transfer = self._it(ttype=C.IT_TYPE_BATCH_CORRECT, reason="错录补正")
+        result = self._alloc(transfer, source, 3, batch_info={
+            "udi": "UDI-FIXED", "batch_no": "FACTORY-FIXED", "expiry_date": "2030-01-01",
+        })
+        self.assertEqual(result.status_code, 200, result.get_json())
+        self.assertEqual(len(self.client.get(query).get_json()["stock_batches"]), 1)
+        approved = self._act(transfer, "approve")
+        self.assertEqual(approved.status_code, 200, approved.get_json())
+
+        change = self.client.put(f"/api/products/{self.pid}", json={
+            "name": "当前物料名称", "spec": "当前规格", "unit": "箱",
+        })
+        self.assertEqual(change.status_code, 200, change.get_json())
+        rows = self.client.get(query + "&product_keyword=当前物料").get_json()["stock_batches"]
+        self.assertEqual({(r["batch_info"]["udi"], r["qty"]) for r in rows}, {(source_udi, 5), ("UDI-FIXED", 3)})
+        self.assertTrue(all(r["product_name"] == "当前物料名称" and r["unit"] == "箱" for r in rows))
+        self.assertTrue(all("product_name" not in r["batch_info"] for r in rows))
+        filtered = self.client.get(query + "&batch_field=udi&batch_value=FIXED").get_json()
+        self.assertEqual(filtered["stock_batches"][0]["batch_info"]["batch_no"], "FACTORY-FIXED")
+        self.assertEqual(filtered["stock_batches"][0]["expiry_date"], "2030-01-01")
+        changes = self.client.get(f"/api/inventory-transfers/{transfer}").get_json()["transfer"]["change_logs"]
+        self.assertIn("udi", {r["field_name"] for r in changes})
+        delivery = self.client.post("/api/dns", json={
+            "code": "T24-DN", "owner_id": self.oid, "customer_id": self.cus1,
+            "lines": [{"product_id": self.pid, "ordered_qty": 3}],
+        })
+        self.assertEqual(delivery.status_code, 201, delivery.get_json())
+        d = delivery.get_json()
+        path = f"/api/dns/{d['dn']['id']}"
+        picked = self.client.post(path + "/pick", json={
+            "line_id": d["lines"][0]["id"], "location_id": self.sto, "qty": 3,
+        })
+        self.assertEqual(picked.status_code, 200, picked.get_json())
+        self.assertEqual(self.client.get(path).get_json()["picks"][0]["batch_info"]["udi"], "UDI-FIXED")
+        self._all_ok()
+
     def test_18_change_log_records_old_new(self):
         sbid = self._stock()
         tid = self._it()

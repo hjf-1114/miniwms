@@ -23,9 +23,10 @@
           <div class="flex">
             <button class="btn secondary" onclick="openWorkTab('验收作业 · ' + (asnCode || ''), '/asn_receive.html?asn_id=' + asnId)">← 前往验收作业</button>
             <button class="btn secondary" onclick="openWorkTab('收货管理', '/asns.html?detail=' + asnId)">返回收货单</button>
-            <button class="btn secondary" onclick="loadAll()">刷新</button>
+            <button class="btn secondary" onclick="refreshQueue().then(loadAll)">刷新</button>
           </div>
         </div>
+        <div id="asnFilters"></div>
         <div class="toolbar">
           <label class="muted text-sm">收货单</label>
           <select id="asnSel" style="min-width:240px"><option value="">加载中…</option></select>
@@ -34,22 +35,37 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><h2>上架录入</h2></div>
+        <div class="card-head"><h2>明细与上架进度</h2></div>
+        <div class="toolbar"><label>批次号 <input id="receiptScan" disabled placeholder="扫码或输入，按 Enter"></label></div>
+        <select id="lineSel" hidden><option value="">请选择明细行</option></select>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>行</th><th>货品</th><th>规格</th><th>应收</th><th>已验收</th><th>已上架</th><th>待上架</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="lineBody"></tbody>
+          </table>
+        </div>
+        <dialog id="putawayEditor" class="inbound-history inbound-acceptance" aria-labelledby="putawayEditorTitle"><div class="card">
+        <div class="card-head"><h2 id="putawayEditorTitle">上架录入</h2>
+          <form method="dialog"><button class="btn secondary sm">关闭</button></form>
+        </div>
         <div class="text-sm muted" style="margin:0 0 10px">
           目标货位可手工选，也可在下方「推荐货位」一键采纳。推荐只是只读建议，最终过账仍走原有上架接口。
         </div>
         <div class="toolbar">
-          <label class="muted text-sm">明细行</label>
-          <select id="lineSel" style="min-width:280px"><option value="">请选择明细行</option></select>
-          <label class="muted text-sm">来源暂存位</label>
-          <select id="fromLocSel" style="min-width:190px"><option value="">请选择暂存位</option></select>
+          <label>验收批次 <select id="receiptSel"><option value="">请选择验收批次</option></select></label>
+          <label>来源暂存位 <input id="fromLocCode" readonly></label>
           <label class="muted text-sm">本次上架数量</label>
-          <input id="putQty" type="number" min="0.01" step="0.01" style="width:110px" placeholder="数量">
-          <label class="muted text-sm">目标货位</label>
-          <select id="toLocSel" style="min-width:230px"><option value="">请选择目标货位</option></select>
+          <input id="putQty" type="number" min="0" step="any" style="width:110px" placeholder="数量">
+          <label>目标货位 <input id="toLocCode" placeholder="输入或扫描货位编码" autocomplete="off"></label>
+          <select id="toLocSel" aria-label="选择目标货位" style="min-width:230px"><option value="">请选择目标货位</option></select>
           <button class="btn" id="putBtn" onclick="doPutaway()">确认上架</button>
         </div>
         <div id="lineHint" class="text-sm muted"></div>
+        <div id="putFeedback" class="msg inbound-feedback" role="status" aria-live="polite"></div>
+        <details class="inbound-log" id="receiptDetails" hidden>
+          <summary>验收批次信息</summary>
+          <div id="receiptBatchFields"></div>
+        </details>
       </div>
 
       <div class="card">
@@ -62,11 +78,10 @@
         </div>
         <div id="recSummary" class="text-sm muted" style="margin:0 0 10px">选择明细行后自动计算。</div>
         <div class="toolbar">
-          <label class="muted text-sm">改位 / 驳回原因码</label>
+          <label class="muted text-sm">改位原因（选填）</label>
           <select id="overrideReasonSel" style="min-width:170px"><option value="">请选择…</option></select>
-          <input id="overrideReasonText" placeholder="或手工填写原因（选「其他」时必填）" style="min-width:230px">
-          <button class="btn secondary sm" onclick="rejectRecommend()">驳回本次推荐</button>
-          <span class="text-sm muted">人工选了非推荐货位时，上架前必须留原因码</span>
+          <input id="overrideReasonText" placeholder="选填，可补充说明" style="min-width:230px">
+          <span class="text-sm muted">人工改位原因选填，目标货位仍按上架规则校验</span>
         </div>
         <div class="table-wrap">
           <table>
@@ -81,16 +96,7 @@
             <tbody id="rejBody"></tbody>
           </table></div>
         </details>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>明细与上架进度</h2></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>行</th><th>货品</th><th>规格</th><th>应收</th><th>已收</th><th>已上架</th><th>批号</th><th>操作</th></tr></thead>
-            <tbody id="lineBody"></tbody>
-          </table>
-        </div>
+      </div></dialog>
       </div>
     </div>
   </div>
@@ -98,19 +104,26 @@
 
 <script src="/js/api.js"></script>
 <script src="/js/layout.js"></script>
+<script src="/js/asn_filters.js"></script>
+<script src="/js/batch_details.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
 let asnId = params.get("asn_id") || "";
 const presetLine = params.get("line_id") || "";
-let asnCode = "", asnData = null, recvLocs = [], destLocs = [], lastRec = null;
-let recTimer = null, adoptedLoc = null, overrideReasons = [];
+let asnCode = "", asnData = null, lastRec = null, loadVersion = 0, recVersion = 0;
+let initialLine = presetLine;
+let recTimer = null, overrideReasons = [], receiptFields = [];
+let manualTarget = false;
+const putawayEditor = document.getElementById("putawayEditor");
+let destinationCodes = new Map();
+let recommendationPending = false;
 
 /** 改位 / 驳回原因码：下拉值与手工文本二选一，「其他」必须补文本。 */
 function getOverrideReason() {
   const sel = document.getElementById("overrideReasonSel").value;
   const text = document.getElementById("overrideReasonText").value.trim();
   if (sel === "其他") return text;
-  return sel || text;
+  return [sel, text].filter(Boolean).join(" · ");
 }
 
 async function loadOverrideReasons() {
@@ -134,41 +147,38 @@ async function logAction(action, payload) {
   return true;
 }
 
-function asnStatusTag(s) {
-  const map = { open: "待收货", receiving: "收货中", putaway: "上架中", closed: "已完成", cancelled: "已取消" };
-  return `<span class="tag ${s === "closed" ? "ok" : "off"}">${map[s] || s}</span>`;
-}
-
-async function loadAsnOptions() {
-  const d = await api("GET", "/api/asns?page_size=100");
-  const sel = document.getElementById("asnSel");
-  sel.innerHTML = '<option value="">请选择收货单…</option>' +
-    d.asns.map(a => `<option value="${a.id}">${esc(a.code)} · ${esc(a.owner_name || "")}（${esc(a.status)}）</option>`).join("");
-  if (!asnId && d.asns.length) asnId = String(d.asns[0].id);
-  sel.value = asnId;
-  sel.addEventListener("change", () => {
-    asnId = sel.value;
-    if (asnId) loadAll(); else { asnData = null; renderMeta(); renderLines(); }
-  });
-}
-
-async function loadLocs() {
-  const [recv, dest] = await Promise.all([
-    api("GET", "/api/locations?loc_type=receiving&status=active&page_size=100"),
-    api("GET", "/api/locations?status=active&page_size=100"),
-  ]);
-  recvLocs = recv.locations;
-  destLocs = dest.locations.filter(l => l.loc_type === "storage" || l.loc_type === "picking");
-  const f = document.getElementById("fromLocSel");
-  const fc = f.value;
-  f.innerHTML = '<option value="">请选择暂存位</option>' +
-    recvLocs.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)}</option>`).join("");
-  f.value = fc || (recvLocs.length ? String(recvLocs[0].id) : "");
+async function loadLocs(warehouse) {
   const t = document.getElementById("toLocSel");
-  const tc = t.value;
-  t.innerHTML = '<option value="">请选择目标货位</option>' +
-    destLocs.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)}〔${esc(l.zone_name || "无储区")}｜${esc(l.warehouse_name || "未指定仓库")}〕</option>`).join("");
-  t.value = tc;
+  const options = [new Option("请选择目标货位", "")];
+  const codes = new Map();
+  for (let page = 1; ; page++) {
+    const data = await api("GET", `/api/locations?status=active&page_size=100&page=${page}`);
+    for (const l of data.locations.filter(l => ["storage", "picking"].includes(l.loc_type) &&
+        (!warehouse || !l.warehouse_id || l.warehouse_id === warehouse))) {
+      options.push(new Option(`${l.code} · ${l.name}〔${l.zone_name || "无储区"}〕`, l.id));
+      codes.set(String(l.id), l.code);
+    }
+    if (page * 100 >= data.total || !data.locations.length) break;
+  }
+  const previous = t.value;
+  t.replaceChildren(...options);
+  destinationCodes = codes;
+  t.value = previous;
+}
+
+function setTarget(id) {
+  const key = String(id);
+  document.getElementById("toLocSel").value = key;
+  document.getElementById("toLocCode").value = destinationCodes.get(key) || "";
+}
+
+function matchTargetCode() {
+  const code = document.getElementById("toLocCode").value.trim();
+  const scoped = Array.from(destinationCodes);
+  const exact = scoped.find(([, value]) => value === code);
+  if (exact) return exact[0];
+  const candidates = scoped.filter(([, value]) => value.toUpperCase() === code.toUpperCase());
+  return candidates.length === 1 ? candidates[0][0] : "";
 }
 
 function renderMeta() {
@@ -176,10 +186,10 @@ function renderMeta() {
   asnCode = a ? a.code : "";
   document.getElementById("asnTitle").textContent = a ? `上架作业：${a.code}` : "上架作业（未选择收货单）";
   document.getElementById("asnMeta").innerHTML = a ? [
-    ["单据状态", asnStatusTag(a.status), "货主", `${esc(a.owner_code || "")} ${esc(a.owner_name || "")}`],
-    ["单据类型", a.doc_type || "-", "来源仓库", a.source_warehouse_name || a.source_warehouse_code || "-"],
-    ["供应商", a.supplier_name || "-", "外部单号", a.external_no || "-"],
-    ["创建时间", a.created_at || "-", "备注", a.note || "-"],
+    ["单据状态", asnStatusTag(a.status, asnPlacedQty(asnData.lines)), "货主", `${esc(a.owner_code || "")} ${esc(a.owner_name || "")}`],
+    ["单据类型", esc(a.doc_type || "-"), "来源仓库", esc(a.source_warehouse_name || a.source_warehouse_code || "-")],
+    ["供应商", esc(a.supplier_name || "-"), "外部单号", esc(a.external_no || "-")],
+    ["创建时间", esc(a.created_at || "-"), "备注", esc(a.note || "-")],
   ].map(([k1, v1, k2, v2]) =>
     `<tr><td class="muted">${k1}</td><td>${v1}</td><td class="muted">${k2}</td><td>${v2}</td></tr>`
   ).join("") : '<tr><td class="muted">请在上方选择一张收货单</td></tr>';
@@ -189,68 +199,152 @@ function lineLabel(l) {
   return `#${l.id} ${l.product_name || l.sku || "货品"} · 已收 ${l.received_qty} / 已上架 ${l.putaway_qty}${l.unit || ""}`;
 }
 
-function renderLines() {
-  const lines = asnData ? asnData.lines : [];
-  const sel = document.getElementById("lineSel");
-  const cur = sel.value || presetLine;
-  sel.innerHTML = '<option value="">请选择明细行</option>' +
-    lines.map(l => `<option value="${l.id}">${esc(lineLabel(l))}</option>`).join("");
-  sel.value = cur || (lines.length ? String(lines[0].id) : "");
-  document.getElementById("lineBody").innerHTML = lines.map(l =>
-    `<tr>
-      <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td><td>${esc(l.spec || "-")}</td>
-      <td>${l.expected_qty}</td><td>${l.received_qty}</td><td><b>${l.putaway_qty}</b></td>
-      <td>${esc(l.batch_no || "-")}</td>
-      <td><button class="btn secondary sm" onclick="pickLine(${l.id})">选为当前行</button></td>
-    </tr>`
-  ).join("") || '<tr><td colspan="8" class="muted">该收货单暂无明细行</td></tr>';
-  updateHint();
+function putawayStatus(received, placed) {
+  return inboundStageTag(placed, received, ["未上架", "部分上架", "已上架"]);
 }
 
-function updateHint() {
+function renderLines() {
+  const lines = asnData ? asnData.lines : [];
+  document.getElementById("receiptScan").disabled = !lines.some(l =>
+    l.batch_receipts.some(r => r.remaining_putaway > 1e-9));
+  const sel = document.getElementById("lineSel");
+  const cur = sel.value || initialLine;
+  const openFromLink = Boolean(initialLine);
+  initialLine = "";
+  sel.innerHTML = '<option value="">请选择明细行</option>' +
+    lines.map(l => `<option value="${l.id}">${esc(lineLabel(l))}</option>`).join("");
+  sel.value = cur;
+  document.getElementById("lineBody").innerHTML = lines.map(l =>
+    `<tr data-line-id="${l.id}">
+      <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td><td>${esc(l.spec || "-")}</td>
+      <td>${l.expected_qty}</td><td>${l.received_qty}</td><td><b>${l.putaway_qty}</b></td>
+      <td>${l.remaining_putaway}</td><td>${putawayStatus(l.received_qty, l.putaway_qty)}</td>
+      <td class="inbound-line-actions"><div class="inbound-actions">
+        ${l.batch_receipts.some(r => r.remaining_putaway > 1e-9) ? `<button class="btn sm" onclick="pickLine(${l.id})">上架录入</button>` : ""}
+        ${l.batch_receipts.some(r => r.remaining_putaway > 1e-9) ? "" : "—"}
+      </div></td>
+    </tr>
+    <tr class="inbound-editor-row"><td colspan="9"><section class="inbound-line-editor" aria-label="${esc(l.sku)} 的上架批次">${renderBatchProgress(l)}</section></td></tr>`
+  ).join("") || '<tr><td colspan="9" class="muted">该收货单暂无明细行</td></tr>';
+  if (openFromLink && pendingReceipts().length && !putawayEditor.open) putawayEditor.showModal();
+  renderReceipts();
+}
+
+function renderBatchProgress(l) {
+  if (!l.batch_receipts.length && !l.putaway_details.length) return '<p class="muted">暂无验收批次</p>';
+  const placedByBatch = new Map();
+  for (const p of l.putaway_details) {
+    placedByBatch.set(p.batch_no, (placedByBatch.get(p.batch_no) || 0) + p.qty);
+  }
+  return `
+    <div class="table-wrap"><table>
+      <thead><tr><th>批次号</th><th>厂家批号</th><th>来源暂存位</th><th>验收</th><th>已上架</th><th>待上架</th><th>状态</th></tr></thead>
+      <tbody>${l.batch_receipts.map(r => {
+        const placed = placedByBatch.get(r.batch_no) || 0;
+        return `<tr><td>${esc(r.batch_no)}</td><td>${esc(r.info.batch_no || "—")}</td><td>${esc(r.location_code || "—")}</td>
+          <td>${r.qty}</td><td>${placed}</td><td>${r.remaining_putaway}</td><td>${putawayStatus(r.qty, placed)}</td></tr>`;
+      }).join("") || '<tr><td colspan="7">暂无验收批次</td></tr>'}</tbody>
+    </table></div>
+    ${!l.putaway_details.length ? "" : `<details class="mt8"><summary>上架记录（${l.putaway_details.length}）</summary>
+    <div class="table-wrap mt8"><table>
+      <thead><tr><th>操作时间</th><th>批次号</th><th>来源</th><th>目标货位</th><th>数量</th><th>操作人</th></tr></thead>
+      <tbody>${l.putaway_details.map(r => `<tr><td>${esc(r.created_at)}</td><td>${esc(r.batch_no)}</td>
+      <td>${esc(r.from_location_code || "—")}</td><td>${esc(r.to_location_code || "—")}</td><td>${r.qty}</td><td>${esc(r.operator || "未记录")}</td></tr>`).join("") ||
+      '<tr><td colspan="6">暂无上架记录</td></tr>'}</tbody>
+    </table></div></details>`}`;
+}
+
+function pendingReceipts() {
   const id = document.getElementById("lineSel").value;
   const l = (asnData ? asnData.lines : []).find(x => String(x.id) === String(id));
-  const box = document.getElementById("lineHint");
-  if (!l) { box.textContent = ""; return; }
-  const left = Number(l.received_qty) - Number(l.putaway_qty);
-  box.textContent = `当前行：${l.product_name || l.sku || ""}｜暂存位可上架 ${Math.max(0, left)}${l.unit || ""}｜批号 ${l.batch_no || "（明细未填）"}`;
-  if (!document.getElementById("putQty").value && left > 0) {
-    document.getElementById("putQty").value = left;
+  return l ? l.batch_receipts.filter(r => r.remaining_putaway > 1e-9) : [];
+}
+
+function currentReceipt() {
+  const code = document.getElementById("receiptSel").value;
+  return pendingReceipts().find(r => r.batch_no === code);
+}
+
+function renderReceipts(code) {
+  const line = asnData?.lines.find(l => String(l.id) === document.getElementById("lineSel").value);
+  document.getElementById("putawayEditorTitle").textContent = line ? `上架录入 · ${line.sku} ${line.product_name}` : "上架录入";
+  const sel = document.getElementById("receiptSel");
+  const selected = code || sel.value;
+  const receipts = pendingReceipts();
+  sel.replaceChildren(new Option("请选择验收批次", ""));
+  for (const r of receipts) {
+    sel.add(new Option(`${r.batch_no} · ${r.info.batch_no || "无厂家批号"} · 待上架 ${r.remaining_putaway}`, r.batch_no));
   }
+  sel.value = receipts.some(r => r.batch_no === selected) ? selected
+    : receipts.length === 1 ? receipts[0].batch_no : "";
+  updateReceipt();
+}
+
+function updateReceipt() {
+  const r = currentReceipt();
+  document.getElementById("fromLocCode").value = r ? r.location_code : "";
+  document.getElementById("putQty").value = r ? r.remaining_putaway : "";
+  setTarget("");
+  manualTarget = false;
+  document.getElementById("overrideReasonSel").value = "";
+  document.getElementById("overrideReasonText").value = "";
+  document.getElementById("putBtn").disabled = !r;
+  document.getElementById("receiptDetails").hidden = !r;
+  document.getElementById("receiptBatchFields").innerHTML = r
+    ? batchDetails(receiptFields, r.info) + `<div>指定客户 ${esc(r.designated_customer_name ||
+        (r.designated_customer_id ? "#" + r.designated_customer_id : "通用库存"))} · 原内部批次号 ${esc(r.external_batch_no || "—")}</div>`
+    : "";
+  document.getElementById("lineHint").textContent = r
+    ? `厂家批号 ${r.info.batch_no || "—"} · 待上架 ${r.remaining_putaway} · ${r.goods_property || "—"}`
+    : "扫描批次号，或选择有待上架数量的验收批次。";
+  loadRecommend();
 }
 
 function pickLine(id) {
   document.getElementById("lineSel").value = String(id);
-  document.getElementById("putQty").value = "";
-  updateHint();
-  loadRecommend();
+  document.getElementById("putFeedback").className = "msg inbound-feedback";
+  if (!putawayEditor.open) putawayEditor.showModal();
+  renderReceipts();
 }
 
 async function loadRecommend() {
+  const version = ++recVersion;
   const body = document.getElementById("recBody");
   const rej = document.getElementById("rejBody");
   const sum = document.getElementById("recSummary");
   const lineId = document.getElementById("lineSel").value;
-  if (!asnId || !lineId) {
-    lastRec = null; adoptedLoc = null; body.innerHTML = ""; rej.innerHTML = "";
-    sum.textContent = "请选择收货单与明细行后自动计算。";
+  const receipt = currentReceipt();
+  const qty = Number(document.getElementById("putQty").value);
+  lastRec = null;
+  recommendationPending = false;
+  body.innerHTML = rej.innerHTML = "";
+  if (!asnId || !lineId || !receipt || !(qty > 0) || qty > receipt.remaining_putaway + 1e-9) {
+    lastRec = null; body.innerHTML = ""; rej.innerHTML = "";
+    sum.textContent = "选择待上架的验收批次并填写有效数量后自动计算。";
     document.getElementById("engineHint").textContent = "";
     document.getElementById("rejSummary").textContent = "被排除的货位（0）";
     return;
   }
-  const qty = parseFloat(document.getElementById("putQty").value) || 0;
-  const qs = new URLSearchParams({ asn_id: asnId, line_id: lineId, qty: String(qty), top_n: "8" });
+  const qs = new URLSearchParams({ asn_id: asnId, line_id: lineId, qty: String(qty),
+    receipt_barcode: receipt.batch_no, top_n: "8" });
+  sum.textContent = "正在计算推荐货位…";
+  recommendationPending = true;
   try {
     const d = await api("GET", "/api/putaway/recommend?" + qs);
+    if (version !== recVersion) return;
     lastRec = d;
-    adoptedLoc = null;
+    if (!manualTarget) {
+      const eligible = d.recommendations.find(r =>
+        destinationCodes.has(String(r.location_id)));
+      setTarget(eligible ? eligible.location_id : "");
+    }
     sum.textContent = `${d.sku} ${d.product_name}｜批号 ${d.batch_no || "—"}｜候选 ${d.candidate_count} 个，通过 ${d.recommendations.length ? "（已取前 " + d.recommendations.length + "）" : "0 个"}｜绑定货位 ${d.bound_location_count} 个｜推荐储区 ${d.default_zone_id ? "#" + d.default_zone_id : "未设置"}`;
     // M25 可解释字段在 M26 落到页面上，方便按「策略包 / 规则 / 日志 id」排查
-    const trace = [`引擎 ${d.engine || "—"}`];
+    const trace = [];
     if (d.rule_set) trace.push(`策略包 ${d.rule_set}`);
-    if (d.hit_rule) trace.push(`命中规则 ${d.hit_rule}`);
+    if (d.hit_rule) trace.push(`命中规则 ${d.hit_rule_name || "#" + d.hit_rule}`);
     if (d.hit_priority !== undefined && d.hit_priority !== null) trace.push(`优先级 ${d.hit_priority}`);
-    if (d.hit_step !== undefined && d.hit_step !== null) trace.push(`步骤 ${d.hit_step}`);
+    if (d.hit_step != null) trace.push(`第 ${d.hit_step} 步${d.step_label ? " " + d.step_label : ""}`);
     if (d.recommendation_id) trace.push(`日志 #${d.recommendation_id}`);
     document.getElementById("engineHint").textContent = trace.join(" · ");
     body.innerHTML = d.recommendations.map((r, i) =>
@@ -269,112 +363,133 @@ async function loadRecommend() {
     ).join("") || '<tr><td colspan="2" class="muted">无</td></tr>';
     document.getElementById("rejSummary").textContent = `被排除的货位（${d.rejected.length}）`;
   } catch (e) {
-    lastRec = null; adoptedLoc = null;
+    if (version !== recVersion) return;
+    lastRec = null;
     document.getElementById("engineHint").textContent = "";
     body.innerHTML = `<tr><td colspan="7" class="muted">推荐计算失败：${esc(e.message)}</td></tr>`;
     sum.textContent = "推荐计算失败。";
+  } finally {
+    if (version === recVersion) recommendationPending = false;
   }
 }
 
 /** 采纳 = 填目标货位 + 写推荐日志；不写库存，过账仍由「确认上架」触发。 */
 async function adopt(locationId) {
-  const sel = document.getElementById("toLocSel");
-  const msgEl = document.getElementById("msg");
-  sel.value = String(locationId);
-  adoptedLoc = Number(locationId);
+  const msgEl = document.getElementById("putFeedback");
+  setTarget(locationId);
+  manualTarget = true;
   try {
     const logged = await logAction("adopt", { chosen_location_id: Number(locationId) });
-    showMsg(msgEl, logged
+    showAsnFeedback(msgEl, logged
       ? `已采纳货位 #${locationId}（推荐日志已留痕），请确认数量后点「确认上架」`
       : `已采纳货位 #${locationId}（简版引擎无推荐日志），请确认数量后点「确认上架」`, "success");
   } catch (e) {
-    showMsg(msgEl, `已采纳货位 #${locationId}，但推荐日志留痕失败：${e.message}`, "error");
+    showAsnFeedback(msgEl, `已采纳货位 #${locationId}，但推荐日志留痕失败：${e.message}`, "error");
   }
-  sel.focus();
-}
-
-/** 驳回本次推荐：原因码必填，只写日志、不改库存、不影响后续人工上架。 */
-async function rejectRecommend() {
-  const msgEl = document.getElementById("msg");
-  const reason = getOverrideReason();
-  if (!reason) { showMsg(msgEl, "驳回推荐必须选择或填写原因码", "error"); return; }
-  if (!lastRec || !lastRec.recommendation_id) {
-    showMsg(msgEl, "简版引擎没有推荐日志，无法登记驳回动作", "error"); return;
-  }
-  try {
-    await logAction("reject", { override_reason: reason });
-    showMsg(msgEl, `已驳回本次推荐并留痕（原因：${reason}）`, "success");
-  } catch (e) {
-    showMsg(msgEl, "驳回留痕失败：" + e.message, "error");
-  }
+  document.getElementById("toLocCode").focus();
 }
 
 async function doPutaway() {
-  const msg = document.getElementById("msg");
-  if (!asnId) { showMsg(msg, "请先选择收货单", "error"); return; }
+  const msg = document.getElementById("putFeedback");
+  const documentId = asnId;
+  if (!asnId) { showAsnFeedback(msg, "请先选择收货单", "error"); return; }
   const lineId = document.getElementById("lineSel").value;
-  const fromId = document.getElementById("fromLocSel").value;
-  const toId = document.getElementById("toLocSel").value;
+  const receipt = currentReceipt();
+  const toId = matchTargetCode();
   const qty = parseFloat(document.getElementById("putQty").value);
-  if (!lineId || !fromId || !toId || !(qty > 0)) {
-    showMsg(msg, "明细行 / 来源暂存位 / 目标货位 / 数量均必填，数量须大于 0", "error");
+  if (!lineId || !receipt || !(qty > 0) || qty > receipt.remaining_putaway + 1e-9) {
+    showAsnFeedback(msg, "请选择验收批次，数量须大于 0 且不超过该批次待上架量", "error");
     return;
   }
-  // 设计 §14 阶段 F「改位必填原因码」：有推荐候选却选了非采纳货位，
-  // 先写一条 reject 日志留痕再过账；后端过账接口本身保持 M25 原样，不受影响。
-  const hasRec = lastRec && lastRec.recommendations && lastRec.recommendations.length;
-  if (hasRec && adoptedLoc !== Number(toId)) {
-    const reason = getOverrideReason();
-    if (!reason) {
-      showMsg(msg, "目标货位与已采纳的推荐货位不一致：请先在「改位 / 驳回原因码」选择或填写原因", "error");
-      return;
-    }
-    try {
-      await logAction("reject", { override_reason: reason });
-    } catch (e) {
-      showMsg(msg, "改位留痕失败，已阻止上架：" + e.message, "error");
-      return;
-    }
+  if (!toId) {
+    showAsnFeedback(msg, "请输入或选择当前仓库的有效目标货位编码", "warning");
+    return;
   }
+  if (recommendationPending) {
+    showAsnFeedback(msg, "正在计算推荐货位，请稍候再确认。", "error");
+    return;
+  }
+  const button = document.getElementById("putBtn");
+  button.disabled = true;
+  button.textContent = "上架提交中…";
   try {
-    const r = await api("POST", `/api/asns/${asnId}/putaway`, {
-      line_id: Number(lineId), from_location_id: Number(fromId),
+    await api("POST", `/api/asns/${documentId}/putaway`, {
+      line_id: Number(lineId), from_location_id: receipt.location_id,
+      receipt_barcode: receipt.batch_no,
       to_location_id: Number(toId), qty,
+      recommendation_id: lastRec?.recommendation_id,
+      override_reason: getOverrideReason(),
     });
-    showMsg(msg, `上架成功，单据状态：${r.status}`, "success");
+    showAsnFeedback(msg, `上架成功 · ${receipt.batch_no} · ${qty} 件`, "success");
     document.getElementById("putQty").value = "";
-    document.getElementById("toLocSel").value = "";
+    setTarget("");
     await loadAll();
+    refreshQueue();
   } catch (e) {
-    showMsg(msg, "上架失败：" + e.message, "error");
+    showAsnFeedback(msg, `货位 ${destinationCodes.get(toId) || toId} 上架失败：${e.message}`, "error");
+  } finally {
+    button.textContent = "确认上架";
+    button.disabled = !currentReceipt();
   }
 }
 
 async function loadAll() {
+  const version = ++loadVersion;
   try {
-    await loadLocs();
-    if (!asnId) { asnData = null; renderMeta(); renderLines(); await loadRecommend(); return; }
-    asnData = await api("GET", "/api/asns/" + asnId);
+    if (!asnId) { asnData = null; renderMeta(); renderLines(); return; }
+    const data = await api("GET", "/api/asns/" + asnId);
+    const [fields] = await Promise.all([loadBatchFields(), loadLocs(data.asn.source_warehouse)]);
+    if (version !== loadVersion) return;
+    asnData = data;
+    receiptFields = fields;
     document.getElementById("asnSel").value = String(asnId);
     renderMeta();
     renderLines();
-    await loadRecommend();
   } catch (e) {
     showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
   }
 }
 
-document.getElementById("lineSel").addEventListener("change", () => {
-  document.getElementById("putQty").value = "";
-  updateHint();
-  loadRecommend();
+document.getElementById("lineSel").addEventListener("change", () => renderReceipts());
+document.getElementById("toLocSel").addEventListener("change", e => {
+  manualTarget = true;
+  setTarget(e.target.value);
+});
+document.getElementById("toLocCode").addEventListener("input", () => {
+  manualTarget = true;
+  document.getElementById("toLocSel").value = matchTargetCode();
+});
+document.getElementById("receiptSel").addEventListener("change", updateReceipt);
+document.getElementById("receiptScan").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const code = e.target.value.trim().toUpperCase();
+  const line = asnData && asnData.lines.find(l => l.batch_receipts.some(
+    r => r.batch_no === code && r.remaining_putaway > 1e-9));
+  if (!line) {
+    showMsg(document.getElementById("msg"), "当前单据中没有待上架的此批次号", "error");
+    return;
+  }
+  document.getElementById("lineSel").value = line.id;
+  e.target.value = "";
+  renderReceipts(code);
+  if (!putawayEditor.open) putawayEditor.showModal();
 });
 document.getElementById("putQty").addEventListener("input", () => {
   clearTimeout(recTimer);
+  ++recVersion;
+  recommendationPending = true;
   recTimer = setTimeout(loadRecommend, 350);
 });
 loadOverrideReasons();
-loadAsnOptions().then(loadAll);
+const refreshQueue = initAsnFilters("putaway", () => asnId, id => {
+  asnId = id;
+  if (putawayEditor.open) putawayEditor.close();
+  asnData = null;
+  renderLines();
+  loadAll();
+});
+refreshQueue().then(loadAll);
 </script>
 </body>
 </html>

@@ -18,22 +18,28 @@
       <div id="msg" class="msg"></div>
 <div class="card">
     <h2>库存余额</h2>
-    <div class="toolbar">
-      <select id="ownerFilter"></select>
-      <select id="productFilter"></select>
-      <select id="locationFilter"></select>
+    <form class="toolbar inventory-filters" id="stockFilters">
+      <label>货主 <select id="ownerFilter" name="owner_id"></select></label>
+      <label>物料 <input id="productFilter" name="product_keyword" placeholder="名称 / SKU / 货号 / 条码"></label>
+      <label>货位 <select id="locationFilter" name="location_id"></select></label>
       <label style="display:flex;align-items:center;gap:4px">
-        <input type="checkbox" id="hasStock" checked>仅看有货行
+        <input type="checkbox" id="hasStock" name="has_stock" value="1" checked>仅看有货行
       </label>
-      <button class="btn secondary" onclick="loadStock()">查询</button>
-    </div>
-    <div class="table-wrap">
+      <button class="btn" type="submit">查询</button>
+      <button class="btn secondary" type="reset">清空</button>
+      <button class="btn secondary" type="button" onclick="openStockBatches(commonQs())">批次库存</button>
+    </form>
+    <div class="table-wrap inventory-grid">
       <table>
-      <thead><tr><th>货主</th><th>SKU</th><th>物料</th><th>库位</th><th>在手</th><th>已分配</th><th>可用</th><th>更新时间</th></tr></thead>
+      <thead><tr><th class="inventory-anchor">物料</th><th>货主</th><th>规格</th><th>单位</th><th>货位</th><th>在手</th><th>已分配</th><th>可用</th><th>更新时间</th><th>批次</th></tr></thead>
       <tbody id="stockBody"></tbody>
     </table>
     </div>
-    <p class="muted" style="margin-top:8px">共 <span id="stockTotal">0</span> 行 · 可用 = 在手 - 已分配</p>
+    <div class="pager">
+      <button class="btn secondary" id="stockPrev" onclick="turnStock(-1)">上一页</button>
+      <span id="stockTotal"></span>
+      <button class="btn secondary" id="stockNext" onclick="turnStock(1)">下一页</button>
+    </div>
   </div>
 
   <div class="card">
@@ -70,32 +76,20 @@
 
     <script src="/js/api.js"></script>
     <script src="/js/layout.js"></script>
+    <script src="/js/inventory_filters.js"></script>
 <script>
+const filters = document.getElementById("stockFilters");
+let stockPage = 1;
+
 async function loadFilters() {
-  const [ow, pr, loc] = await Promise.all([
-    api("GET", "/api/owners?page_size=100"),
-    api("GET", "/api/products?page_size=100"),
-    api("GET", "/api/locations?page_size=100"),
+  await Promise.all([
+    fillInventorySelect("ownerFilter", "owners", "全部货主", o => o.name),
+    fillInventorySelect("locationFilter", "locations", "全部货位", l => l.code),
   ]);
-  // 货主与库位用 code，物料没有 code 列（只有 sku），故单独给显示文案
-  const opts = (list, label, textOf) =>
-    `<option value="">全部${label}</option>` + list.map(
-      (x) => `<option value="${x.id}">${esc(textOf ? textOf(x) : x.code)}</option>`).join("");
-  document.getElementById("ownerFilter").innerHTML = opts(ow.owners, "货主");
-  document.getElementById("productFilter").innerHTML =
-    opts(pr.products, "物料", (p) => `${p.sku} · ${p.name}`);
-  document.getElementById("locationFilter").innerHTML = opts(loc.locations, "库位");
 }
 
 function commonQs() {
-  const qs = new URLSearchParams();
-  const o = document.getElementById("ownerFilter").value;
-  const p = document.getElementById("productFilter").value;
-  const l = document.getElementById("locationFilter").value;
-  if (o) qs.set("owner_id", o);
-  if (p) qs.set("product_id", p);
-  if (l) qs.set("location_id", l);
-  return qs;
+  return inventoryFilterParams(filters);
 }
 
 const MV_LABEL = {
@@ -111,22 +105,36 @@ function mvTag(t) {
 
 async function loadStock() {
   const qs = commonQs();
-  if (document.getElementById("hasStock").checked) qs.set("has_stock", "1");
+  qs.set("page", stockPage);
+  qs.set("page_size", "30");
   try {
     const data = await api("GET", "/api/stock?" + qs);
-    document.getElementById("stockTotal").textContent = data.total;
+    document.getElementById("stockTotal").textContent = `第 ${data.page} 页 · 共 ${data.total} 行`;
+    document.getElementById("stockPrev").disabled = data.page <= 1;
+    document.getElementById("stockNext").disabled = data.page * data.page_size >= data.total;
     document.getElementById("stockBody").innerHTML = data.stocks.length
       ? data.stocks.map((s) =>
         `<tr>
-          <td>${esc(s.owner_code)}</td><td>${esc(s.sku)}</td><td>${esc(s.product_name)}</td>
+          <td class="inventory-anchor"><b>${esc(s.product_name)}</b><div class="muted">${esc(s.sku)}</div></td>
+          <td>${esc(s.owner_name)}</td><td>${esc(s.spec || "—")}</td><td>${esc(s.unit || "—")}</td>
           <td>${esc(s.location_code)}</td>
           <td><b>${s.qty}</b></td><td>${s.allocated_qty}</td><td>${s.available_qty}</td>
           <td class="muted">${esc(s.updated_at)}</td>
+          <td><button class="btn secondary sm" onclick="openStockBatches({owner_id:${s.owner_id}, product_id:${s.product_id}, location_id:${s.location_id}})">查批次</button></td>
         </tr>`).join("")
-      : `<tr><td colspan="8" class="muted">暂无库存记录（先走收货→上架）</td></tr>`;
+      : `<tr><td colspan="10" class="muted">暂无库存记录</td></tr>`;
   } catch (e) {
     showMsg(document.getElementById("msg"), "库存加载失败：" + e.message, "error");
   }
+}
+
+function turnStock(offset) {
+  stockPage += offset;
+  loadStock();
+}
+
+function openStockBatches(filters) {
+  openWorkTab("批次库存", "/stock_batch.html?" + new URLSearchParams(filters));
 }
 
 async function loadMovements() {
@@ -140,7 +148,7 @@ async function loadMovements() {
       ? data.movements.map((m) =>
         `<tr>
           <td class="muted">${esc(m.created_at)}</td>
-          <td>${esc(m.owner_code)}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>
+          <td>${esc(m.owner_name)}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>
           <td style="color:${m.qty_delta < 0 ? "#c0392b" : "#1e8e3e"}"><b>${m.qty_delta > 0 ? "+" : ""}${m.qty_delta}</b></td>
           <td>${mvTag(m.ref_type)}</td>
           <td>${m.ref_id === null ? "-" : m.ref_id}</td>
@@ -162,7 +170,7 @@ async function doReconcile() {
       box.innerHTML = `<span class="tag off">发现 ${r.mismatches.length} 处不一致</span>` +
         `<table style="margin-top:8px"><thead><tr><th>货主</th><th>SKU</th><th>库位</th><th>账面余额</th><th>流水累加</th><th>问题</th></tr></thead><tbody>` +
         r.mismatches.map((m) =>
-          `<tr><td>${esc(m.owner_code)}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>` +
+          `<tr><td>${esc(m.owner_name || "—")}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>` +
           `<td>${m.book_qty}</td><td>${m.movement_sum}</td><td>${esc(m.issue)}</td></tr>`).join("") +
         `</tbody></table>`;
     }
@@ -171,7 +179,15 @@ async function doReconcile() {
   }
 }
 
-loadFilters().then(() => { loadStock(); loadMovements(); });
+function searchInventory() {
+  stockPage = 1;
+  loadStock();
+  loadMovements();
+}
+filters.addEventListener("submit", e => { e.preventDefault(); searchInventory(); });
+filters.addEventListener("reset", () => setTimeout(searchInventory));
+loadFilters().then(searchInventory).catch(e =>
+  showMsg(document.getElementById("msg"), "加载筛选失败：" + e.message, "error"));
 </script>
 </body>
 </html>

@@ -9,6 +9,14 @@
 - Flask（唯一第三方依赖，见 `requirements.txt`）
 - SQLite（单文件数据库，零配置）
 
+## 在 GitHub 上试用
+
+1. 在 GitHub 仓库选择 **Code → Codespaces → Create codespace on master**。
+2. 等初始化完成，在 Codespace 的 **Ports（端口）** 面板打开 **MiniWMS 工作台（5100）**。使用演示管理员 `admin / admin123` 登录。
+3. 将当前仓库切为 **上架规则测试仓（DEMO-PA-WH）**，在「上架作业」搜索 `DEMO-PA-`。打开 `DEMO-PA-01`，切换两个验收批次，可对比同批号货位和同巷道空位的推荐。
+
+每个 Codespace 使用自己的 SQLite 演示库，适合练习收货、验收、上架、出库和查库存。保持端口可见性为 **Private**。如果端口未自动打开，在终端运行 `python main.py`，再打开 5100 端口。已有 Codespace 更新代码后，可用 **Codespaces: Rebuild Container** 应用配置。
+
 ## 快速开始（本地 demo）
 
 ```bash
@@ -18,17 +26,15 @@ python main.py            # 监听 0.0.0.0:5100，数据库文件 ./miniwms.db
 # 可选：MINIWMS_ALLOW_ANONYMOUS=0 关闭匿名演示模式，强制登录后才能调用 API
 ```
 
-浏览器打开 `http://localhost:5100` 即可使用 Web demo：导航栏可进入
-货主/物料/库位/收货/出库/移库/库存等多个管理页，创建、搜索、启停、删除与
-收货/上架/拣货/发货/移库/账目核对均直接调用后端 API。
-也可打开 `http://localhost:5100/app.html` 进入**工作台**：左侧为**多层内嵌导航**（5 个一级域 / 11 个二级分类 / 38 个页面；默认只展开当前页所在分支，其余折叠，手动展开状态记忆在 localStorage），菜单区可独立上下滚动，顶部「收起导航 / 展开导航」按钮可伸缩侧栏（状态同样记忆）+
-多标签页，多个页面在同一窗口并存（工作台自身不会被嵌套进标签）。验收、上架各有独立作业页，可同时打开多张收货单的标签。
+浏览器打开 `http://localhost:5100` 即进入工作台，登录后也会进入同一工作台。
+点击左侧菜单可同时打开收货、验收、上架、库存等页面。通过顶部标签或「已打开 N 页」切换，
+点击标签上的 × 关闭。切换会保留已打开页面的当前状态。刷新工作台会恢复标签列表和当前标签，页面内容会重新加载。
 前端为零依赖原生 HTML/JS/CSS（`web_app/` 目录，由 Flask 静态托管）。
 
 想直接体验完整流程，可先灌一套演示数据再启动：
 
 ```bash
-python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/8 库位/4 客户 + 收货上架→拣货发货全链路
+python tools/seed_demo.py --reset   # 写入 3 货主/8 物料/9 库位/4 客户 + 收货上架→拣货发货全链路
 python tools/seed_module_demo.py    # 再补 M17–M26 / M28 / M31 / M32 / M33 / M34 / M35–M41 各模块可查数据（幂等、走真实 API，不覆盖现有数据）
 python tools/seed_initial_data.py   # 再补「角色 + 账号 + 基础主数据」初始集（7 岗位角色 / 7 演示账号 / 2 货主 / 2 仓库 / 5 储区 / 12 库位 / 10 货品 / 5 客户 / 4 供应商 / 3 司机 / 3 车辆）
 python main.py                      # 浏览器打开 http://localhost:5100 即可操作

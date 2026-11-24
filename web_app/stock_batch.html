@@ -33,38 +33,37 @@
           <h2>批次级库存余额</h2>
           <div>
             <button class="btn secondary" onclick="reconcile()">账目核对</button>
-            <button class="btn secondary" onclick="load()">查询</button>
           </div>
         </div>
-        <p class="hint">
-          汇总层 <b>stock</b> 仍按「货主 × 物料 × 库位」一行；这里展示明细层 <b>stock_batch</b>，
-          按批号 / 指定客户 / 货品属性 / 质量状态再细分。<b>指定客户</b>有值时该批库存只能发给该客户，
-          与通用库存永不合并；换客户 / 解绑须走 M24 库存转移单留痕。
-          三条不变式：I1 主账＝流水累加、I2 批次明细＝批次流水累加、I3 主账＝批次明细累加；
-          <b>任何不一致都不豁免</b>。
-        </p>
         <div id="reconcileBox" class="chk"></div>
-        <div class="toolbar">
-          <input id="batchNo" placeholder="批号（如 BAT-20261106-001）">
-          <select id="hasStock">
+        <form class="toolbar inventory-filters" id="batchFilters">
+          <label>货主 <select id="batchOwner" name="owner_id"></select></label>
+          <label>物料 <input id="batchProduct" name="product_keyword" placeholder="名称 / SKU / 货号 / 条码"></label>
+          <label>货位 <select id="batchLocation" name="location_id"></select></label>
+          <label>批号 <input id="batchNo" name="batch_no" placeholder="批次号 / 厂家批号 / 内部批次号"></label>
+          <select id="hasStock" name="has_stock" aria-label="库存范围">
             <option value="">全部明细</option>
             <option value="1">仅非零库存</option>
           </select>
-          <select id="customerFilter" style="min-width:170px"><option value="">全部客户归属</option></select>
-          <select id="statusFilter" style="min-width:120px">
+          <select id="customerFilter" name="designated_customer_id" aria-label="客户归属"><option value="">全部客户归属</option></select>
+          <select id="statusFilter" name="stock_status" aria-label="质量状态">
             <option value="">全部质量状态</option>
             <option value="非限制">非限制</option>
             <option value="质检">质检</option>
             <option value="冻结">冻结</option>
           </select>
-          <input id="goodsProperty" placeholder="货品属性" style="width:110px">
-        </div>
-        <div class="table-wrap">
+          <label>批次字段 <select id="batchFieldFilter" name="batch_field"><option value="">选择字段</option></select></label>
+          <input name="batch_value" aria-label="批次字段值" placeholder="输入字段值">
+          <button class="btn" type="submit">查询</button>
+          <button class="btn secondary" type="reset">清空</button>
+        </form>
+        <div class="inventory-linked-filter text-sm muted" id="linkedProductFilter" hidden></div>
+        <div class="table-wrap inventory-grid">
           <table>
             <thead><tr>
-              <th>ID</th><th>批号</th><th>物料</th><th>库位</th><th>货主</th>
-              <th>在手</th><th>已分配</th><th>可用</th><th>失效日期</th>
-              <th>货品属性</th><th>质量状态</th><th>指定客户</th>
+              <th class="inventory-anchor">物料</th><th>货主</th><th>规格</th><th>单位</th><th>货位</th>
+              <th>批次号</th><th>在手</th><th>已分配</th><th>可用</th>
+              <th>质量状态</th><th>指定客户</th><th>原内部批次号</th><th>入库单</th>
             </tr></thead>
             <tbody id="tbody"></tbody>
           </table>
@@ -81,8 +80,22 @@
 
 <script src="/js/api.js"></script>
 <script src="/js/layout.js"></script>
+<script src="/js/batch_details.js"></script>
+<script src="/js/inventory_filters.js"></script>
 <script>
-let page = 1, pageSize = 20, customerMap = {};
+let page = 1, pageSize = 30, customerMap = {}, stockFields = [];
+const filterForm = document.getElementById("batchFilters");
+const initialParams = new URLSearchParams(location.search);
+let linkedProduct = initialParams.get("product_id");
+const linkedNotice = document.getElementById("linkedProductFilter");
+if (linkedProduct) {
+  linkedNotice.hidden = false;
+  linkedNotice.textContent = "当前按所选库存行的物料查询。输入其他物料或清空可解除关联筛选。";
+}
+document.getElementById("batchOwner").dataset.initial = initialParams.get("owner_id") || "";
+document.getElementById("batchLocation").dataset.initial = initialParams.get("location_id") || "";
+document.getElementById("batchProduct").value = initialParams.get("product_keyword") || "";
+document.getElementById("hasStock").value = initialParams.get("has_stock") || "";
 
 function customerName(id) {
   const c = customerMap[id];
@@ -113,31 +126,25 @@ async function loadCustomers() {
 }
 
 async function load() {
-  const qs = new URLSearchParams({ page, page_size: pageSize });
-  const bno = document.getElementById("batchNo").value.trim();
-  const has = document.getElementById("hasStock").value;
-  const cust = document.getElementById("customerFilter").value;
-  const st = document.getElementById("statusFilter").value;
-  const prop = document.getElementById("goodsProperty").value.trim();
-  if (bno) qs.set("batch_no", bno);
-  if (has) qs.set("has_stock", has);
-  if (cust) qs.set("designated_customer_id", cust);
-  if (st) qs.set("stock_status", st);
-  if (prop) qs.set("goods_property", prop);
+  const qs = inventoryFilterParams(filterForm);
+  if (linkedProduct) qs.set("product_id", linkedProduct);
+  qs.set("page", page);
+  qs.set("page_size", pageSize);
   try {
     const d = await api("GET", "/api/stock/batch?" + qs);
     document.getElementById("tbody").innerHTML = d.stock_batches.map((r) =>
       `<tr>
-        <td>${r.id}</td><td>${esc(r.batch_no)}</td>
-        <td>${esc(r.sku)} · ${esc(r.product_name)}</td>
+        <td class="inventory-anchor"><b>${esc(r.product_name)}</b><div class="muted">${esc(r.sku)}</div></td>
+        <td>${esc(r.owner_name)}</td><td>${esc(r.spec || "—")}</td><td>${esc(r.unit || "—")}</td>
         <td>${esc(r.location_code)} · ${esc(r.location_name)}</td>
-        <td>${esc(r.owner_code)}</td>
+        <td>${esc(r.batch_no || "—")}</td>
         <td>${r.qty}</td><td>${r.allocated_qty}</td><td>${r.available_qty}</td>
-        <td>${esc(r.expiry_date || "—")}</td>
-        <td>${esc(r.goods_property || "—")}</td>
         <td>${statusCell(r.stock_status)}</td>
         <td>${reservedPill(r.designated_customer_id)}</td>
-      </tr>`).join("") || `<tr><td colspan="12" class="muted">暂无批次库存明细</td></tr>`;
+        <td>${esc(r.external_batch_no || "—")}</td>
+        <td>${r.asn_id ? "#" + r.asn_id : "—"}</td>
+        ${stockFields.map(field => `<td>${esc(r.batch_info[field.name] || "—")}</td>`).join("")}
+      </tr>`).join("") || `<tr><td colspan="${13 + stockFields.length}" class="muted">暂无批次库存明细</td></tr>`;
     document.getElementById("pageInfo").textContent = `第 ${d.page} 页 / 共 ${d.total} 条`;
     document.getElementById("prevBtn").disabled = page <= 1;
     document.getElementById("nextBtn").disabled = page * pageSize >= d.total;
@@ -173,7 +180,36 @@ async function reconcile() {
 }
 
 function turn(d) { page += d; load(); }
-loadCustomers().then(load);
+document.getElementById("tbody").addEventListener("click", e => {
+  if (e.target.closest("td")) e.target.closest("tr").classList.toggle("inventory-marked");
+});
+filterForm.addEventListener("submit", e => {
+  e.preventDefault();
+  if (document.getElementById("batchProduct").value.trim()) { linkedProduct = null; linkedNotice.hidden = true; }
+  page = 1;
+  load();
+});
+filterForm.addEventListener("reset", () => setTimeout(() => {
+  linkedProduct = null;
+  linkedNotice.hidden = true;
+  page = 1;
+  load();
+}));
+Promise.all([
+  loadBatchFields(),
+  fillInventorySelect("batchOwner", "owners", "全部货主", o => o.name),
+  fillInventorySelect("batchLocation", "locations", "全部货位", l => l.code),
+  loadCustomers(),
+]).then(([fields]) => {
+  stockFields = fields;
+  for (const field of fields) {
+    const th = document.createElement("th");
+    th.textContent = field.label;
+    document.querySelector(".inventory-grid thead tr").appendChild(th);
+    document.getElementById("batchFieldFilter").add(new Option(field.label, field.name));
+  }
+  load();
+}).catch(e => showMsg(document.getElementById("msg"), "加载筛选失败：" + e.message, "error"));
 </script>
 </body>
 </html>

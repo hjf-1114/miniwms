@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>库存转移单 - MiniWMS</title>
+<title>批次调整 - MiniWMS</title>
 <link rel="stylesheet" href="/css/style.css">
 <style>
 .hint { font-size: 13px; line-height: 1.7; color: var(--text-muted, #666); margin: 0 0 12px; }
@@ -26,7 +26,7 @@
   <aside class="sidebar" id="sidebar"></aside>
   <div class="main">
     <header class="topbar">
-      <div><h1>库存转移单</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯</div></div>
+      <div><h1>批次调整</h1><div class="crumb">MiniWMS / 仓储作业 / 库存与追溯</div></div>
       <span class="env-badge">本地演示 · :5100</span>
     </header>
     <div class="content">
@@ -134,7 +134,7 @@
               <thead><tr>
                 <th style="min-width:260px">源批次明细</th><th>数量</th>
                 <th>目标专属客户</th><th>目标货品属性</th><th>目标库存状态</th>
-                <th>目标批号</th><th>目标效期</th><th></th>
+                <th>目标批次号</th><th>目标效期</th><th>其他批次字段</th><th></th>
               </tr></thead>
               <tbody id="allocBody"></tbody>
             </table>
@@ -144,7 +144,7 @@
           </div>
         </div>
 
-        <h3 style="margin-top:16px">转移明细</h3>
+        <h3 style="margin-top:16px">调整明细</h3>
         <div class="table-wrap">
           <table>
             <thead><tr>
@@ -173,6 +173,7 @@
 <script src="/js/api.js"></script>
 <script src="/js/modal.js"></script>
 <script src="/js/layout.js"></script>
+<script src="/js/batch_details.js"></script>
 <script>
 const TYPE = {
   batch_correct: "批次属性补正", quality_change: "质量状态变更", batch_split: "维度拆分",
@@ -184,12 +185,13 @@ const TAG = { draft: "待分配", allocated: "已分配", approved: "已生效",
 const DIM_LABEL = {
   designated_customer_id: "专属客户", goods_property: "货品属性",
   stock_status: "库存状态", batch_no: "批号", batch_key: "批次指纹",
-  internal_batch_no: "内部批次号", expiry_date: "效期", production_date: "生产日期",
+  internal_batch_no: "内部批次号", expiry_date: "效期", production_date: "生产日期", manufacturer_batch_no: "厂家批号",
 };
 let current = null;
 let batches = [];
 let customers = [];
 let suggestion = null;
+let adjustmentFields = [];
 
 function toggleForm(on) {
   document.getElementById("formCard").style.display = on ? "" : "none";
@@ -197,12 +199,17 @@ function toggleForm(on) {
 
 async function loadOptions() {
   try {
-    const [b, c] = await Promise.all([
+    const [b, c, fields] = await Promise.all([
       api("GET", "/api/stock/batch?has_stock=1&page_size=100"),
       api("GET", "/api/customers?page_size=100"),
+      loadBatchFields(),
     ]);
     batches = b.stock_batches || [];
     customers = c.customers || [];
+    adjustmentFields = fields.filter(f => !["goods_property", "expiry_date"].includes(f.name));
+    for (const f of adjustmentFields) {
+      if (!(f.name in DIM_LABEL)) DIM_LABEL[f.name] = f.label;
+    }
   } catch (e) {
     showMsg(document.getElementById("msg"), "基础数据加载失败：" + e.message, "error");
   }
@@ -227,7 +234,7 @@ async function load() {
         <td>${d.line_count}</td><td>${d.total_qty}</td>
         <td class="muted">${esc(d.created_at)}</td>
         <td><button class="btn secondary sm" onclick="showDetail(${d.id})">明细</button></td>
-      </tr>`).join("") || `<tr><td colspan="9" class="muted">暂无库存转移单</td></tr>`;
+      </tr>`).join("") || `<tr><td colspan="9" class="muted">暂无批次调整单</td></tr>`;
   } catch (e) {
     showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
   }
@@ -351,6 +358,11 @@ function addAllocLine(prefill) {
       <option value="质检">质检</option><option value="冻结">冻结</option></select></td>
     <td><input class="a-batch" placeholder="留空=不变"></td>
     <td><input class="a-expiry" placeholder="YYYY-MM-DD"></td>
+    <td><details><summary>编辑批次字段</summary><div class="batch-field-grid">
+      ${adjustmentFields.map(f => `<div><label>${esc(f.label)}
+        <input type="${f.input_type === "date" ? "date" : "text"}" data-adjust-field="${esc(f.name)}" placeholder="留空保持不变">
+        </label><label><input type="checkbox" data-clear-field="${esc(f.name)}">清空</label></div>`).join("")}
+    </div></details></td>
     <td><button class="btn secondary sm" onclick="this.closest('tr').remove()">删</button></td>`;
   document.getElementById("allocBody").appendChild(tr);
 }
@@ -386,6 +398,13 @@ async function submitAllocate() {
     put(".a-status", "to_stock_status");
     put(".a-batch", "to_batch_no");
     put(".a-expiry", "to_expiry_date");
+    const changes = {};
+    for (const input of tr.querySelectorAll("[data-adjust-field]")) {
+      const field = input.dataset.adjustField;
+      const clear = tr.querySelector(`[data-clear-field="${field}"]`).checked;
+      if (clear || input.value.trim()) changes[field] = clear ? "" : input.value.trim();
+    }
+    if (Object.keys(changes).length) line.batch_info = changes;
     lines.push(line);
   }
   if (!lines.length) {

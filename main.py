@@ -13,7 +13,7 @@ import json
 import os
 import sqlite3
 
-from flask import Flask, g, jsonify, request
+from flask import Flask, g, jsonify, redirect, request
 
 import constants as C
 import scope as S
@@ -60,8 +60,8 @@ app = Flask(__name__, static_folder="web_app", static_url_path="")
 
 @app.route("/")
 def index():
-    """首页：前端 demo 导航页（web_app/index.html）。"""
-    return app.send_static_file("index.html")
+    """从首页进入多标签工作台。"""
+    return redirect("/app.html")
 
 
 def _connect(path):
@@ -597,6 +597,58 @@ def _ensure_columns(conn, table, additions):
     for name, decl in additions:
         if name not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+def _migrate_asn_counts(conn):
+    """解除点收与货位的绑定，保留历史记录 ID 和验收外键。"""
+    columns = {row[1]: row for row in conn.execute("PRAGMA table_info(asn_receiving_count)")}
+    if columns["location_id"][3]:
+        conn.executescript("""
+            BEGIN IMMEDIATE;
+            CREATE TABLE asn_receiving_count_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asn_line_id INTEGER NOT NULL REFERENCES asn_line(id) ON DELETE CASCADE,
+                location_id INTEGER REFERENCES location(id) ON DELETE SET NULL,
+                qty REAL NOT NULL CHECK (qty > 0),
+                accepted_qty REAL NOT NULL DEFAULT 0,
+                cancelled_qty REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            INSERT INTO asn_receiving_count_new
+                (id, asn_line_id, location_id, qty, accepted_qty, created_at)
+            SELECT id, asn_line_id, location_id, qty, accepted_qty, created_at
+                FROM asn_receiving_count;
+            DROP TABLE asn_receiving_count;
+            ALTER TABLE asn_receiving_count_new RENAME TO asn_receiving_count;
+            CREATE INDEX idx_asn_receiving_count_line ON asn_receiving_count(asn_line_id);
+            COMMIT;
+        """)
+    _ensure_columns(conn, "asn_receiving_count", (
+        ("cancelled_qty", "REAL NOT NULL DEFAULT 0"),
+        ("operator", "TEXT NOT NULL DEFAULT ''"),
+    ))
+    if "cancelled_qty" not in {row[1] for row in conn.execute("PRAGMA table_info(asn_line)")}:
+        conn.execute("ALTER TABLE asn_line ADD COLUMN cancelled_qty REAL NOT NULL DEFAULT 0")
+        conn.execute("""
+            UPDATE asn_line SET cancelled_qty = MAX(0, expected_qty - received_qty)
+            WHERE asn_id IN (SELECT id FROM asn WHERE status = ?)
+        """, (C.ASN_CANCELLED,))
+    _ensure_columns(conn, "batch_location", (
+        ("receipt_id", "INTEGER REFERENCES batch_receipt(id) ON DELETE SET NULL"),
+        ("operator", "TEXT NOT NULL DEFAULT ''"),
+        ("override_reason", "TEXT NOT NULL DEFAULT ''"),
+    ))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS asn_cancellation (
+            id INTEGER PRIMARY KEY,
+            asn_line_id INTEGER NOT NULL REFERENCES asn_line(id) ON DELETE CASCADE,
+            action TEXT NOT NULL,
+            qty REAL NOT NULL,
+            operator TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_asn_cancellation_line ON asn_cancellation(asn_line_id)")
 
 
 def _migrate_m22(conn):
@@ -2059,6 +2111,17 @@ def init_db(path=None):
             );
             CREATE INDEX IF NOT EXISTS idx_batch_owner   ON batch(owner_id);
             CREATE INDEX IF NOT EXISTS idx_batch_product ON batch(product_id);
+            CREATE TABLE IF NOT EXISTS asn_receiving_count (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asn_line_id INTEGER NOT NULL REFERENCES asn_line(id) ON DELETE CASCADE,
+                location_id INTEGER REFERENCES location(id) ON DELETE SET NULL,
+                qty REAL NOT NULL CHECK (qty > 0),
+                accepted_qty REAL NOT NULL DEFAULT 0,
+                cancelled_qty REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_asn_receiving_count_line
+                ON asn_receiving_count(asn_line_id);
             CREATE TABLE IF NOT EXISTS batch_receipt (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
                 batch_no          TEXT    NOT NULL UNIQUE,
@@ -2087,6 +2150,11 @@ def init_db(path=None):
         )
         # 批次字段配置播种（幂等，不覆盖用户已改的配置）
         from batch_fields import seed_batch_config  # noqa: E402
+        _ensure_columns(conn, "batch_receipt", (
+            ("receiving_count_id", "INTEGER REFERENCES asn_receiving_count(id) ON DELETE SET NULL"),
+            ("operator", "TEXT NOT NULL DEFAULT ''"),
+            ("stock_status", "TEXT NOT NULL DEFAULT ''"),
+        ))
         seed_batch_config(conn)
         # 用户与角色（M9 基础：后续功能通过 require_permission 联动）
         conn.executescript(
@@ -2167,6 +2235,21 @@ def init_db(path=None):
         _migrate_m33(conn)
         _migrate_m34(conn)
         _migrate_abc(conn)
+        _migrate_asn_counts(conn)
+        conn.execute("""
+            UPDATE asn SET status = ?
+            WHERE status = ? AND EXISTS (
+                SELECT 1 FROM asn_line
+                WHERE asn_line.asn_id = asn.id AND received_qty - putaway_qty > 1e-9
+            )
+        """, (C.ASN_PUTAWAY, C.ASN_CLOSED))
+        _ensure_columns(conn, "putaway_recommendation", (
+            ("receipt_barcode", "TEXT NOT NULL DEFAULT ''"),
+        ))
+        _ensure_columns(conn, "inventory_transfer_line", (
+            ("from_batch_info", "TEXT NOT NULL DEFAULT ''"),
+            ("to_batch_info", "TEXT NOT NULL DEFAULT ''"),
+        ))
         _seed_zones(conn)
         PR.seed_rules(conn)
         _seed_auth(conn)

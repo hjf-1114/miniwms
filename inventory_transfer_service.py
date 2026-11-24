@@ -19,7 +19,12 @@
 所有库存写入都经 ``inventory_service.adjust_stock()``，本模块不直写 ``stock_batch``
 或 ``stock_movement``；调用方负责 ``BEGIN IMMEDIATE`` 事务。
 """
+import hashlib
+import json
+
 import constants as C
+from batch_fields import FIELD_NAMES
+from batch_service import inventory_batch_info, save_adjusted_batch
 from inventory_service import EPS, adjust_stock
 from main import gen_doc_no
 from reservation_rules import can_change_goods_property, stock_status_allowed
@@ -31,7 +36,7 @@ DIM_FIELDS = (
     "goods_property", "stock_status", "expiry_date", "production_date",
 )
 LINE_COLUMNS = ("owner_id", "product_id", "location_id", "stock_batch_id",
-                "qty", "qty_before", "qty_after", "allocated") \
+                "qty", "qty_before", "qty_after", "allocated", "from_batch_info", "to_batch_info") \
     + tuple("from_" + f for f in DIM_FIELDS) \
     + tuple("to_" + f for f in DIM_FIELDS)
 
@@ -198,6 +203,31 @@ def _validate_line(db, raw, index, special_approval):
             value = _s(value).strip()
         to_dim[f] = value
 
+    original_info = changed_info = None
+    changes = raw.get("batch_info")
+    if changes is not None and (not isinstance(changes, dict) or set(changes) - set(FIELD_NAMES)):
+        raise TransferError(f"lines[{index}] 含无效批次字段")
+    snapshot_dims = ("internal_batch_no", "expiry_date", "production_date", "goods_property")
+    barcode_change = to_dim["batch_no"] != from_dim["batch_no"] and "to_batch_key" not in raw
+    keyed_change = barcode_change or any(to_dim[f] != from_dim[f] for f in snapshot_dims[:-1])
+    if changes or (keyed_change and "to_batch_key" not in raw):
+        original_info = inventory_batch_info(db, owner_id, src["product_id"], from_dim)
+        changed_info = dict(original_info)
+        for field in snapshot_dims:
+            if "to_" + field in raw:
+                changed_info[field] = to_dim[field]
+        for field, value in (changes or {}).items():
+            updated = _s(value).strip()
+            changed_info[field] = updated
+            if field in snapshot_dims:
+                to_dim[field] = updated
+        if changed_info != original_info or barcode_change:
+            encoded = json.dumps([owner_id, src["product_id"], changed_info], sort_keys=True,
+                                 ensure_ascii=False, separators=(",", ":"))
+            to_dim["batch_key"] = hashlib.sha256(("batch-adjustment:" + encoded).encode()).hexdigest()
+        else:
+            original_info = changed_info = None
+
     if _dim_key(from_dim) == _dim_key(to_dim):
         raise TransferError(f"lines[{index}] 目标维度与源维度完全相同，无需转移")
 
@@ -226,6 +256,8 @@ def _validate_line(db, raw, index, special_approval):
         "location_id": location_id, "stock_batch_id": int(src["id"]),
         "qty": qty, "qty_before": float(src["qty"]), "qty_after": 0.0,
         "allocated": 1,
+        "from_batch_info": json.dumps(original_info, ensure_ascii=False) if original_info else "",
+        "to_batch_info": json.dumps(changed_info, ensure_ascii=False) if changed_info else "",
     }
     for f in DIM_FIELDS:
         line["from_" + f] = from_dim[f]
@@ -338,6 +370,13 @@ def approve(db, transfer_id, approver=""):
     for l in lines:
         qty = float(l["qty"])
         from_dim, to_dim = _line_dim(l, "from"), _line_dim(l, "to")
+        metadata_changes = {}
+        if l["to_batch_info"]:
+            new_info = json.loads(l["to_batch_info"])
+            old_info = json.loads(l["from_batch_info"])
+            save_adjusted_batch(db, l["owner_id"], l["product_id"], to_dim["batch_key"], new_info)
+            metadata_changes = {f: (old_info[f], new_info[f])
+                                for f in FIELD_NAMES if f not in DIM_FIELDS}
         adjust_stock(
             db, l["owner_id"], l["product_id"], l["location_id"], 0,
             C.MOVEMENT_IT_TRANSFER, transfer_id,
@@ -350,8 +389,12 @@ def approve(db, transfer_id, approver=""):
             "UPDATE inventory_transfer_line SET qty_after = ? WHERE id = ?",
             (_batch_qty(db, l, from_dim), l["id"]),
         )
-        for f in DIM_FIELDS:
-            old, new = from_dim[f], to_dim[f]
+        changes = {f: (from_dim[f], to_dim[f]) for f in DIM_FIELDS}
+        changes.update(metadata_changes)
+        # 厂家批号是快照字段，和库存的验收条码维度分别留痕。
+        if l["to_batch_info"]:
+            changes["manufacturer_batch_no"] = (old_info["batch_no"], new_info["batch_no"])
+        for f, (old, new) in changes.items():
             if _s(old) == _s(new):
                 continue
             db.execute(

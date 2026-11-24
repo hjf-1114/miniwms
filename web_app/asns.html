@@ -16,11 +16,11 @@
     </header>
     <div class="content">
       <div id="msg" class="msg"></div>
-  <div class="card">
+  <div class="card" id="asnListCard">
     <div class="card-head">
-      <h2>收货单列表</h2>
-      <div class="flex">
-        <button class="btn secondary" onclick="if(window.parent!==window&&window.parent.openTab){window.parent.openTab('批次管理','/batches.html');}else{location.href='/batches.html';}">批次管理</button>
+      <h2>入库单列表</h2>
+      <div class="inbound-actions">
+        <button class="btn secondary" onclick="openWorkTab('批次','/batches.html')">批次管理</button>
         <button class="btn" onclick="openCreate()">+ 新建收货单</button>
       </div>
     </div>
@@ -30,43 +30,67 @@
         <option value="">全部状态</option>
         <option value="open">待收货</option>
         <option value="receiving">收货中</option>
-        <option value="putaway">上架中</option>
+        <option value="putaway">待上架 / 上架中</option>
         <option value="closed">已完成</option>
         <option value="cancelled">已取消</option>
       </select>
       <button class="btn secondary" onclick="load()">查询</button>
     </div>
-      <div class="table-wrap">
+      <div class="table-wrap inventory-grid" tabindex="0" role="region" aria-label="入库单列表，可横向滚动">
       <table>
-      <thead><tr><th>ID</th><th>单号</th><th>单据类型</th><th>货主</th><th>来源仓库</th><th>供应商</th><th>总数量</th><th>品类数</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <thead><tr><th class="inventory-anchor">单号</th><th>单据状态</th><th>收货进度</th><th>验收进度</th><th>上架进度</th>
+        <th>订单总量</th><th title="累计点收量包含后来取消的点收数量">收货总量</th><th>验收总量</th><th>上架总量</th><th>待上架</th><th>取消总量</th>
+        <th>客户</th><th>货主</th><th>入库仓库</th><th>供应商</th><th>单据类型</th><th>品类数</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
   </div>
 
   <div class="card" id="detailCard" style="display:none">
-    <h2 id="detailTitle">收货单明细</h2>
-    <div class="toolbar">
-      <span class="text-sm muted">验收 / 上架在独立作业页完成，可同时打开多张单据的标签页。</span>
-      <button class="btn secondary" onclick="openReceiveTab()">打开验收作业</button>
-      <button class="btn secondary" onclick="openPutawayTab()">打开上架作业</button>
-      <button class="btn secondary" onclick="refreshDetail()">刷新明细</button>
+    <div class="card-head">
+      <h2 id="detailTitle">入库单明细</h2>
+      <div class="inbound-actions">
+        <button class="btn" id="detailReceive" onclick="openReceiveTab()">去验收</button>
+        <button class="btn secondary" id="detailPutaway" onclick="openPutawayTab()">去上架</button>
+        <button class="btn secondary" onclick="refreshDetail()">刷新</button>
+        <button class="btn secondary" onclick="showWorkHistory()">作业明细</button>
+        <details class="inbound-more" id="detailFinish">
+          <summary class="btn secondary">更多</summary>
+          <button class="btn danger sm" onclick="finishAsn(currentAsn.asn.id)">完结入库单</button>
+        </details>
+      </div>
     </div>
     <div class="table-wrap">
       <table><tbody id="asnMeta"></tbody></table>
     </div>
-    <div class="table-wrap mt12">
+    <div class="table-wrap mt12 inbound-detail-grid">
       <table>
       <thead><tr>
         <th>行</th><th>货品名称</th><th>规格</th><th>货号</th><th>数量</th><th>单位</th>
         <th>厂家</th><th>批号</th><th>生产日期</th><th>失效日期</th>
         <th>注册证号</th><th>注册人/备案人</th><th>生产许可证</th>
-        <th>已收</th><th>已上架</th><th>验收</th><th>上架</th>
+        <th>待点收</th><th>已点收</th><th>待验收</th><th>已验收</th><th>已上架</th><th>取消数量</th><th>可入库</th><th class="inbound-line-actions">操作</th>
       </tr></thead>
       <tbody id="lineBody"></tbody>
     </table>
     </div>
   </div>
+  <dialog id="workHistory" class="inbound-history" aria-labelledby="workHistoryTitle">
+    <div class="card-head">
+      <h2 id="workHistoryTitle">作业明细</h2>
+      <form method="dialog"><button class="btn secondary sm">关闭</button></form>
+    </div>
+    <div class="toolbar">
+      <label>作业环节 <select id="workHistoryStage">
+        <option value="">全部</option>
+        <option value="0">收货点收</option>
+        <option value="1">验收入库</option>
+        <option value="2">上架</option>
+        <option value="3">取消</option>
+      </select></label>
+    </div>
+    <div id="workHistoryBody"></div>
+  </dialog>
 </div>
       </div>
     </div>
@@ -74,10 +98,12 @@
     <script src="/js/api.js"></script>
     <script src="/js/modal.js"></script>
     <script src="/js/layout.js"></script>
+    <script src="/js/batch_details.js"></script>
+    <script src="/js/asn_filters.js"></script>
 <script>
 let currentAsn = null;
 let ownerOptions = [], productOptions = [], allSupplierOptions = [];
-let allCustomerOptions = [], warehouseOptions = [];
+let allCustomerOptions = [];
 let productMap = {}, supplierMap = {}, customerMap = {};
 let asnList = [];
 let modalEl = null;
@@ -110,39 +136,36 @@ const BATCH_FIELDS = [
   { name: "patient_name", label: "患者名称" },
 ];
 
-async function loadOptions() {
-  let [ow, pr, sp, cu, wh] = await Promise.all([
-    api("GET", "/api/owners?page_size=100"),
-    api("GET", "/api/products?page_size=100"),
-    api("GET", "/api/suppliers?page_size=100"),
-    api("GET", "/api/customers?page_size=100"),
-    api("GET", "/api/warehouses?page_size=100"),
-  ]);
-  // 仓库默认没有内容时，自动播种一个默认仓库，保证表单可直接选
-  if (!wh.warehouses.length) {
-    try {
-      await api("POST", "/api/warehouses", { code: "WH-DEFAULT", name: "默认仓库" });
-      wh = await api("GET", "/api/warehouses?page_size=100");
-    } catch (e) { /* 无权限时由表单提示手动创建 */ }
+async function fetchOptions(resource) {
+  const rows = [];
+  for (let page = 1; ; page++) {
+    const data = await api("GET", `/api/${resource}?page_size=100&page=${page}`);
+    rows.push(...data[resource]);
+    if (rows.length >= data.total || !data[resource].length) return rows;
   }
-  ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+}
+
+async function loadOptions() {
+  const [owners, products, suppliers, customers] = await Promise.all(
+    ["owners", "products", "suppliers", "customers"].map(fetchOptions)
+  );
+  ownerOptions = owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
   const ownerCode = (id) => {
     const o = ownerOptions.find((x) => String(x.value) === String(id));
     return o ? o.label.split(" · ")[0] : "—";
   };
-  allSupplierOptions = sp.suppliers.map((s) => ({
+  allSupplierOptions = suppliers.map((s) => ({
     value: s.id, label: `${s.code} · ${s.name}〔${ownerCode(s.owner_id)}〕`, owner_id: s.owner_id,
   }));
-  supplierMap = Object.fromEntries(sp.suppliers.map((s) => [s.id, s]));
-  allCustomerOptions = cu.customers.map((c) => ({
+  supplierMap = Object.fromEntries(suppliers.map((s) => [s.id, s]));
+  allCustomerOptions = customers.map((c) => ({
     value: c.id, label: `${c.code} · ${c.name}〔${ownerCode(c.owner_id)}〕`, owner_id: c.owner_id,
   }));
-  customerMap = Object.fromEntries(cu.customers.map((c) => [c.id, c]));
-  warehouseOptions = wh.warehouses.map((w) => ({ value: w.id, label: `${w.code} · ${w.name}` }));
-  productOptions = pr.products.map((p) => ({
+  customerMap = Object.fromEntries(customers.map((c) => [c.id, c]));
+  productOptions = products.map((p) => ({
     value: p.id, label: `${p.sku} · ${p.name}〔${ownerCode(p.owner_id)}〕`, owner_id: p.owner_id,
   }));
-  productMap = Object.fromEntries(pr.products.map((p) => [p.id, p]));
+  productMap = Object.fromEntries(products.map((p) => [p.id, p]));
 }
 
 function productData() {
@@ -161,15 +184,14 @@ function productData() {
   return out;
 }
 
-/** 联动：把符合当前货主的选项排前并打 ✓，但保留全部选项（选错要能报错）。 */
-function reorderScoped(sel, opts, oid) {
+function filterOwnerOptions(sel, opts, oid) {
   if (!sel) return;
   const cur = sel.value;
-  const match = (o) => oid && o.owner_id && String(o.owner_id) === String(oid);
-  const sorted = opts.slice().sort((a, b) => (match(a) ? 0 : 1) - (match(b) ? 0 : 1));
-  sel.innerHTML = `<option value="">请选择…</option>` + sorted.map((o) =>
-    `<option value="${esc(o.value)}"${String(o.value) === String(cur) ? " selected" : ""}>${esc(o.label)}${match(o) ? " ✓" : ""}</option>`
-  ).join("");
+  const allowed = opts.filter(o => oid && String(o.owner_id) === String(oid));
+  const label = oid ? (sel.name === "designated_customer_id" ? "通用库存" : "请选择…") : "请先选择委托方";
+  sel.replaceChildren(new Option(label, ""), ...allowed.map(o => new Option(o.label, o.value)));
+  sel.value = allowed.some(o => String(o.value) === cur) ? cur : "";
+  sel.disabled = !oid;
 }
 
 function validateLinesOwner(ov, oid) {
@@ -256,10 +278,29 @@ function bindLinkage(ov) {
 
   const sync = () => {
     const oid = ownerSel.value;
-    reorderScoped(supSel, allSupplierOptions, oid);
-    reorderScoped(cusSel, allCustomerOptions, oid);
-    ov.querySelectorAll('.line-row [name="product_id"]').forEach(
-      (sel) => reorderScoped(sel, productOptions, oid));
+    const previousSupplier = supSel.value;
+    const previousCustomer = cusSel.value;
+    filterOwnerOptions(supSel, allSupplierOptions, oid);
+    filterOwnerOptions(cusSel, allCustomerOptions, oid);
+    for (const [key, previous, selection] of [["supplier", previousSupplier, supSel], ["customer", previousCustomer, cusSel]]) {
+      if (!previous || selection.value) continue;
+      for (const suffix of ["name", "contact", "phone", "address"]) {
+        const field = ov.querySelector(`[name="${key}_${suffix}"]`);
+        if (field) field.value = "";
+      }
+    }
+    for (const row of ov.querySelectorAll(".line-row")) {
+      const select = row.querySelector('[name="product_id"]');
+      const previous = select.value;
+      filterOwnerOptions(select, productOptions, oid);
+      filterOwnerOptions(row.querySelector('[name="designated_customer_id"]'), allCustomerOptions, oid);
+      if (previous && !select.value) {
+        for (const f of [...SNAP_FIELDS, ...BATCH_FIELDS]) {
+          const field = row.querySelector(`[name="${f.name}"]`);
+          if (field) field.value = f.name === "goods_property" ? "合格" : "";
+        }
+      }
+    }
     validateScoped(ov);
   };
   ownerSel.addEventListener("change", sync);
@@ -327,30 +368,33 @@ async function load() {
     asnList = data.asns;
     document.getElementById("tbody").innerHTML = data.asns.map((a) =>
       `<tr>
-        <td>${a.id}</td><td>${esc(a.code)}</td>
+        <td class="inventory-anchor"><button class="btn secondary sm" onclick="openAsnDetail(${a.id})">${esc(a.code)}</button></td>
+        <td>${asnStatusTag(a.status, a.putaway_total_qty)}</td>
+        <td>${inboundStageTag(a.net_counted_qty, a.order_qty - a.cancelled_total_qty, ["未收货", "部分收货", "已收货"])}</td>
+        <td>${inboundStageTag(a.accepted_total_qty, a.order_qty - a.cancelled_total_qty, ["未验收", "部分验收", "已验收"])}</td>
+        <td>${inboundStageTag(a.putaway_total_qty, a.accepted_total_qty, ["未上架", "部分上架", "已上架"])}</td>
+        <td>${a.order_qty}</td><td>${a.counted_total_qty}</td><td>${a.accepted_total_qty}</td>
+        <td>${a.putaway_total_qty}</td><td>${a.pending_putaway_qty}</td><td>${a.cancelled_total_qty}</td>
+        <td>${esc(a.customer_display_name || "—")}${a.customer_phone ? `<div class="muted">${esc(a.customer_phone)}</div>` : ""}</td>
+        <td>${esc(a.owner_name || a.owner_code || "—")}</td>
+        <td>${esc(a.source_warehouse_name || a.source_warehouse_code || "—")}</td>
+        <td>${esc(a.supplier_display_name || "—")}</td>
         <td>${esc(a.doc_type || "")}</td>
-        <td>${esc(a.owner_code || "")} · ${esc(a.owner_name || "")}</td>
-        <td>${esc(a.source_warehouse_code || "-")}</td>
-        <td>${esc(a.supplier_name || "-")}</td>
-        <td>${a.total_qty ?? 0}</td>
         <td>${a.category_count ?? 0}</td>
-        <td>${asnStatusTag(a.status)}</td>
         <td class="muted">${esc(a.created_at)}</td>
-        <td>
+        <td class="muted">${esc(a.updated_at || "—")}</td>
+      <td><div class="inbound-actions">
           <button class="btn secondary sm" onclick="openAsnDetail(${a.id})">明细</button>
-          <button class="btn secondary sm" onclick="openWorkTab('打印收货单','/print_preview.html?node=receive&source=asn&doc_id=${a.id}')">打印</button>
-          ${a.status === "open" ? `<button class="btn danger sm" onclick="cancelAsn(${a.id})">取消</button>` : ""}
+          <details class="inbound-more"><summary class="btn secondary sm">更多</summary>
+            <button class="btn secondary sm" onclick="openWorkTab('打印收货单','/print_preview.html?node=receive&source=asn&doc_id=${a.id}')">打印</button>
+            ${["open", "receiving"].includes(a.status) ? `<button class="btn secondary sm" onclick="finishAsn(${a.id})">完结</button>` : ""}
+          </details>
+        </div>
         </td>
-      </tr>`).join("");
+      </tr>`).join("") || '<tr><td colspan="20" class="muted">暂无符合条件的入库单</td></tr>';
   } catch (e) {
     showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
   }
-}
-
-function asnStatusTag(s) {
-  const map = { open: "待收货", receiving: "收货中", putaway: "上架中", closed: "已完成", cancelled: "已取消" };
-  const cls = s === "closed" ? "ok" : "off";
-  return `<span class="tag ${cls}">${map[s] || s}</span>`;
 }
 
 async function showDetail(id) {
@@ -358,14 +402,14 @@ async function showDetail(id) {
   currentAsn = data;
   document.getElementById("detailCard").style.display = "";
   document.getElementById("detailTitle").textContent =
-    `收货单明细：${data.asn.code}（${data.asn.status}）`;
+    `入库单明细：${data.asn.code}（${asnStatusLabel(data.asn.status, asnPlacedQty(data.lines))}）`;
   const a = data.asn;
   document.getElementById("asnMeta").innerHTML = [
     ["单据类型", a.doc_type || "-", "外部单号", a.external_no || "-"],
     ["外部单据类别", a.external_doc_type || "-", "单据标识", docFlagsText(a)],
     ["原内部批次号", a.doc_type === "销退" ? (a.external_batch_no || "-") : "非销退不适用",
      "专属库存口径", "明细行「指定客户」留空＝通用库存"],
-    ["来源仓库", a.source_warehouse_name || (a.source_warehouse_code || "-"), "订单来源", a.order_source || "-"],
+    ["入库仓库", a.source_warehouse_name || (a.source_warehouse_code || "-"), "订单来源", a.order_source || "-"],
     ["供应商", a.supplier_name || "-", "客户", a.customer_name || "-"],
     ["供应商联系人", a.supplier_contact || "-", "供应商电话", a.supplier_phone || "-"],
     ["供应商地址", a.supplier_address || "-", "客户联系人", a.customer_contact || "-"],
@@ -378,10 +422,38 @@ async function showDetail(id) {
     `<tr><td class="muted">${k1}</td><td>${esc(v1)}</td><td class="muted">${k2}</td><td>${esc(v2)}</td></tr>`
   ).join("");
   renderLines();
+  document.getElementById("detailReceive").disabled = !data.lines.some(l => l.pending_acceptance > 1e-9);
+  document.getElementById("detailPutaway").disabled = !data.lines.some(l => l.remaining_putaway > 1e-9);
+  document.getElementById("detailFinish").hidden = !["open", "receiving"].includes(a.status);
 }
 
-function detailChip(k, v) {
-  return `<span style="display:inline-block;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:4px;padding:2px 7px;margin:2px 6px 2px 0;font-size:11.5px">${esc(k)}：${esc(v || "-")}</span>`;
+function countLine(id) {
+  const asn = currentAsn.asn.id;
+  const line = currentAsn.lines.find(l => l.id === id);
+  const modal = openForm({
+    title: `点收 · ${line.sku} ${line.product_name}`, submitText: "确认点收",
+    fields: [{ name: "qty", label: `本次实收（待点收 ${line.remaining_count}）`, type: "number",
+      default: line.remaining_count, required: true }],
+    onSubmit: async p => {
+      const submit = modal.querySelector('[type="submit"]');
+      const msg = document.getElementById("msg");
+      submit.disabled = true;
+      try {
+        await api("POST", `/api/asns/${asn}/count`, { line_id: id, qty: p.qty });
+        try {
+          await showDetail(asn);
+          showMsg(msg, "已登记点收数量", "success");
+        } catch (e) {
+          showMsg(msg, "点收已登记，明细刷新失败：" + e.message, "error");
+        }
+      } finally {
+        submit.disabled = false;
+      }
+    },
+  });
+  const qty = modal.querySelector('[name="qty"]');
+  qty.step = "any";
+  qty.max = line.remaining_count;
 }
 
 /** M23：客户 ID → 「编码 · 名称」，避免界面只显示一串数字。 */
@@ -403,19 +475,21 @@ function warnChip(w) {
 function renderLines() {
   const d = currentAsn;
   const cell = (v) => esc(v === 0 || v ? v : "-");
-  document.getElementById("lineBody").innerHTML = d.lines.map((l) => {
-    const extraFields = [
-      ["品牌", l.brand], ["生产企业", l.production_enterprise], ["产地", l.origin],
-      ["UDI", l.udi], ["灭菌批号", l.sterilization_batch_no], ["患者名称", l.patient_name],
-      ["内部批次号", l.internal_batch_no], ["货品属性", l.goods_property],
-      ["效期(天)", l.shelf_life_days],
-      ["指定客户", l.designated_customer_id ? customerName(l.designated_customer_id) : "通用库存"],
-      ["原内部批次号", l.external_batch_no],
-    ].map(([k, v]) => detailChip(k, v)).join("");
-    const batches = (l.batch_receipts || []).map((b) =>
-      `<div class="mono text-sm">${esc(b.batch_no)} · 内部 ${esc(b.internal_batch_no)} · ${b.qty}${esc(l.unit || "")} · ${esc(b.goods_property || "-")} <span class="muted">${esc(b.created_at)}</span>${reservedChip(b.designated_customer_id)}${warnChip(b.warning)}</div>`
-    ).join("") || '<span class="muted text-sm">尚未验收</span>';
-    return `<tr>
+  document.getElementById("lineBody").innerHTML = d.lines.map(l => {
+    const primary = [];
+    const secondary = [];
+    if (l.remaining_count > 1e-9 && ["open", "receiving"].includes(d.asn.status)) {
+      primary.push(["点收", `countLine(${l.id})`]);
+      secondary.push(["取消待点收", `cancelLine(${l.id}, false)`]);
+    }
+    if (l.pending_acceptance > 1e-9) {
+      primary.push(["验收", `openReceiveTab(${l.id})`]);
+      secondary.push(["取消收货", `cancelLine(${l.id}, true)`]);
+    }
+    if (l.remaining_putaway > 1e-9) primary.push(["上架", `openPutawayTab(${l.id})`]);
+    const next = primary.shift();
+    const more = [...primary, ...secondary];
+    return `<tr data-line-id="${l.id}">
       <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td>
       <td>${cell(l.spec)}</td><td>${cell(l.article_no)}</td>
       <td>${l.expected_qty}</td><td>${cell(l.unit)}</td>
@@ -423,37 +497,123 @@ function renderLines() {
       <td>${cell(l.production_date)}</td><td>${cell(l.expiry_date)}</td>
       <td>${cell(l.reg_cert_no)}</td><td>${cell(l.registrant)}</td>
       <td>${cell(l.mfg_license)}</td>
+      <td>${l.remaining_count}</td><td>${l.counted_qty}</td><td>${l.pending_acceptance}</td>
       <td><b>${l.received_qty}</b></td><td>${l.putaway_qty}</td>
-      <td><button class="btn sm" onclick="openReceiveTab(${l.id})">验收</button></td>
-      <td><button class="btn secondary sm" onclick="openPutawayTab(${l.id})">上架</button></td>
-    </tr>
-    <tr><td colspan="17" style="background:#f8fafc;padding:8px 12px">
-      <div style="margin-bottom:6px">${extraFields}</div>
-      <div class="text-sm"><b>验收入库批次：</b>${batches}</div>
-    </td></tr>`;
+      <td>${l.cancelled_qty}</td><td><b>${l.receivable_qty}</b></td>
+      <td class="inbound-line-actions"><div class="inbound-actions">
+        ${next ? `<button class="btn sm" onclick="${next[1]}">${next[0]}</button>` : ""}
+        <button class="btn secondary sm" onclick="showWorkHistory(${l.id})">作业明细</button>
+        ${more.length ? `<details class="inbound-more"><summary class="btn secondary sm">更多</summary>
+          ${more.map(([label, action]) => `<button class="btn secondary sm" onclick="${action}">${label}</button>`).join("")}
+        </details>` : ""}
+      </div></td>
+    </tr>`;
   }).join("");
 }
 
-async function cancelAsn(id) {
-  if (!confirm("确认取消该收货单？（仅未收货可取消）")) return;
+async function showWorkHistory(lineId) {
+  const order = currentAsn;
+  const dialog = document.getElementById("workHistory");
+  const body = document.getElementById("workHistoryBody");
+  const stage = document.getElementById("workHistoryStage");
+  const lines = lineId ? order.lines.filter(l => l.id === lineId) : order.lines;
+  document.getElementById("workHistoryTitle").textContent =
+    `作业明细 · ${order.asn.code}${lineId ? " / " + lines[0].sku : ""}`;
+  stage.value = "";
+  stage.onchange = null;
+  body.textContent = "加载中…";
+  dialog.showModal();
   try {
-    await api("POST", `/api/asns/${id}/cancel`);
-    showMsg(document.getElementById("msg"), "已取消", "success");
-    load();
+    const fields = await loadBatchFields();
+    const entries = lines.flatMap(l => {
+      const unit = esc(l.unit || "");
+      return [
+      ...l.receiving_counts.map(c => ({ ...c, stage: 0, action: "点收",
+        content: `点收 #${c.id} · 实收 ${c.qty} ${unit}
+          <div>已验收 ${c.accepted_qty} · 已取消 ${c.cancelled_qty} · 待验收 ${c.remaining}</div>` })),
+      ...l.batch_receipts.map(b => ({ ...b, stage: 1, action: "验收入库",
+        content: `验收 ${b.qty} ${unit} · 暂存位 ${esc(b.location_code || "—")}
+          <div>批次号 ${esc(b.batch_no)} · 厂家批号 ${esc(b.info.batch_no || "—")}</div>
+          ${b.receiving_count_id ? `<div>关联点收 #${b.receiving_count_id}</div>` : ""}
+          ${b.stock_status ? `<div>库存状态 ${esc(b.stock_status)}</div>` : ""}
+          ${reservedChip(b.designated_customer_id)}${warnChip(b.warning)}
+          <details><summary>批次详情</summary>${batchDetails(fields, b.info)}</details>` })),
+      ...l.putaway_details.map(p => ({ ...p, stage: 2, action: "上架",
+        content: `上架 ${p.qty} ${unit} · ${esc(p.from_location_code || "—")} → ${esc(p.to_location_code || "—")}
+          <div>批次号 ${esc(p.batch_no || "—")}</div>
+          ${p.override_reason ? `<div>改位原因 ${esc(p.override_reason)}</div>` : ""}` })),
+      ...l.cancellations.map(c => ({ ...c, stage: 3,
+        content: `取消 ${c.qty} ${unit}` })),
+      ].map(entry => ({ ...entry, lineLabel: `#${l.id} ${l.sku} · ${l.product_name}` }));
+    });
+    entries.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.stage - a.stage || b.id - a.id);
+    const renderHistory = () => {
+      const visible = stage.value === "" ? entries : entries.filter(entry => entry.stage === Number(stage.value));
+      body.innerHTML = `<div class="table-wrap"><table class="inbound-history-table">
+      <thead><tr><th>操作时间</th><th>操作人</th><th>订单明细</th><th>操作动作</th><th>具体内容</th></tr></thead>
+      <tbody>${visible.map(entry => `<tr><td>${esc(entry.created_at)}</td>
+        <td>${esc(entry.operator || "未记录")}</td><td>${esc(entry.lineLabel)}</td><td>${esc(entry.action)}</td><td>${entry.content}</td></tr>`).join("") ||
+        '<tr><td colspan="5" class="muted">所选环节暂无作业明细</td></tr>'}</tbody>
+    </table></div>`;
+    };
+    stage.onchange = renderHistory;
+    renderHistory();
+  } catch (e) { body.textContent = "加载失败：" + e.message; }
+}
+
+async function finishAsn(id) {
+  if (!confirm("完结将取消全部未验收入库的数量。已验收的库存和待上架任务会保留。确认完结？")) return;
+  try {
+    const result = await api("POST", `/api/asns/${id}/finish`);
+    if (currentAsn?.asn.id === id) await showDetail(id);
+    else await load();
+    const messages = { cancelled: "入库单已取消", closed: "入库单已完成", putaway: "剩余未验收数量已取消，已验收数量待上架" };
+    showMsg(document.getElementById("msg"), messages[result.status], "success");
   } catch (e) {
-    showMsg(document.getElementById("msg"), "取消失败：" + e.message, "error");
+    showMsg(document.getElementById("msg"), "完结失败：" + e.message, "error");
   }
+}
+
+function cancelLine(id, received) {
+  const line = currentAsn.lines.find(l => l.id === id);
+  const limit = received ? line.pending_acceptance : line.remaining_count;
+  const action = received ? "取消收货" : "取消待点收";
+  const asn = currentAsn.asn.id;
+  const modal = openForm({
+    title: `${action} · ${line.sku}`, submitText: "确认取消",
+    fields: [{ name: "qty", label: `${action}数量（最多 ${limit}）`, type: "number", required: true }],
+    onSubmit: async p => {
+      const button = modal.querySelector('[type="submit"]');
+      button.disabled = true;
+      try {
+        await api("POST", `/api/asns/${asn}/lines/${id}/${received ? "cancel-receiving" : "cancel"}`, { qty: p.qty });
+        try {
+          await showDetail(asn);
+          showMsg(document.getElementById("msg"), `${action}成功 · ${p.qty}`, "success");
+        } catch (e) {
+          showMsg(document.getElementById("msg"), `${action}已登记，明细刷新失败：${e.message}`, "warning");
+        }
+      } finally { button.disabled = false; }
+    },
+  });
+  const input = modal.querySelector('[name="qty"]');
+  input.step = "any";
+  input.max = limit;
 }
 
 async function openCreate() {
   await loadOptions();
-  const whDefault = warehouseOptions.length ? warehouseOptions[0].value : "";
+  const { current_warehouse: warehouse } = await api("GET", "/api/scope/context");
+  if (!warehouse) {
+    showMsg(document.getElementById("msg"), "请先在顶部选择当前仓库", "error");
+    return;
+  }
   const fields = [
     { type: "section", label: "① 单据信息" },
     { name: "code", label: "单号（留空自动生成 ASN-日期-流水）", autocode: true, autocodePrefix: "ASN" },
     { name: "owner_id", label: "货主 *", type: "select", required: true,
       placeholder: "请选择货主", options: ownerOptions,
-      help: "选择货主后，客户/供应商/商品会标记归属并排前；仍可任选，选错会即时报错" },
+      help: "先选择委托方，再选择该委托方的供应商、客户和商品" },
     { name: "doc_type", label: "单据类型", type: "select", default: "采购", options: [
       { value: "采购", label: "采购" }, { value: "调拨", label: "调拨" },
       { value: "销退", label: "销退" }, { value: "期初", label: "期初" },
@@ -463,9 +623,8 @@ async function openCreate() {
       help: "销退单由外部传入原出库内部批次号，作为全单默认值；验收时可逐行改。确实没有请填 / 表示「无」，系统会记录告警并回溯历史批次。" },
     { name: "external_no", label: "外部单号" },
     { name: "order_source", label: "订单来源" },
-    { name: "source_warehouse", label: "来源仓库 *", type: "select", required: true,
-      placeholder: "请选择仓库", default: whDefault, options: warehouseOptions,
-      help: warehouseOptions.length ? "已默认选中第一个仓库，可更换" : "尚无仓库，请到「基础主数据 → 仓库」创建" },
+    { name: "warehouse_display", label: "入库仓库", readonly: true,
+      default: `${warehouse.code} · ${warehouse.name}` },
 
     { type: "section", label: "单据标识（M20 剩余：仅记录，暂不参与校验）" },
     { name: "external_doc_type", label: "外部单据类别",
@@ -516,7 +675,8 @@ async function openCreate() {
       onLineAdd: (row) => {
         if (!modalEl) return;
         const oid = modalEl.querySelector('[name="owner_id"]').value;
-        reorderScoped(row.querySelector('[name="product_id"]'), productOptions, oid);
+        filterOwnerOptions(row.querySelector('[name="product_id"]'), productOptions, oid);
+        filterOwnerOptions(row.querySelector('[name="designated_customer_id"]'), allCustomerOptions, oid);
         validateLinesOwner(modalEl, oid);
       },
     },
@@ -535,7 +695,8 @@ async function openCreate() {
       if (p.doc_type === "销退" && !String(p.external_batch_no || "").trim()) {
         throw new Error("销退单必须填写「原内部批次号」；确实没有请点「填 /」按钮表示无");
       }
-      await api("POST", "/api/asns", p);
+      delete p.warehouse_display;
+      await api("POST", "/api/asns", { ...p, source_warehouse: warehouse.id });
       showMsg(document.getElementById("msg"), "创建成功", "success");
       load();
     },
@@ -545,13 +706,23 @@ async function openCreate() {
 
 function openAsnDetail(id) {
   const r = asnList.find((x) => x.id === id);
-  openDetail("收货 " + (r ? r.code : id), "/asns.html?detail=" + id);
+  openWorkTab("收货 " + (r ? r.code : id), "/asns.html?detail=" + id);
 }
 
-loadOptions().then(load).then(() => {
-  const dp = new URLSearchParams(location.search).get("detail");
-  if (dp) showDetail(parseInt(dp, 10));
+const detailId = new URLSearchParams(location.search).get("detail");
+document.addEventListener("click", event => {
+  const active = event.target.closest(".inbound-more");
+  document.querySelectorAll(".inbound-more[open]").forEach(menu => {
+    if (menu !== active || event.target.closest("button")) menu.open = false;
+  });
 });
+if (detailId) {
+  document.getElementById("asnListCard").hidden = true;
+  loadOptions().then(() => showDetail(Number(detailId))).catch(e =>
+    showMsg(document.getElementById("msg"), "明细加载失败：" + e.message, "error"));
+} else {
+  loadOptions().then(load);
+}
 </script>
 </body>
 </html>

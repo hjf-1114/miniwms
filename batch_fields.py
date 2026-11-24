@@ -21,17 +21,14 @@ BATCH_INFO_FIELDS = (
     ("production_enterprise",  "生产企业",      "text",   1),
     ("reg_cert_no",            "注册证号",      "text",   0),
     ("mfg_enterprise",         "厂家",          "text",   0),
-    ("product_name",           "货品名称",      "text",   0),
-    ("spec",                   "规格",          "text",   0),
-    ("article_no",             "货号",          "text",   0),
-    ("unit",                   "单位",          "text",   0),
-    ("brand",                  "品牌",          "text",   0),
     ("registrant",             "注册人/备案人", "text",   0),
     ("mfg_license",            "生产许可证",    "text",   0),
-    ("shelf_life_days",        "效期(天)",      "text",   0),
     ("patient_name",           "患者名称",      "text",   0),
     ("goods_property",         "货品属性",      "select", 0),
     ("internal_batch_no",      "内部批次号",    "text",   0),
+    ("receipt_note",           "验收备注",      "text",   0),
+    ("receipt_customer",       "客户",          "text",   0),
+    ("receipt_supplier",       "供应商",        "text",   0),
 )
 
 FIELD_NAMES = tuple(f[0] for f in BATCH_INFO_FIELDS)
@@ -54,7 +51,7 @@ def seed_batch_config(conn):
 
 def ensure_config(db):
     """配置表为空时补种（兼容老库 / 测试清表）；不提交事务，由调用方决定。"""
-    if db.execute("SELECT COUNT(*) AS n FROM batch_config").fetchone()[0] == 0:
+    if not any(row[0] in FIELD_NAMES for row in db.execute("SELECT field_name FROM batch_config")):
         seed_batch_config(db)
 
 
@@ -64,13 +61,21 @@ def key_fields(db):
         "SELECT field_name FROM batch_config WHERE enabled = 1 AND is_key = 1 "
         "ORDER BY sort_order, id"
     ).fetchall()
-    return [r[0] for r in rows]
+    return [r[0] for r in rows if r[0] in FIELD_NAMES]
 
 
 def clean_info(info):
     """把任意输入规整成完整批次信息字典：只保留字典内字段，值统一为去空白字符串。"""
     src = info if isinstance(info, dict) else {}
     return {name: str(src.get(name) or "").strip() for name in FIELD_NAMES}
+
+
+def decode_batch_info(value):
+    """历史库允许空的批次快照，返回同一套字段。"""
+    try:
+        return clean_info(json.loads(value or "{}"))
+    except (TypeError, ValueError):
+        return clean_info({})
 
 
 def build_batch_key(db, owner_id, product_id, info):
