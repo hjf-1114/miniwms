@@ -359,6 +359,52 @@ class DnApiTest(unittest.TestCase):
         self.assertIn("停用", resp.get_json()["error"])
 
     # ---------- 发货 ----------
+    def test_transfer_creates_destination_asn_once(self):
+        from unittest.mock import patch
+
+        owner = self._mk_owner()
+        product = self._mk_product(owner, "TR-SKU")
+        source = self._mk_warehouse("TR-FROM")
+        store = self._mk_location("TR-STORAGE", "storage")
+        self._inbound(owner, product, store, 10)
+        with tempfile.TemporaryDirectory() as temp, patch.object(main, "BASE_DIR", temp):
+            target = self.client.post("/api/warehouses", json={
+                "code": "TR-TO", "name": "调入测试仓", "db_path": "transfer.db",
+            }).get_json()["warehouse"]["id"]
+            header = {"X-WMS-Warehouse": str(target)}
+            created = self.client.post("/api/dns", json={
+                "code": "DN-TRANSFER", "owner_id": owner, "doc_type": "调拨",
+                "source_warehouse": source, "target_warehouse": target,
+                "lines": [{"product_id": product, "ordered_qty": 4, "spec": "独立仓调拨规格"}],
+            })
+            self.assertEqual(created.status_code, 201, created.get_json())
+            body = created.get_json()
+            path = f"/api/dns/{body['dn']['id']}"
+            self.assertEqual(body["lines"][0]["line_snapshot"]["spec"], "独立仓调拨规格")
+            self.assertEqual(self.client.post(path + "/pick", json={
+                "line_id": body["lines"][0]["id"], "location_id": store, "qty": 4,
+            }).status_code, 200)
+            self.assertEqual(self.client.post(path + "/ship").status_code, 400)
+            self.assertEqual(self._stock_row(owner, product, store)["qty"], 10)
+
+            self.client.post("/api/products", headers=header, json={
+                "sku": "OTHER-SKU", "name": "占位物料", "owner_id": owner})
+            target_product = self.client.post("/api/products", headers=header, json={
+                "sku": "TR-SKU", "name": "调入物料", "owner_id": owner}).get_json()["product"]["id"]
+            shipped = self.client.post(path + "/ship")
+            self.assertEqual(shipped.status_code, 200, shipped.get_json())
+            link = shipped.get_json()["transfer_asn"]
+            order = self.client.get(f"/api/asns/{link['id']}", headers=header).get_json()
+            self.assertEqual((order["asn"]["status"], order["asn"]["external_no"]), ("open", "DN-TRANSFER"))
+            line = order["lines"][0]
+            self.assertEqual((line["product_id"], line["expected_qty"], line["spec"]),
+                             (target_product, 4, "独立仓调拨规格"))
+            self.assertEqual(sum(batch["qty"] for batch in line["transfer_batches"]), 4)
+            self.assertEqual(self.client.get("/api/stock", headers=header).get_json()["total"], 0)
+            self.assertEqual(self._stock_row(owner, product, store)["qty"], 6)
+            self.assertEqual(self.client.post(path + "/ship").status_code, 409)
+            self.assertEqual(self.client.get("/api/asns", headers=header).get_json()["total"], 1)
+
     def test_ship_flow_deducts_and_closes(self):
         oid = self._mk_owner()
         pid = self._mk_product(oid)

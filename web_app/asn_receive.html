@@ -242,6 +242,8 @@ function renderLines() {
   sel.innerHTML = '<option value="">请选择明细行</option>' +
     lines.map(l => `<option value="${l.id}">${esc(lineLabel(l))}</option>`).join("");
   sel.value = cur;
+  const linkedLine = openFromLink ? lines.find(l => String(l.id) === cur) : null;
+  if (linkedLine && linkedLine.acceptable_qty <= 1e-9) progressLineId = cur;
   document.getElementById("lineBody").innerHTML = lines.map(l => `<tr data-line-id="${l.id}">
       <td>${l.id}</td><td>${esc(l.product_name || l.sku || "")}</td><td>${esc(l.spec || "-")}</td>
       <td>${l.expected_qty}</td><td>${l.counted_qty}</td><td>${esc(l.receiving_counts.at(-1)?.created_at || "—")}</td><td>${l.cancelled_qty}</td><td>${l.received_qty}</td>
@@ -255,7 +257,7 @@ function renderLines() {
     </tr>`).join("") || '<tr><td colspan="13" class="muted">该收货单暂无明细行</td></tr>';
   updateHint();
   renderLineProgress();
-  if (openFromLink && sel.value && !receiveEditor.open) receiveEditor.showModal();
+  if (linkedLine?.acceptable_qty > 1e-9 && !receiveEditor.open) receiveEditor.showModal();
 }
 
 function toggleLineProgress(id) {
@@ -285,6 +287,13 @@ function renderLineProgress() {
       <h4>订单计划批次</h4>
       ${batchDetails(plannedFields, line.batch_info)}
     </section>
+    ${line.transfer_batches?.length ? `<section class="inbound-log mt8">
+      <h4>调出批次</h4>
+      <div class="table-wrap inventory-grid"><table><thead><tr><th>调出批次号</th><th>发货数量</th>
+        ${columns.map(f => `<th>${esc(f.name === "batch_no" ? "厂家批号" : f.label)}</th>`).join("")}</tr></thead>
+        <tbody>${line.transfer_batches.map(batch => `<tr><td>${esc(batch.source_batch_no || "—")}</td><td>${batch.qty}</td>
+          ${columns.map(f => `<td>${esc(batch.batch_info[f.name] || "—")}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table></div></section>` : ""}
     <div class="table-wrap mt8"><table>
       <thead><tr><th>点收记录</th><th>点收时间</th><th>点收人</th><th>点收数量</th><th>已验</th><th>已取消</th><th>可验</th></tr></thead>
       <tbody>${line.receiving_counts.map(c => `<tr><td>#${c.id}</td><td>${esc(c.created_at)}</td><td>${esc(c.operator || "未记录")}</td><td>${c.qty}</td>
@@ -293,14 +302,15 @@ function renderLineProgress() {
     </table></div>
     <h4 class="mt12">实际验收批次</h4>
     <div class="table-wrap inventory-grid mt8" tabindex="0" role="region" aria-label="实际验收批次，可横向滚动"><table>
-      <thead><tr><th class="inventory-anchor">批次号</th><th>验收数量</th><th>点收记录</th><th>暂存货位</th><th>质量状态</th><th>指定客户</th><th>原内部批次号</th>
+      <thead><tr><th class="inventory-anchor">批次号</th><th>验收数量</th><th>验收时间</th><th>验收人</th><th>点收记录</th><th>暂存货位</th><th>质量状态</th><th>指定客户</th><th>原内部批次号</th>
         ${columns.map(f => `<th>${esc(f.name === "batch_no" ? "厂家批号" : f.label)}</th>`).join("")}</tr></thead>
       <tbody>${line.batch_receipts.map(b => `<tr><td class="inventory-anchor">${esc(b.batch_no)} ${warnPill(b.warning)}</td><td>${b.qty}</td>
+        <td>${esc(b.created_at)}</td><td>${esc(b.operator || "未记录")}</td>
         <td>${b.receiving_count_id ? "#" + b.receiving_count_id : "—"}</td><td>${esc(b.location_code || "—")}</td>
         <td>${esc(b.stock_status || "—")}</td><td>${reservedPill(b.designated_customer_id)}</td>
         <td>${esc(b.external_batch_no || "—")}</td>
         ${columns.map(f => `<td>${esc(b.info[f.name] || "—")}</td>`).join("")}</tr>`).join("") ||
-        `<tr><td colspan="${7 + columns.length}" class="muted">暂无验收批次</td></tr>`}</tbody>
+        `<tr><td colspan="${9 + columns.length}" class="muted">暂无验收批次</td></tr>`}</tbody>
     </table></div>`;
 }
 
@@ -401,7 +411,9 @@ async function doReceive() {
     const tail = r.warning
       ? "；⚠ 已登记「无外部批次号」，系统回溯历史批次并写入告警"
       : "";
-    showAsnFeedback(errBox, `验收成功 · 批次号 ${r.batch.batch_no}${tail}`, r.warning ? "warning" : "success");
+    receiveEditor.close();
+    progressLineId = String(lineId);
+    showAsnFeedback(document.getElementById("msg"), `验收成功 · 批次号 ${r.batch.batch_no}${tail}`, r.warning ? "warning" : "success");
     document.getElementById("recvQty").value = "";
     document.getElementById("recvExternal").value = "";
     document.getElementById("recvStatus").value = "";

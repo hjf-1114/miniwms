@@ -56,7 +56,9 @@ if (EMBED || window.self !== window.top) {
   // ── 顶栏账号区：有 token 显示账号名 + 退出登录；未登录显示登录入口 ──
   // 与独立页面 layout.js 保持一致：本项目登录是可选增强，未登录仍可浏览，故不强制跳转。
   const userBox = document.getElementById("wsUserBox");
-  if (getToken()) {
+  if (window.MWS_PREVIEW_API) {
+    userBox.textContent = "在线只读演示 · 样例数据";
+  } else if (getToken()) {
     const u = currentUser();
     userBox.innerHTML =
       '<span class="ws-avatar">👤</span>' +

@@ -549,6 +549,8 @@ class AsnApiTest(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.get_json())
             receipts.append(response.get_json()["batch"]["batch_no"])
         self.assertEqual(self.client.get("/api/asns?stage=acceptance").get_json()["total"], 0)
+        history = self.client.get("/api/asns?stage=accepted&keyword=EXT-COUNT").get_json()["asns"]
+        self.assertEqual([a["id"] for a in history], [asn_id])
         self.assertEqual(self.client.get("/api/asns?stage=putaway").get_json()["total"], 1)
         recommendation = self.client.get("/api/putaway/recommend", query_string={
             "asn_id": asn_id, "line_id": line_id, "receipt_barcode": receipts[1], "qty": 2,

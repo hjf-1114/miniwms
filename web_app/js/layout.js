@@ -5,7 +5,7 @@
    结构：一级 5 / 二级 11 / 三级 38；渲染器递归，后续加到第 4 层无需改代码。
    展示策略：默认只展开「当前页所在分支」，其余折叠；用户手动展开/收起的节点记在 localStorage。 */
 (function () {
-  const NAV = [
+  let NAV = [
     { label: "基础主数据", ico: "🗂️", children: [
       { label: "客商档案", ico: "🏷️", children: [
         { href: "/owners.html", label: "货主", ico: "🏢" },
@@ -77,6 +77,17 @@
       ]},
     ]},
   ];
+  if (window.MWS_PREVIEW_PAGES) {
+    const available = new Set(window.MWS_PREVIEW_PAGES);
+    function previewNav(nodes) {
+      return nodes.flatMap(node => {
+        if (!node.children) return available.has(node.href) ? [node] : [];
+        const children = previewNav(node.children);
+        return children.length ? [{ ...node, children }] : [];
+      });
+    }
+    NAV = previewNav(NAV);
+  }
 
   // 预建索引：叶子扁平表、href → 祖先分组 id 链、全部分组 id
   const LEAVES = [];
@@ -254,7 +265,7 @@
       '<nav class="nav" id="sideNav"></nav>';
     if (token) {
       html += '<a class="nav-item" href="#" onclick="logout();return false;"><span class="nav-ico">🚪</span><span>退出登录</span></a>';
-    } else if (location.pathname !== "/login.html") {
+    } else if (!window.MWS_PREVIEW_API && location.pathname !== "/login.html") {
       html += '<a class="nav-item" href="/login.html"><span class="nav-ico">🔐</span><span>登录</span></a>';
     }
     html += '<div class="side-foot">轻量多货主 WMS · 本地演示</div>';

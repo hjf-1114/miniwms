@@ -107,7 +107,8 @@ def _clone_dn(db, tpl, suffix_note, operator=None):
     code = gen_doc_no(db, "dn", C.SPLIT_CODE_PREFIX)
     fields = ("owner_id", "customer_id", "doc_type", "external_no", "order_source",
               "source_warehouse", "carrier_name", "extra1", "extra2", "extra3",
-              "is_virtual", "is_direct", "is_cold_chain", "is_hazard", "external_doc_type")
+              "is_virtual", "is_direct", "is_cold_chain", "is_hazard", "external_doc_type",
+              "target_warehouse", "customer_name", "customer_contact", "customer_phone", "customer_address")
     values = [code] + [tpl[f] for f in fields] + [suffix_note]
     sql = (
         "INSERT INTO dn (code, " + ",".join(fields) + ", note, total_qty, category_count) VALUES ("
@@ -195,8 +196,8 @@ def split_order(db, source_id, parts, operator="", note="", scope=None):
         subtotal = 0.0
         for pid, qty, ln_note in block:
             db.execute(
-                "INSERT INTO dn_line (dn_id, product_id, ordered_qty) VALUES (?, ?, ?)",
-                (child_id, pid, qty),
+                "INSERT INTO dn_line (dn_id, product_id, ordered_qty, extra) VALUES (?, ?, ?, ?)",
+                (child_id, pid, qty, lines[pid]["extra"]),
             )
             subtotal += qty
             detail.append({"product_id": pid, "qty": qty, "to_dn_id": child_id, "note": ln_note})
@@ -255,14 +256,22 @@ def merge_orders(db, source_ids, operator="", note="", scope=None):
             raise DNOrderError("合单源单必须属于同一货主", "OWNER_MISMATCH")
         if dn["customer_id"] != customer_id:
             raise DNOrderError("合单源单必须属于同一客户", "CUSTOMER_MISMATCH")
+        if any(dn[field] != sources[0][field] for field in ("source_warehouse", "doc_type", "target_warehouse")):
+            raise DNOrderError("合单源单的出库仓、单据类型和调入仓必须相同", "WAREHOUSE_MISMATCH")
 
     # 按 product 汇总，数量守恒
     agg = {}
+    snapshots = {}
     detail = []
     for dn in sources:
         for ln in _load_lines(db, dn["id"]):
             pid = ln["product_id"]
             agg[pid] = round(agg.get(pid, 0) + ln["ordered_qty"], 6)
+            extra = ln["extra"]
+            if extra and snapshots.get(pid) and json.loads(extra) != json.loads(snapshots[pid]):
+                raise DNOrderError("同一货品的单据明细属性不同，无法合并", "LINE_SNAPSHOT_MISMATCH")
+            if extra:
+                snapshots[pid] = extra
             detail.append({"product_id": pid, "qty": ln["ordered_qty"], "from_dn_id": dn["id"]})
     before = round(sum(ln["ordered_qty"] for dn in sources for ln in _load_lines(db, dn["id"])), 6)
 
@@ -276,8 +285,8 @@ def merge_orders(db, source_ids, operator="", note="", scope=None):
     )
     for pid, qty in sorted(agg.items()):
         db.execute(
-            "INSERT INTO dn_line (dn_id, product_id, ordered_qty) VALUES (?, ?, ?)",
-            (target_id, pid, qty),
+            "INSERT INTO dn_line (dn_id, product_id, ordered_qty, extra) VALUES (?, ?, ?, ?)",
+            (target_id, pid, qty, snapshots.get(pid, "")),
         )
     after = round(sum(agg.values()), 6)
     if abs(after - before) > C.SPLIT_QTY_EPS:

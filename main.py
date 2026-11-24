@@ -2236,6 +2236,16 @@ def init_db(path=None):
         _migrate_m34(conn)
         _migrate_abc(conn)
         _migrate_asn_counts(conn)
+        _ensure_columns(conn, "dn", (
+            ("target_warehouse", "INTEGER REFERENCES warehouse(id)"),
+            ("transfer_asn_id", "INTEGER"),
+            ("transfer_asn_code", "TEXT NOT NULL DEFAULT ''"),
+            ("customer_name", "TEXT NOT NULL DEFAULT ''"),
+            ("customer_contact", "TEXT NOT NULL DEFAULT ''"),
+            ("customer_phone", "TEXT NOT NULL DEFAULT ''"),
+            ("customer_address", "TEXT NOT NULL DEFAULT ''"),
+        ))
+        _ensure_columns(conn, "dn_line", (("extra", "TEXT NOT NULL DEFAULT ''"),))
         conn.execute("""
             UPDATE asn SET status = ?
             WHERE status = ? AND EXISTS (

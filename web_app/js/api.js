@@ -108,6 +108,7 @@ function requireLogin() {
 }
 
 async function api(method, path, body) {
+  if (window.MWS_PREVIEW_API) return window.MWS_PREVIEW_API(method, path, body);
   const opts = { method, headers: {} };
   const t = getToken();
   if (t) opts.headers["Authorization"] = "Bearer " + t;

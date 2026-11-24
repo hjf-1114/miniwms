@@ -7,6 +7,9 @@ function initAsnFilters(stage, selectedId, onSelect) {
       <label>单号 <input name="keyword" placeholder="ASN / 外部订单号"></label>
       <label>货主 <select name="owner_id"><option value="">全部</option></select></label>
       <label>客户 <select name="customer_id"><option value="">全部</option></select></label>
+      ${stage === "acceptance" ? `<label>作业范围 <select name="stage">
+        <option value="acceptance">待验收</option><option value="accepted">已有验收记录</option>
+      </select></label>` : ""}
       <label>创建自 <input name="date_from" type="date"></label>
       <label>创建至 <input name="date_to" type="date"></label>
       <button class="btn" type="submit">查询</button>
@@ -31,7 +34,7 @@ function initAsnFilters(stage, selectedId, onSelect) {
     const qs = new URLSearchParams(search);
     qs.set("page", page);
     qs.set("page_size", "30");
-    qs.set("stage", stage);
+    if (!qs.has("stage")) qs.set("stage", stage);
     try {
       const data = await api("GET", "/api/asns?" + qs);
       if (version !== sequence) return;
@@ -62,6 +65,7 @@ function initAsnFilters(stage, selectedId, onSelect) {
   }
   form.addEventListener("submit", e => { e.preventDefault(); applyFilters(); });
   form.addEventListener("reset", () => setTimeout(applyFilters));
+  form.elements.stage?.addEventListener("change", applyFilters);
   select.addEventListener("change", () => onSelect(select.value));
   prev.addEventListener("click", () => { if (page > 1) { page--; query(); } });
   next.addEventListener("click", () => { if (page < pages) { page++; query(); } });

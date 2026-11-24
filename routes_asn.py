@@ -448,7 +448,9 @@ def list_asns():
     if g.warehouse_id:
         where.append("(a.source_warehouse = ? OR a.source_warehouse IS NULL)")
         params.append(g.warehouse_id)
-    if stage in ("acceptance", "putaway"):
+    if stage == "accepted":
+        where.append("EXISTS (SELECT 1 FROM asn_line al WHERE al.asn_id = a.id AND al.received_qty > 0.000000001)")
+    elif stage in ("acceptance", "putaway"):
         where.append("a.status != 'cancelled'")
         pending = (
             "EXISTS (SELECT 1 FROM asn_receiving_count rc WHERE rc.asn_line_id = al.id "
