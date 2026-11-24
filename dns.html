@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>出库管理 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<style>
+.m23-notice { padding:9px 12px; border-radius:6px; font-size:13px; line-height:1.65;
+  margin:0 0 12px; background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }
+.m23-notice.ok { background:#f0fdf4; border-color:#bbf7d0; color:#166534; }
+.m23-pill { display:inline-block; border-radius:10px; padding:1px 8px; font-size:11px; white-space:nowrap; }
+.m23-risk { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }
+.m23-ok { background:#f1f5f9; color:#64748b; border:1px solid #e2e8f0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>出库作业</h1><div class="crumb">MiniWMS / 出入库作业</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>出库单列表</h2>
+      <div class="flex">
+        <button class="btn secondary" onclick="openWorkTab('波次分配','/miniwms/outbound_allocation.html')">波次分配作业</button>
+        <button class="btn secondary" onclick="openWorkTab('出库复核','/miniwms/dn_review.html')">出库复核</button>
+        <button class="btn" onclick="openCreate()">+ 新建出库单</button>
+      </div>
+    </div>
+    <div class="toolbar">
+      <input id="kw" placeholder="出库单号 / 外部订单号">
+      <label>货主 <select id="dnOwner"><option value="">全部</option></select></label>
+      <label>客户 <select id="dnCustomer" disabled><option value="">请先选择货主</option></select></label>
+      <label>创建自 <input id="dnDateFrom" type="date"></label>
+      <label>创建至 <input id="dnDateTo" type="date"></label>
+      <select id="statusFilter">
+        <option value="">全部状态</option>
+        <option value="open">待拣货</option>
+        <option value="picking">拣货中</option>
+        <option value="shipped">已发货</option>
+        <option value="cancelled">已取消</option>
+      </select>
+      <button class="btn secondary" onclick="load()">查询</button>
+    </div>
+      <div class="table-wrap">
+      <table>
+      <thead><tr><th>单号</th><th>单据类型</th><th>货主</th><th>客户</th><th>调出 / 出库仓</th><th>调入仓</th><th>总数量</th><th>品类数</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none">
+    <h2 id="detailTitle">出库单明细</h2>
+    <div id="riskNotice" class="m23-notice" style="display:none"></div>
+    <div class="table-wrap">
+      <table>
+      <tbody id="dnMeta"></tbody>
+    </table>
+    </div>
+    <div class="toolbar">
+      <select id="pickLocSel"></select><span class="muted">← 拣货来源位（存储/拣货区）</span>
+      <button class="btn secondary" onclick="loadLocs()">刷新库位</button>
+        <button class="btn" id="shipBtn" onclick="doShip()">确认发货</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>行</th><th>SKU</th><th>货品</th><th>规格 / 单位</th><th>订购</th><th>已拣</th><th>待拣</th><th>单据明细</th><th>拣货</th></tr></thead>
+      <tbody id="lineBody"></tbody>
+    </table>
+    </div>
+    <h3 style="margin-top:14px">拣货明细</h3>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>明细</th><th>行</th><th>库位</th><th>数量</th><th>批次信息</th></tr></thead>
+      <tbody id="pickBody"></tbody>
+    </table>
+    </div>
+    <h3 style="margin-top:14px">风险放行记录 <span class="muted text-sm">（专属库存发给其他客户时留痕；不拦截，但每次放行都可追溯）</span></h3>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>时间</th><th>批号</th><th>物料</th><th>库位</th><th>专属客户</th><th>本单客户</th><th>数量</th><th>动作</th><th>操作人</th></tr></thead>
+      <tbody id="riskBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/miniwms/js/preview-data.js"></script>
+<script src="/miniwms/js/preview-api.js"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/modal.js"></script>
+    <script src="/miniwms/js/order_lines.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
+    <script src="/miniwms/js/batch_details.js"></script>
+<script>
+let pickBatchFields = [];
+let currentDn = null;
+let ownerOptions = [];
+let productOptions = [];
+let productMap = {};
+let allCustomerOptions = [];
+let customerMap = {};
+let warehouseOptions = [];
+let dnList = [];
+
+async function loadOptions() {
+  const [ow, pr, cu, wh] = await Promise.all([
+    api("GET", "/api/owners?page_size=100"),
+    api("GET", "/api/products?page_size=100"),
+    api("GET", "/api/customers?page_size=100"),
+    api("GET", "/api/warehouses?page_size=100"),
+  ]);
+  ownerOptions = ow.owners.map((o) => ({ value: o.id, label: `${o.code} · ${o.name}` }));
+  productMap = Object.fromEntries(pr.products.map(p => [p.id, p]));
+  productOptions = pr.products.map(p => ({ value: p.id, label: `${p.sku} · ${p.name}`, owner_id: p.owner_id }));
+  allCustomerOptions = cu.customers.map((c) => ({
+    value: c.id, label: `${c.code} · ${c.name}`, owner_id: c.owner_id,
+  }));
+  customerMap = Object.fromEntries(cu.customers.map(c => [c.id, c]));
+  warehouseOptions = wh.warehouses.filter(w => w.status === "active")
+    .map(w => ({ value: w.id, label: `${w.code} · ${w.name}` }));
+  const listOwner = document.getElementById("dnOwner");
+  const previous = listOwner.value;
+  listOwner.replaceChildren(new Option("全部", ""), ...ownerOptions.map(o => new Option(o.label, o.value)));
+  listOwner.value = previous;
+  filterOwnerOptions(document.getElementById("dnCustomer"), allCustomerOptions, listOwner.value);
+}
+
+async function loadLocs() {
+  const data = await api("GET", "/api/locations?status=active&page_size=100");
+  const opts = data.locations.filter(
+    l => ["storage", "picking"].includes(l.loc_type)
+      && (!currentDn?.dn.source_warehouse || !l.warehouse_id || l.warehouse_id === currentDn.dn.source_warehouse)).map(
+    (l) => `<option value="${l.id}">${esc(l.code)}（${esc(l.loc_type_label)}）</option>`).join("");
+  document.getElementById("pickLocSel").innerHTML = opts;
+}
+
+async function load() {
+  const kw = document.getElementById("kw").value.trim();
+  const st = document.getElementById("statusFilter").value;
+  const qs = new URLSearchParams({ page_size: 50 });
+  if (kw) qs.set("keyword", kw);
+  if (st) qs.set("status", st);
+  for (const [name, input] of [["owner_id", "dnOwner"], ["customer_id", "dnCustomer"],
+    ["date_from", "dnDateFrom"], ["date_to", "dnDateTo"]]) {
+    const value = document.getElementById(input).value;
+    if (value) qs.set(name, value);
+  }
+  try {
+    const data = await api("GET", "/api/dns?" + qs);
+    dnList = data.dns;
+    document.getElementById("tbody").innerHTML = data.dns.map((d) =>
+      `<tr>
+        <td><button class="btn secondary sm" onclick="openDnDetail(${d.id})">${esc(d.code)}</button></td>
+        <td>${esc(d.doc_type || "")}</td>
+        <td>${esc(d.owner_code || "")} · ${esc(d.owner_name || "")}</td>
+        <td>${esc(d.customer_display_name || d.customer_name || "—")}</td>
+        <td>${esc(d.source_warehouse_code || "-")}</td>
+        <td>${esc(d.target_warehouse_name || d.target_warehouse_code || "—")}</td>
+        <td>${d.total_qty ?? 0}</td>
+        <td>${d.category_count ?? 0}</td>
+        <td>${dnStatusTag(d.status)}</td>
+        <td class="muted">${esc(d.created_at)}</td>
+        <td class="muted">${esc(d.updated_at || "—")}</td>
+        <td>
+          <button class="btn secondary sm" onclick="openDnDetail(${d.id})">明细</button>
+          <button class="btn secondary sm" onclick="openWorkTab('打印发货单','/miniwms/print_preview.html?node=ship&source=dn&doc_id=${d.id}')">打印</button>
+          ${d.status === "open" ? `<button class="btn danger sm" onclick="cancelDn(${d.id})">取消</button>` : ""}
+        </td>
+      </tr>`).join("") || '<tr><td colspan="12" class="muted">暂无符合条件的出库单</td></tr>';
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "加载失败：" + e.message, "error");
+  }
+}
+
+function dnStatusTag(s) {
+  const map = { open: "待拣货", picking: "拣货中", shipped: "已发货", cancelled: "已取消" };
+  const cls = s === "shipped" ? "ok" : "off";
+  return `<span class="tag ${cls}">${map[s] || s}</span>`;
+}
+
+async function showDetail(id) {
+  const [data, fields] = await Promise.all([api("GET", "/api/dns/" + id), loadBatchFields()]);
+  pickBatchFields = fields;
+  currentDn = data;
+  document.getElementById("detailCard").style.display = "";
+  document.getElementById("detailTitle").textContent =
+    `出库单明细 · ${data.dn.code}`;
+  const d = data.dn;
+  document.getElementById("shipBtn").disabled = !["open", "picking"].includes(d.status)
+    || data.lines.some(line => line.remaining_pick > 1e-9);
+  document.getElementById("dnMeta").innerHTML = [
+    ["单据类型", d.doc_type || "-", "外部单号", d.external_no || "-"],
+    ["外部单据类别", d.external_doc_type || "-", "单据标识", docFlagsText(d)],
+    ["来源仓库", d.source_warehouse_name || (d.source_warehouse_code || "-"), "订单来源", d.order_source || "-"],
+    ...(d.doc_type === "调拨" ? [["调入仓库", d.target_warehouse_name || d.target_warehouse_code || "—",
+      "调入单号", d.transfer_asn_code || "发货后生成"]] : []),
+    ["客户", d.customer_name || "—", "联系人", d.customer_contact || "—"],
+    ["联系电话", d.customer_phone || "—", "收货地址", d.customer_address || "—"],
+    ["承运商", d.carrier_name || "-", "订单总数量", d.total_qty ?? 0],
+    ["品类数", d.category_count ?? 0, "自定义1", d.extra1 || "-"],
+    ["自定义2", d.extra2 || "-", "自定义3", d.extra3 || "-"],
+    ["备注", d.note || "-", "", ""],
+  ].map(([k1, v1, k2, v2]) =>
+    `<tr><td class="muted">${k1}</td><td>${esc(v1)}</td><td class="muted">${k2}</td><td>${esc(v2)}</td></tr>`
+  ).join("");
+  await loadLocs();
+  renderLines();
+  await loadRiskLogs(id);
+  await showRiskNotice(id, d.status);
+}
+
+/** M23：发货前的事前提示条（只读预检，不拦截、不改库存）。 */
+async function showRiskNotice(dnId, status) {
+  const box = document.getElementById("riskNotice");
+  if (status === "shipped") {
+    box.className = "m23-notice ok";
+    box.innerHTML = "该出库单已发货；下方为本次发货产生的风险放行记录（如有）。";
+    box.style.display = "";
+    return;
+  }
+  try {
+    const chk = await api("GET", `/api/dns/${dnId}/reservation-check`);
+    if (!chk.risk_count) {
+      box.className = "m23-notice ok";
+      box.innerHTML = "✓ 风险预检通过：本次拣货未消耗其他客户的专属库存。";
+    } else {
+      const ids = [...new Set(chk.risks.map(r => r.designated_customer_id))];
+      box.className = "m23-notice";
+      box.innerHTML = `<b>⚠ 专属库存风险提示：</b>本次发货预计消耗 <b>${chk.risk_count}</b> 条专属库存`
+        + `（专属客户 ${ids.map(n => "#" + n).join("、")}），与本单客户不匹配。`
+        + `<br>系统<b>不会拦截</b>：点「发货」后由你决定是否继续；继续将写入风险放行日志，取消则不产生任何库存动作。`;
+    }
+    box.style.display = "";
+  } catch (e) {
+    box.style.display = "none";
+  }
+}
+
+/** 风险放行日志（只读）：按当前出库单过滤。 */
+async function loadRiskLogs(dnId) {
+  const body = document.getElementById("riskBody");
+  try {
+    const d = await api("GET", `/api/reservation-logs?dn_id=${dnId}&page_size=50`);
+    body.innerHTML = d.logs.length ? d.logs.map(r =>
+      `<tr>
+        <td>${esc(r.created_at)}</td><td>${esc(r.batch_no)}</td>
+        <td>${esc(r.sku || "")} ${esc(r.product_name || "")}</td>
+        <td>${esc(r.location_code || "")}</td>
+        <td>${esc(r.designated_customer_name || ("客户 #" + r.designated_customer_id))}</td>
+        <td>${esc(r.dn_customer_name || ("客户 #" + (r.dn_customer_id || "-")))}</td>
+        <td>${r.qty}</td>
+        <td><span class="m23-pill m23-risk">${r.acknowledged ? "确认后继续" : "API 直调继续"}</span></td>
+        <td>${esc(r.operator || "-")}</td>
+      </tr>`).join("")
+      : `<tr><td colspan="9" class="muted">暂无风险放行记录</td></tr>`;
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="9" class="muted">记录加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderLines() {
+  const d = currentDn;
+  document.getElementById("lineBody").innerHTML = d.lines.map((l) =>
+    `<tr>
+      <td>${l.id}</td><td>${esc(l.sku)}</td><td>${esc(l.line_snapshot.product_name || l.product_name)}</td>
+      <td>${esc(l.line_snapshot.spec || "—")} / ${esc(l.line_snapshot.unit || "—")}</td>
+      <td>${l.ordered_qty}</td><td><b>${l.picked_qty}</b></td><td>${l.remaining_pick}</td>
+      <td><details><summary>查看</summary>${batchDetails(SNAP_FIELDS.concat(BATCH_FIELDS), l.line_snapshot)}</details></td>
+      <td>
+        <input id="pk-${l.id}" type="number" min="0.01" step="0.01" placeholder="数量" style="width:80px">
+        <button class="btn sm" onclick="doPick(${l.id})" ${d.dn.status === "shipped" || d.dn.status === "cancelled" ? "disabled" : ""}>拣货</button>
+      </td>
+    </tr>`).join("");
+  document.getElementById("pickBody").innerHTML = d.picks.length
+    ? d.picks.map((p) =>
+      `<tr><td>${p.id}</td><td>${p.line_id}</td><td>${esc(p.location_code)}</td><td>${p.qty}</td>
+        <td><details><summary>${esc(p.batch_no || "无批次号")}</summary>${batchDetails(pickBatchFields, p.batch_info)}</details></td></tr>`).join("")
+    : `<tr><td colspan="5" class="muted">暂无拣货明细</td></tr>`;
+}
+
+async function doPick(lineId) {
+  const qty = parseFloat(document.getElementById("pk-" + lineId).value);
+  const locationId = parseInt(document.getElementById("pickLocSel").value, 10);
+  try {
+    const r = await api("POST", `/api/dns/${currentDn.dn.id}/pick`,
+      { line_id: lineId, location_id: locationId, qty });
+    showMsg(document.getElementById("msg"), `拣货成功，单据状态：${r.status}`, "success");
+    await showDetail(currentDn.dn.id);
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "拣货失败：" + e.message, "error");
+  }
+}
+
+async function doShip() {
+  if (!currentDn) return;
+  const msg = document.getElementById("msg");
+  const id = currentDn.dn.id;
+  let acknowledged = false;
+  try {
+    // M23：事前预检。有风险时列出明细并交由用户决定「继续 / 不继续」；系统不强制拒绝。
+    const chk = await api("GET", `/api/dns/${id}/reservation-check`);
+    if (chk.risk_count > 0) {
+      const lines = chk.risks.slice(0, 8).map(r =>
+        `· ${r.sku || r.product_id} @ ${r.location_code || r.location_id}`
+        + ` 批号 ${r.batch_no} ${r.qty} 件｜专属客户 #${r.designated_customer_id}`
+        + `，本单客户 #${r.dn_customer_id || "未指定"}`).join("\n");
+      const more = chk.risk_count > 8 ? `\n… 另有 ${chk.risk_count - 8} 条` : "";
+      const go = confirm(
+        `⚠ 检测到 ${chk.risk_count} 条专属库存与客户不匹配：\n${lines}${more}\n\n`
+        + `系统不会拦截，是否继续发货？\n`
+        + `· 继续：正常扣减库存，并写入 ${chk.risk_count} 条「风险放行」审计日志\n`
+        + `· 取消：不发货、不扣减、不产生任何记录`);
+      if (!go) {
+        showMsg(msg, "已取消发货：未扣减库存，也未产生风险放行记录", "error");
+        return;
+      }
+      acknowledged = true;
+    } else if (!confirm("确认发货？将按拣货明细逐库位扣减库存。")) {
+      return;
+    }
+    const r = await api("POST", `/api/dns/${id}/ship`,
+      { risk_acknowledged: acknowledged });
+    const tail = r.risk_logged
+      ? `；⚠ 已记录 ${r.risk_logged} 条风险放行（专属库存与客户不匹配，未拦截）`
+      : "";
+    const transfer = r.transfer_asn ? `，已生成调入单 ${r.transfer_asn.code}` : "";
+    showMsg(msg, `发货成功${transfer}${tail}`, "success");
+    await showDetail(id);
+    load();
+  } catch (e) {
+    showMsg(msg, "发货失败：" + e.message, "error");
+  }
+}
+
+async function cancelDn(id) {
+  if (!confirm("确认取消该出库单？（仅未拣货可取消）")) return;
+  try {
+    await api("POST", `/api/dns/${id}/cancel`);
+    showMsg(document.getElementById("msg"), "已取消", "success");
+    load();
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "取消失败：" + e.message, "error");
+  }
+}
+
+async function openCreate() {
+  await loadOptions();
+  const context = await api("GET", "/api/scope/context");
+  const warehouse = context.current_warehouse;
+  if (!warehouse) {
+    showMsg(document.getElementById("msg"), "请先选择当前仓库", "error");
+    return;
+  }
+  const overlay = openForm({
+    title: "新建出库单（DN）", submitText: "创建", width: 1000,
+    fields: [
+      { name: "code", label: "单号 *（留空自动生成 DN-日期-流水）", required: false, autocode: true, autocodePrefix: "DN" },
+      { name: "owner_id", label: "货主 *", type: "select", required: true,
+        placeholder: "请选择货主", options: ownerOptions },
+      { name: "customer_id", label: "客户", type: "select", placeholder: "请先选择委托方", options: [] },
+      { name: "doc_type", label: "单据类型", type: "select", options: [
+        { value: "销售", label: "销售" }, { value: "调拨", label: "调拨" },
+        { value: "退货", label: "退货" }, { value: "其他", label: "其他" },
+      ] },
+      { name: "external_no", label: "外部单号（主单号）" },
+      { name: "order_source", label: "订单来源" },
+      { type: "section", label: "单据标识（M20 剩余：仅记录，暂不参与校验）" },
+      { name: "external_doc_type", label: "外部单据类别" },
+      { name: "is_virtual", label: "虚拟", type: "select", default: 0,
+        options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+      { name: "is_direct", label: "直调", type: "select", default: 0,
+        options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+      { name: "is_cold_chain", label: "冷链", type: "select", default: 0,
+        options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+      { name: "is_hazard", label: "危险", type: "select", default: 0,
+        options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
+      { name: "warehouse_display", label: "调出仓库（当前仓）", readonly: true, default: `${warehouse.code} · ${warehouse.name}` },
+      { name: "target_warehouse", label: "调入仓库", type: "select", placeholder: "请选择调入仓库",
+        options: warehouseOptions.filter(option => option.value !== warehouse.id) },
+      { name: "customer_name", label: "客户名称（可覆盖）" },
+      { name: "customer_contact", label: "客户联系人" },
+      { name: "customer_phone", label: "客户电话" },
+      { name: "customer_address", label: "客户地址" },
+      { name: "carrier_name", label: "承运商名称" },
+      { name: "extra1", label: "自定义字段1" },
+      { name: "extra2", label: "自定义字段2" },
+      { name: "extra3", label: "自定义字段3" },
+      { name: "note", label: "备注", type: "textarea", full: true },
+      {
+        name: "lines", label: "出库明细", type: "lines", full: true, cardLayout: true,
+        lineFields: [
+          { name: "product_id", label: "商品 *", type: "select", required: true,
+            placeholder: "请选择货品", options: [], optionData: productData(productMap) },
+          { name: "ordered_qty", label: "数量 *", type: "number", required: true },
+          ...SNAP_FIELDS, ...BATCH_FIELDS.map(field => field.name === "internal_batch_no" ?
+            { ...field, label: "内部批次号" } : field),
+          { name: "designated_customer_id", label: "指定客户", type: "select", placeholder: "通用库存", options: [] },
+        ],
+        autoFill: PRODUCT_LINE_AUTOFILL,
+        onLineAdd: row => {
+          const owner = row.closest(".modal-overlay")?.querySelector('[name="owner_id"]')?.value;
+          filterOwnerOptions(row.querySelector('[name="product_id"]'), productOptions, owner);
+          filterOwnerOptions(row.querySelector('[name="designated_customer_id"]'), allCustomerOptions, owner);
+        },
+      },
+    ],
+    onSubmit: async (p) => {
+      delete p.warehouse_display;
+      await api("POST", "/api/dns", { ...p, source_warehouse: warehouse.id });
+      showMsg(document.getElementById("msg"), "创建成功", "success");
+      load();
+    },
+  });
+  const field = name => overlay.querySelector(`[name="${name}"]`);
+  const owner = field("owner_id"), customer = field("customer_id"), docType = field("doc_type"), target = field("target_warehouse");
+  function syncOwner() {
+    const previous = customer.value;
+    filterOwnerOptions(customer, allCustomerOptions, owner.value);
+    if (previous !== customer.value) customer.dispatchEvent(new Event("change"));
+    overlay.querySelectorAll(".line-row").forEach(row => {
+      const product = row.querySelector('[name="product_id"]');
+      const selected = product.value;
+      filterOwnerOptions(product, productOptions, owner.value);
+      if (selected !== product.value) product.dispatchEvent(new Event("change"));
+      filterOwnerOptions(row.querySelector('[name="designated_customer_id"]'), allCustomerOptions, owner.value);
+    });
+  }
+  function syncType() {
+    const transfer = docType.value === "调拨";
+    target.parentElement.hidden = !transfer;
+    target.disabled = !transfer;
+    target.required = transfer;
+    if (!transfer) target.value = "";
+    customer.required = !transfer;
+  }
+  customer.addEventListener("change", () => {
+    const data = customerMap[customer.value];
+    for (const key of ["name", "contact", "phone", "address"]) field("customer_" + key).value = data?.[key] || "";
+  });
+  owner.addEventListener("change", syncOwner);
+  docType.addEventListener("change", syncType);
+  syncOwner();
+  syncType();
+}
+
+function openDnDetail(id) {
+  const r = dnList.find((x) => x.id === id);
+  openDetail("出库 " + (r ? r.code : id), "/miniwms/dns.html?detail=" + id);
+}
+
+document.getElementById("dnOwner").addEventListener("change", event => {
+  filterOwnerOptions(document.getElementById("dnCustomer"), allCustomerOptions, event.target.value);
+});
+loadOptions().then(load).then(() => {
+  const dp = new URLSearchParams(location.search).get("detail");
+  if (dp) showDetail(parseInt(dp, 10));
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>库存账 - MiniWMS</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>库存账</h1><div class="crumb">MiniWMS / 出入库作业</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+<div class="card">
+    <h2>库存余额</h2>
+    <form class="toolbar inventory-filters" id="stockFilters">
+      <label>货主 <select id="ownerFilter" name="owner_id"></select></label>
+      <label>物料 <input id="productFilter" name="product_keyword" placeholder="名称 / SKU / 货号 / 条码"></label>
+      <label>货位 <select id="locationFilter" name="location_id"></select></label>
+      <label style="display:flex;align-items:center;gap:4px">
+        <input type="checkbox" id="hasStock" name="has_stock" value="1" checked>仅看有货行
+      </label>
+      <button class="btn" type="submit">查询</button>
+      <button class="btn secondary" type="reset">清空</button>
+      <button class="btn secondary" type="button" onclick="openStockBatches(commonQs())">批次库存</button>
+    </form>
+    <div class="table-wrap inventory-grid">
+      <table>
+      <thead><tr><th class="inventory-anchor">物料</th><th>货主</th><th>规格</th><th>单位</th><th>货位</th><th>在手</th><th>已分配</th><th>可用</th><th>更新时间</th><th>批次</th></tr></thead>
+      <tbody id="stockBody"></tbody>
+    </table>
+    </div>
+    <div class="pager">
+      <button class="btn secondary" id="stockPrev" onclick="turnStock(-1)">上一页</button>
+      <span id="stockTotal"></span>
+      <button class="btn secondary" id="stockNext" onclick="turnStock(1)">下一页</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>库存动作流水</h2>
+    <div class="toolbar">
+      <select id="mvType">
+        <option value="">全部类型</option>
+        <option value="asn_receive">收货入库</option>
+        <option value="asn_putaway_out">上架-出暂存</option>
+        <option value="asn_putaway_in">上架-入目标位</option>
+        <option value="dn_pick">拣货分配</option>
+        <option value="dn_ship">发货出库</option>
+      </select>
+      <button class="btn secondary" onclick="loadMovements()">查询</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+      <thead><tr><th>时间</th><th>货主</th><th>SKU</th><th>库位</th><th>变动</th><th>类型</th><th>单据ID</th><th>备注</th></tr></thead>
+      <tbody id="mvBody"></tbody>
+    </table>
+    </div>
+    <p class="muted" style="margin-top:8px">共 <span id="mvTotal">0</span> 条 · 每个货主×物料×库位的余额 = 其流水累加</p>
+  </div>
+
+  <div class="card">
+    <h2>余额核对</h2>
+    <p class="muted">独立事后核对：逐 货主×物料×库位 校验「账面余额 = 流水累加」。</p>
+    <button class="btn" onclick="doReconcile()">立即核对</button>
+    <div id="reconcileResult" style="margin-top:12px"></div>
+  </div>
+</div>
+      </div>
+    </div>
+
+    <script src="/miniwms/js/preview-data.js"></script>
+<script src="/miniwms/js/preview-api.js"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
+    <script src="/miniwms/js/inventory_filters.js"></script>
+<script>
+const filters = document.getElementById("stockFilters");
+let stockPage = 1;
+
+async function loadFilters() {
+  await Promise.all([
+    fillInventorySelect("ownerFilter", "owners", "全部货主", o => o.name),
+    fillInventorySelect("locationFilter", "locations", "全部货位", l => l.code),
+  ]);
+}
+
+function commonQs() {
+  return inventoryFilterParams(filters);
+}
+
+const MV_LABEL = {
+  asn_receive: "收货入库", asn_putaway_out: "上架-出暂存", asn_putaway_in: "上架-入目标位",
+  dn_pick: "拣货分配", dn_ship: "发货出库", move_out: "移库出", move_in: "移库入",
+  adjustment: "盘点调整",
+};
+
+function mvTag(t) {
+  const cls = t === "dn_pick" ? "off" : "ok";
+  return `<span class="tag ${cls}">${MV_LABEL[t] || t}</span>`;
+}
+
+async function loadStock() {
+  const qs = commonQs();
+  qs.set("page", stockPage);
+  qs.set("page_size", "30");
+  try {
+    const data = await api("GET", "/api/stock?" + qs);
+    document.getElementById("stockTotal").textContent = `第 ${data.page} 页 · 共 ${data.total} 行`;
+    document.getElementById("stockPrev").disabled = data.page <= 1;
+    document.getElementById("stockNext").disabled = data.page * data.page_size >= data.total;
+    document.getElementById("stockBody").innerHTML = data.stocks.length
+      ? data.stocks.map((s) =>
+        `<tr>
+          <td class="inventory-anchor"><b>${esc(s.product_name)}</b><div class="muted">${esc(s.sku)}</div></td>
+          <td>${esc(s.owner_name)}</td><td>${esc(s.spec || "—")}</td><td>${esc(s.unit || "—")}</td>
+          <td>${esc(s.location_code)}</td>
+          <td><b>${s.qty}</b></td><td>${s.allocated_qty}</td><td>${s.available_qty}</td>
+          <td class="muted">${esc(s.updated_at)}</td>
+          <td><button class="btn secondary sm" onclick="openStockBatches({owner_id:${s.owner_id}, product_id:${s.product_id}, location_id:${s.location_id}})">查批次</button></td>
+        </tr>`).join("")
+      : `<tr><td colspan="10" class="muted">暂无库存记录</td></tr>`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "库存加载失败：" + e.message, "error");
+  }
+}
+
+function turnStock(offset) {
+  stockPage += offset;
+  loadStock();
+}
+
+function openStockBatches(filters) {
+  openWorkTab("批次库存", "/miniwms/stock_batch.html?" + new URLSearchParams(filters));
+}
+
+async function loadMovements() {
+  const qs = commonQs();
+  const t = document.getElementById("mvType").value;
+  if (t) qs.set("ref_type", t);
+  try {
+    const data = await api("GET", "/api/movements?" + qs);
+    document.getElementById("mvTotal").textContent = data.total;
+    document.getElementById("mvBody").innerHTML = data.movements.length
+      ? data.movements.map((m) =>
+        `<tr>
+          <td class="muted">${esc(m.created_at)}</td>
+          <td>${esc(m.owner_name)}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>
+          <td style="color:${m.qty_delta < 0 ? "#c0392b" : "#1e8e3e"}"><b>${m.qty_delta > 0 ? "+" : ""}${m.qty_delta}</b></td>
+          <td>${mvTag(m.ref_type)}</td>
+          <td>${m.ref_id === null ? "-" : m.ref_id}</td>
+          <td class="muted">${esc(m.note)}</td>
+        </tr>`).join("")
+      : `<tr><td colspan="8" class="muted">暂无流水</td></tr>`;
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "流水加载失败：" + e.message, "error");
+  }
+}
+
+async function doReconcile() {
+  const box = document.getElementById("reconcileResult");
+  try {
+    const r = await api("GET", "/api/stock/reconcile");
+    if (r.consistent) {
+      box.innerHTML = `<span class="tag ok">账实一致</span> 已核对 ${r.checked} 个货主×物料×库位组合，全部余额等于流水累加。`;
+    } else {
+      box.innerHTML = `<span class="tag off">发现 ${r.mismatches.length} 处不一致</span>` +
+        `<table style="margin-top:8px"><thead><tr><th>货主</th><th>SKU</th><th>库位</th><th>账面余额</th><th>流水累加</th><th>问题</th></tr></thead><tbody>` +
+        r.mismatches.map((m) =>
+          `<tr><td>${esc(m.owner_name || "—")}</td><td>${esc(m.sku)}</td><td>${esc(m.location_code)}</td>` +
+          `<td>${m.book_qty}</td><td>${m.movement_sum}</td><td>${esc(m.issue)}</td></tr>`).join("") +
+        `</tbody></table>`;
+    }
+  } catch (e) {
+    showMsg(document.getElementById("msg"), "核对失败：" + e.message, "error");
+  }
+}
+
+function searchInventory() {
+  stockPage = 1;
+  loadStock();
+  loadMovements();
+}
+filters.addEventListener("submit", e => { e.preventDefault(); searchInventory(); });
+filters.addEventListener("reset", () => setTimeout(searchInventory));
+loadFilters().then(searchInventory).catch(e =>
+  showMsg(document.getElementById("msg"), "加载筛选失败：" + e.message, "error"));
+</script>
+</body>
+</html>

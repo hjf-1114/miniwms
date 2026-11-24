@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniWMS 工作台</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+</head>
+<body>
+<div class="ws" id="wsRoot">
+  <aside class="ws-side" id="wsSide">
+    <button class="ws-toggle" id="wsToggle" onclick="togglePin()" type="button" title="收起 / 展开导航">
+      <span class="ws-toggle-ico" id="wsToggleIco">«</span><span class="nav-label ws-toggle-text" id="wsToggleText">收起导航</span>
+    </button>
+    <a class="brand ws-home" id="wsHome" href="/miniwms/app.html?open=%2Findex.html" aria-label="打开概览">
+      <span class="logo">📦</span><span class="nav-label">MiniWMS 工作台</span>
+    </a>
+    <nav class="nav" id="wsNav"></nav>
+    <div class="side-foot nav-label">轻量多货主 WMS · 本地演示</div>
+  </aside>
+  <div class="ws-main">
+    <div class="ws-top">
+      <div class="ws-top-title">工作台 · 多标签作业</div>
+      <div class="wh-pick ws-wh-pick" id="wsWhPick"></div>
+      <div class="ws-top-user" id="wsUserBox"></div>
+    </div>
+    <div class="ws-tab-bar">
+      <div class="ws-tabs" id="wsTabs" aria-label="打开的标签页"></div>
+      <select class="ws-tab-picker" id="wsTabPicker" aria-label="切换已打开的页面"></select>
+    </div>
+    <div class="ws-stage" id="wsStage">
+      <div class="ws-empty"><div><span class="ico">🗂️</span>从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>
+    </div>
+  </div>
+</div>
+
+<script src="/miniwms/js/preview-data.js"></script>
+<script src="/miniwms/js/preview-api.js"></script>
+<script src="/miniwms/js/api.js"></script>
+<script src="/miniwms/js/layout.js"></script>
+<script>
+const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+
+// 防套娃：工作台自身不允许被塞进 iframe（否则「进入工作台」可无限点击嵌套）
+if (EMBED || window.self !== window.top) {
+  document.getElementById("wsRoot").innerHTML =
+    '<div class="ws-empty"><div><span class="ico">🗂️</span>' +
+    "工作台不能嵌套在标签页内。<br>" +
+    '<a class="btn mt12" href="/miniwms/app.html" target="_blank">在新窗口打开工作台</a></div></div>';
+} else {
+  // 导航树由 /miniwms/js/layout.js 暴露（window.MWS_NAV / MWS_NAV_TOOLS），工作台不另建副本
+  const side = document.getElementById("wsSide");
+  const navEl = document.getElementById("wsNav");
+  const tabsEl = document.getElementById("wsTabs");
+  const stageEl = document.getElementById("wsStage");
+  const tabPicker = document.getElementById("wsTabPicker");
+
+  // ── 顶栏账号区：有 token 显示账号名 + 退出登录；未登录显示登录入口 ──
+  // 与独立页面 layout.js 保持一致：本项目登录是可选增强，未登录仍可浏览，故不强制跳转。
+  const userBox = document.getElementById("wsUserBox");
+  if (window.MWS_PREVIEW_API) {
+    userBox.textContent = "在线只读演示 · 样例数据";
+  } else if (getToken()) {
+    const u = currentUser();
+    userBox.innerHTML =
+      '<span class="ws-avatar">👤</span>' +
+      '<span class="ws-user-name">' + esc(u.username || "已登录") + "</span>" +
+      (u.role_name ? '<span class="ws-user-role">' + esc(u.role_name) + "</span>" : "") +
+      '<button class="btn secondary sm" onclick="logout()">退出登录</button>';
+  } else {
+    userBox.innerHTML =
+      '<span class="ws-user-name">未登录</span>' +
+      '<a class="btn secondary sm" href="/miniwms/login.html">登录</a>';
+  }
+
+  // ── 多层内嵌导航：与独立页面共用 layout.js 的树、折叠记忆与自动展开 ──
+  // 叶子点击改为「打开标签」，其余交互（折叠、当前页高亮、祖先链展开）由 mount 统一处理。
+  const navCtl = window.MWS_NAV_TOOLS.mount(navEl, {
+    mode: "tabs",
+    activeHref: "/miniwms/index.html",
+    beforeToggle: () => {
+      // 侧栏收起态先展开侧栏，避免点了折叠却看不到子菜单
+      if (!side.classList.contains("pinned")) { setSide(true, true); return false; }
+      return true;
+    },
+    onLeaf: (label, href) => openTab(label, href)
+  });
+
+  // ── 侧栏伸缩：默认展开；按钮显式收起/展开；状态记在 localStorage ──
+  // collapsed 时禁用 hover 展开，避免「刚点收起、鼠标还在侧栏上就又弹开」的错觉。
+  const SIDE_KEY = "miniwms_side_expanded";
+  function setSide(expanded, persist) {
+    side.classList.toggle("pinned", expanded);
+    side.classList.toggle("collapsed", !expanded);
+    const ico = document.getElementById("wsToggleIco");
+    const txt = document.getElementById("wsToggleText");
+    const btn = document.getElementById("wsToggle");
+    if (ico) ico.textContent = expanded ? "«" : "☰";
+    if (txt) txt.textContent = expanded ? "收起导航" : "展开导航";
+    if (btn) {
+      btn.title = expanded ? "点击收起导航" : "点击展开导航";
+      btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+    if (persist) {
+      try { localStorage.setItem(SIDE_KEY, expanded ? "1" : "0"); } catch (e) {}
+    }
+  }
+  function togglePin() { setSide(!side.classList.contains("pinned"), true); }
+  (function initSide() {
+    let saved = null;
+    try { saved = localStorage.getItem(SIDE_KEY); } catch (e) {}
+    setSide(saved !== "0", false); // 无记录时默认展开
+  })();
+
+  // 折叠 / 叶子点击 / 当前页高亮均由 MWS_NAV_TOOLS.mount() 统一绑定，此处不再重复注册。
+
+  // ── 标签页管理 ──
+  const tabs = [];
+  let seq = 0;
+  let activeId = null;
+  const workspaceKey = "miniwms_workspace";
+  const account = getToken() ? currentUser().username || "" : null;
+  const pageTitles = new Map(window.MWS_NAV_FLAT.map(page => [page.href, page.label]));
+  pageTitles.set("/miniwms/index.html", "概览");
+
+  function normalizeUrl(value) {
+    if (typeof value !== "string" || !value) return null;
+    let url;
+    try { url = new URL(value, location.origin); } catch (e) { return null; }
+    if (url.origin !== location.origin || !pageTitles.has(url.pathname)) return null;
+    url.searchParams.delete("embed");
+    url.searchParams.delete("__whrefresh");
+    url.searchParams.sort();
+    return url;
+  }
+
+  function getOrCreateTab(title, value) {
+    const url = normalizeUrl(value);
+    if (!url) return null;
+    const key = url.pathname + url.search + url.hash;
+    const existing = tabs.find(t => t.url === key);
+    if (existing) return existing;
+    const id = "tab" + (++seq);
+    const iframe = document.createElement("iframe");
+    iframe.className = "ws-iframe";
+    iframe.title = title || pageTitles.get(url.pathname);
+    iframe.style.display = "none";
+    stageEl.appendChild(iframe);
+    const tab = { id, title: iframe.title, url: key, iframe };
+    tabs.push(tab);
+    return tab;
+  }
+
+  function frameUrl(tab) {
+    const url = new URL(tab.url, location.origin);
+    url.searchParams.set("embed", "1");
+    return url;
+  }
+
+  function openTab(title, url) {
+    const tab = getOrCreateTab(title, url);
+    if (tab) activate(tab.id);
+  }
+
+  function saveWorkspace() {
+    try {
+      const active = tabs.find(t => t.id === activeId);
+      sessionStorage.setItem(workspaceKey, JSON.stringify({
+        account, active: active?.url,
+        tabs: tabs.map(({ title, url }) => ({ title, url })),
+      }));
+    } catch (e) {}
+  }
+
+  function activate(id) {
+    const tab = tabs.find(t => t.id === id);
+    if (!tab) return;
+    activeId = id;
+    if (!tab.iframe.hasAttribute("src")) tab.iframe.src = frameUrl(tab);
+    tabs.forEach((t) => { t.iframe.style.display = t.id === id ? "" : "none"; });
+    navCtl.reveal(new URL(tab.url, location.origin).pathname);
+    renderTabs();
+    saveWorkspace();
+  }
+
+  function closeTab(id) {
+    const i = tabs.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    tabs[i].iframe.remove();
+    const wasActive = activeId === id;
+    tabs.splice(i, 1);
+    if (wasActive) {
+      if (tabs.length) activate(tabs[Math.min(i, tabs.length - 1)].id);
+      else { activeId = null; navCtl.reveal("/miniwms/index.html"); renderTabs(); }
+    } else {
+      renderTabs();
+    }
+    saveWorkspace();
+  }
+
+  function renderTabs() {
+    tabsEl.innerHTML = tabs.map((t) =>
+      `<div class="ws-tab${t.id === activeId ? " active" : ""}" data-id="${t.id}">` +
+      `<button type="button" class="ws-tab-select" aria-pressed="${t.id === activeId}">${esc(t.title)}</button>` +
+      `<button type="button" class="ws-tab-close" data-close="${t.id}" aria-label="关闭 ${esc(t.title)}">×</button></div>`).join("");
+    tabsEl.querySelectorAll(".ws-tab").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        if (e.target.dataset.close) { closeTab(e.target.dataset.close); return; }
+        activate(el.dataset.id);
+      });
+    });
+    const active = tabsEl.querySelector(".ws-tab.active");
+    if (active) active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    tabPicker.replaceChildren(new Option(`已打开 ${tabs.length} 页`, ""),
+      ...tabs.map(t => new Option(t.title, t.id)));
+    tabPicker.disabled = tabs.length < 2;
+    if (!tabs.length) renderEmpty();
+  }
+
+  function renderEmpty() {
+    stageEl.innerHTML =
+      '<div class="ws-empty"><div><span class="ico">🗂️</span>' +
+      "从左侧导航点击打开页面，多个页面将以标签页形式并存</div></div>";
+  }
+
+  // 切仓 = 换 X-WMS-Warehouse header（A 作业视角：一次只看一个仓）。
+  // 已打开的标签必须全部重载，否则旧仓数据会残留在 iframe 里造成串仓错觉。
+  function refreshAllTabs() {
+    const stamp = Date.now();
+    tabs.forEach(t => {
+      if (!t.iframe.hasAttribute("src")) return;
+      const url = frameUrl(t);
+      url.searchParams.set("__whrefresh", String(stamp));
+      t.iframe.src = url;
+    });
+  }
+
+  // 供 iframe 内页面调用：openDetail(...) 在明细按钮处打开新标签
+  window.openTab = openTab;
+  window.togglePin = togglePin;
+
+  document.getElementById("wsHome").addEventListener("click", e => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    openTab("概览", "/miniwms/index.html");
+  });
+  tabPicker.addEventListener("change", () => activate(tabPicker.value));
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(workspaceKey)); } catch (e) {}
+  if (saved?.account === account && Array.isArray(saved.tabs)) {
+    for (const tab of saved.tabs) {
+      if (tab && typeof tab.title === "string") getOrCreateTab(tab.title, tab.url);
+    }
+  }
+  if (!tabs.length) getOrCreateTab("概览", "/miniwms/index.html");
+  const entry = new URLSearchParams(location.search);
+  if (entry.has("from")) getOrCreateTab("", entry.get("from"));
+  const requested = getOrCreateTab("", entry.get("open"));
+  if (entry.has("open") || entry.has("from")) history.replaceState(null, "", "/miniwms/app.html");
+  activate((requested || tabs.find(t => t.url === saved?.active) || tabs[0]).id);
+  mountWarehousePicker(document.getElementById("wsWhPick"), refreshAllTabs);
+}
+</script>
+</body>
+</html>

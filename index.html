@@ -1,45 +1,90 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MiniWMS · 在线演示</title>
-  <link rel="stylesheet" href="style.css">
-  <script src="demo.js" defer></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniWMS — 轻量仓库管理系统</title>
+<link rel="stylesheet" href="/miniwms/css/style.css">
+<script>
+  if (window.self === window.top) location.replace("/miniwms/app.html");
+</script>
 </head>
 <body>
-  <header>
-    <div><b>MiniWMS</b><span>仓库管理系统</span></div>
-    <a href="https://github.com/hjf-1114/miniwms">GitHub 仓库 ↗</a>
-  </header>
-  <main>
-    <section class="intro">
-      <div><h1>仓储作业工作台</h1><p>浏览演示入库单、批次库存和上架规则。所有数据均为样例。</p></div>
-      <span class="badge">只读演示</span>
-    </section>
-    <div id="summary" class="summary"></div>
-    <section class="workspace">
-      <nav aria-label="演示模块">
-        <button type="button" data-view="orders" aria-pressed="true">入库单</button>
-        <button type="button" data-view="stock" aria-pressed="false">批次库存</button>
-        <button type="button" data-view="rules" aria-pressed="false">上架规则</button>
-      </nav>
-      <div class="view">
-        <div class="toolbar">
-          <label>关键词 <input id="query" type="search" placeholder="搜索单号或货品"></label>
-          <label id="status-label">状态 <select id="status"><option value="">全部</option><option>待上架</option><option>上架中</option><option>已完成</option></select></label>
-          <span id="result-count" role="status"></span>
-        </div>
-        <div class="table-wrap" tabindex="0" role="region" aria-label="查询结果"><table id="results"></table></div>
-      </div>
-    </section>
-  </main>
-  <dialog id="detail" aria-labelledby="detail-title">
-    <div class="dialog-head">
-      <h2 id="detail-title"></h2>
-      <form method="dialog"><button type="submit">关闭</button></form>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>系统概览</h1><div class="crumb">MiniWMS / 概览</div></div>
+      <span class="env-badge">本地演示 · :5100</span>
+    </header>
+    <div class="content">
+      <div id="msg" class="msg"></div>
+<div class="card">
+    <h2>欢迎使用 MiniWMS</h2>
+      <p class="muted" style="line-height:1.9">
+      轻量多货主 WMS（Flask + SQLite）。本页为前后端一体的本地 demo：
+      通过左侧导航管理<b>货主 → 物料 → 库位 → 客户</b>四类主数据，
+      完成<b>收货上架</b>、<b>拣货发货</b>与<b>库位间移库</b>的完整出入库流程（出库单关联客户、移库单单据驱动原子转移），
+      并在<b>库存</b>页查询余额、流水与账实核对。系统管理下已提供<b>角色 / 用户</b>与登录鉴权。
+      已完成主数据深化（产品/货主/客户/库位字段增强 + 承运商模块）、出入库作业（收货上架 / 拣货发货 / 库位间移库 / 账实盘点）与
+      <b>批次追溯</b>（验收入库生成唯一批次号、关键批次信息档案），后续将逐步提供预警、报表、外部对接与 CSV 等操作与分析能力。
+    </p>
+    <p class="muted" style="margin-top:10px">
+      服务地址：<code>http://localhost:5100</code> ·
+      启动方式：<code>python main.py</code> ·
+      API 文档见仓库 <code>README.md</code>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>里程碑进度</h2>
+    <div class="table-wrap">
+      <table>
+      <tr><th>里程碑</th><th>内容</th><th>状态</th></tr>
+      <tr><td>M1</td><td>物料主数据</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M2</td><td>货主主数据与多货主模型</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M3</td><td>库位主数据 + Web demo 骨架</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M4</td><td>收货单与上架（ASN + 暂存位流转）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M5</td><td>出库单（拣货分配 / 发货 / 超卖拦截）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M6</td><td>库存账查询 / 动作流水 / 余额核对</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M7</td><td>客户主数据 + 出库单关联客户（多货主隔离）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M8</td><td>基础资料字段增强（电商字段）+ 一键演示数据播种</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M9</td><td>用户与角色管理（登录 / 权限基础，供后续功能联动）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M10</td><td>物料主数据深化（电商/医药级字段 + 多条码 + 多层级包装）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M11</td><td>货主主数据深化（省市区 + 证照子表 + 经营范围）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M12</td><td>客户主数据深化（省市区 + 详细地址 + 经营范围）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M13</td><td>库位主数据深化（库位组 + 长宽高 + 体积库容）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M14</td><td>承运商模块（新增子系统，供发快递/零担/整车）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M15</td><td>主数据体验增强（物料体积手填/自动换算 · 条码包装可编辑+等级1-6 · 承运商演示数据 · 货主起止时间）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M16</td><td>供应链与单据主数据增强（供应商/仓库/自动单号/单据字段）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M17</td><td>移库单（库位间一减一增、同事务原子转移、余额可核对）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M18</td><td>盘点单（冻结快照→盲盘→差异调整→解冻结案，账实核对）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M19</td><td>批次与验收入库追溯（批次字段配置 · 关键批次信息档案 · 每次入库唯一批次号 · 内部批次号规则）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M20 阶段A</td><td>储区主数据（仓库维度 · 温区 · 混放开关）/ 货品推荐储区与固定货位 / 简版上架推荐 / 验收·上架独立作业页 / 工作台侧栏伸缩</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M20 阶段B</td><td>ASN/DN 单据标识位（虚拟·直调·冷链·危险 + 外部单据类别）/ 仅记录不拦截（M20 时点口径；M25 起上架按规则拦截）/ 老库自动迁移</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M21</td><td>批次级库存明细层：stock_batch 明细 + 流水 9 维扩列 + 五动作同步钩子 + batch_location 实物分布 + I2/I3 硬校验 + 老库一次性回填 + 批次库存查询页；stock 汇总层主键与 I1 不变式原样保持</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M22</td><td>库存调整单 + 盘点增强：stock_adjustment 两张表（唯一手工数量入口）/ stocktake_plan 四类盘点（全盘·部分·按批号·动碰，含手工时间窗与交易类型）/ 真盲盘分级接口 / 差异人工生成调整单 + 审核过账 / 取消与冲销 / 盘点方案·库存调整·盘点增强 3 页</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M23</td><td>指定客户专属库存 + 销退口径：指定客户贯穿单据→批次→明细→流水，专属与通用永不合并 / 销退外部批次号必填（缺号 400，显式 / 走回溯并告警）/ 出库校验只落纯规则 / 质量状态两字段独立 / 收货·验收·批次库存三页交互增强</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M24</td><td>库存转移单：同库位批次维度净零变更 / 三表 + 双层分配真实占用 / 审核即生效终态 / 取消分配 / 字段级变更文档 / 冲销留痕</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M25</td><td>上架推荐规则引擎：3 张配置表 / 13 维条件组 / priority 命中即停 / fallback 链 / 8 项 limits 三态 / 11 行种子（启用 7 行）/ 规则配置 API / 可解释推荐与日志 / 上架过账按规则拦截（承接 M20 的混放·冷链·危险配置化）</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M26</td><td>规则配置与推荐交互：13 维条件组编辑器 / fallback 链拖拽排序 / 8 项 limits 三态 / 9 条评分权重 / 推荐采纳与驳回（改位必填原因码）/ 命中率·采纳率·驳回率统计 / 外部单据类别字典 / 可复跑 E2E</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M27 / M29 / M30</td><td>预警 / 外部对接 / CSV（降级暂缓，编号保留）</td><td><span class="tag off">暂缓</span></td></tr>
+      <tr><td>M31–M34</td><td>领域蓝图第 1 层：司机车辆 / 产品类型字典 / 序列号台账 / 货位组主数据</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>M35</td><td>出库波次分配与 FEFO：轻波次 / 批次级分配 / 先专属后通用 / 拆批与短拣 / 跳批留痕 / 共表 outbound 规则 / 发货按记录批次扣减 / 独立作业页与可复跑 E2E</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M36</td><td>出库复核：独立复核单 / 作业页 / 按拣货行逐条复核 / 快照 8 维批次 / 登记差异只留痕不改库存 / 差异留痕查询 / 按货主隔离</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>M37–M38</td><td>领域蓝图第 2 层：养护 / 拆单合单</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>M28 · M39–M42</td><td>领域蓝图第 4·5 层：经营报表（M28）/ GSP 报表 / 工作量统计 / 打印模板 PDF（字段映射+拖拽排版、预览可临时编辑）/ 自动打印（M42 后置）</td><td><span class="tag off">规划中</span></td></tr>
+      <tr><td>架构增强（非里程碑）</td><td>仓库 / 货主双维数据隔离：按仓可选独立数据库 + 货主 MANDT 式 SQL 注入 + 账号可看全部/部分仓与货主 + 作业视角切仓 + 承运商归属货主预留；默认零配置共用主库</td><td><span class="tag ok">已完成</span></td></tr>
+      <tr><td>架构增强 · 二次优化（非里程碑）</td><td>货主 × 仓库业务关系格子：多对多关系表 + 矩阵配置页，可见范围由「可见仓 × 可见货主」改为与业务关系取交集，列表 / 详情 / 写入三条路径同步收紧；零登记保持向下兼容。继续 SQLite 方案，多租户 PostgreSQL / RLS 记为未来路线</td><td><span class="tag ok">已完成</span></td></tr>
+    </table>
     </div>
-    <div id="detail-content"></div>
-  </dialog>
+  </div>
+</div>
+      </div>
+    </div>
+    <script src="/miniwms/js/preview-data.js"></script>
+<script src="/miniwms/js/preview-api.js"></script>
+<script src="/miniwms/js/api.js"></script>
+    <script src="/miniwms/js/layout.js"></script>
 </body>
 </html>
