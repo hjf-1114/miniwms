@@ -20,6 +20,7 @@ import datetime
 import math
 
 import constants as C
+import wave_analysis as WA
 import putaway_rules as PR
 from inventory_service import EPS, BATCH_DIMS, adjust_stock
 from reservation_rules import check_customer_reservation
@@ -205,7 +206,7 @@ def _sort_key(row, customer_id, strategy, prefer_picking=False):
 def _candidates(db, info, scope, pick_group=""):
     """读取可用批次明细快照（可写 dict，供试算在本地递减，不写库）。"""
     sql = """SELECT sb.*, l.code AS location_code, l.status AS loc_status,
-                    l.loc_type, l.zone_id,
+                    l.loc_type, l.zone_id, l.location_group,
                     (sb.qty - sb.allocated_qty) AS available
              FROM stock_batch sb JOIN location l ON l.id = sb.location_id
              WHERE sb.owner_id = ? AND sb.product_id = ?
@@ -304,7 +305,7 @@ def _validate_dn_ids(db, dn_ids):
 
 
 def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="", pick_group="",
-         wave_no=None, dry_run=False, apply=False):
+         wave_no=None, dry_run=False, apply=False, preparation_id=None):
     """生成（或执行）一次波次分配。
 
     ``dry_run=True`` 只读试算：返回与实分配同形的结果，不写任何表。
@@ -330,6 +331,12 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="", pick_group=""
     # 试算时同一波次内多张 DN 会争同一批次：用本地快照按 (owner, product) 共享余额
     consumed = {}
     for dn in dns:
+        lock = WA.locked_preparation(db, dn["id"])
+        if lock and lock != preparation_id:
+            raise AllocationError(f"{dn['code']} 已进入组波方案，请从组波分析页继续处理")
+        config = WA.settings(db, dn["source_warehouse"])
+        if config and WA.special_order(dn, config):
+            raise AllocationError(f"{dn['code']} 是特殊单据，请在出库明细手工分配全量组库存")
         lines = [dict(r) for r in db.execute(_LINE_SELECT, (dn["id"],)).fetchall()]
         dn_alloc, dn_skipped, dn_short = [], [], []
         for line in lines:
@@ -343,7 +350,8 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="", pick_group=""
             options = _j(rule["score"], dict) if rule else {}
             reject_expired = bool((limits.get("quality_state") or {}).get("reject_expired"))
             scope = _step_scope(db, rule)
-            rows = _candidates(db, info, scope, pick_group)
+            rows = [row for row in _candidates(db, info, scope, pick_group)
+                    if WA.permit_location(db, dn, row, preparation_id)]
             if dry_run:
                 for row in rows:
                     row["available"] -= consumed.get(row["id"], 0)
@@ -476,7 +484,8 @@ def reserve_batch(db, dn, line, row, qty, wave="", rule=None, operator=""):
 
 def manual_candidates(db, dn_id, line_id):
     info = build_context(db, dn_id, line_id)
-    rows = _candidates(db, info, ("all", None))
+    rows = [row for row in _candidates(db, info, ("all", None))
+            if WA.permit_location(db, info["dn"], row)]
     return [{**row, "blocked": C.OUTBOUND_SKIP_LABELS.get(_skip_reason(row, info["customer_id"], True), "")
              or ("" if _order_match(db, info["line"], row) else C.OUTBOUND_SKIP_LABELS["ORDER_BATCH_MISMATCH"])}
             for row in rows]
@@ -484,6 +493,8 @@ def manual_candidates(db, dn_id, line_id):
 
 def manual_allocate(db, dn_id, line_id, stock_id, qty, operator=""):
     dn = _validate_dn_ids(db, [dn_id])[0]
+    if WA.locked_preparation(db, dn_id):
+        raise AllocationError("订单已进入组波方案，请先撤销方案再手工分配")
     line = build_context(db, dn_id, line_id)["line"]
     remaining = line["ordered_qty"] - line["cancelled_qty"] - line["picked_qty"]
     if not math.isfinite(qty) or not EPS < qty <= remaining + EPS:

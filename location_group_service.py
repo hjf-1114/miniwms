@@ -273,6 +273,13 @@ def update(db, rid, payload):
     errors, data = _validate(db, payload, partial=True)
     if errors:
         raise LocationGroupError("；".join(errors), "LOC_GROUP_BAD_PARAM")
+    if (data.get("status", row["status"]) != "active"
+            or data.get("warehouse_id", row["warehouse_id"]) != row["warehouse_id"]):
+        if db.execute("SELECT 1 FROM wave_settings WHERE full_group_id=? OR pool_group_id=?", (rid, rid)).fetchone():
+            raise LocationGroupError("请先更换默认全量组或备用拣货组", "LOC_GROUP_IN_USE")
+        if db.execute("SELECT 1 FROM wave_preparation WHERE group_id=? AND status IN ('pending','ready')",
+                      (rid,)).fetchone():
+            raise LocationGroupError("货位组有待处理的组波方案，请先完成或撤销", "LOC_GROUP_IN_USE")
     if "code" in data and data["code"] != row["code"]:
         used = db.execute(
             "SELECT COUNT(*) AS n FROM location WHERE location_group = ?",
@@ -300,6 +307,9 @@ def delete(db, rid):
                      (int(rid),)).fetchone()
     if row is None:
         raise LocationGroupError("货位组不存在", "LOC_GROUP_NOT_FOUND")
+    if (db.execute("SELECT 1 FROM wave_settings WHERE full_group_id=? OR pool_group_id=?", (rid, rid)).fetchone()
+            or db.execute("SELECT 1 FROM wave_preparation WHERE group_id=?", (rid,)).fetchone()):
+        raise LocationGroupError("货位组已有组波设置或历史，请停用代替删除", "LOC_GROUP_IN_USE")
     used = db.execute(
         "SELECT COUNT(*) AS n FROM location WHERE location_group = ?",
         (row["code"],),

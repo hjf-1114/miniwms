@@ -26,6 +26,7 @@ from main import current_scope, get_control_db, get_db, gen_doc_no, request_payl
 from routes_asn import LINE_SNAPSHOT_FIELDS, _check_customer_owner, _line_snapshot, _parse_customer_id
 from dn_transfer_service import prepare_destination, create_transfer_asn
 from outbound_allocation import AllocationError, _under_review, manual_allocate, manual_candidates, unallocate
+from wave_analysis import locked_preparation
 import reservation_audit as RA
 
 dn_bp = Blueprint("dn", __name__, url_prefix="/api/dns")
@@ -512,6 +513,8 @@ def cancel_line(dn_id, line_id):
         qty = float(request_payload().get("qty"))
         db.execute("BEGIN IMMEDIATE")
         dn = _load_dn(db, dn_id)
+        if locked_preparation(db, dn_id):
+            raise ValueError("请先撤销组波方案，再取消订单明细数量")
         if not dn or dn["status"] not in (C.DN_OPEN, C.DN_ALLOCATED, C.DN_PICKING) or _under_review(db, dn_id):
             raise ValueError("当前出库单状态不允许取消明细数量")
         line = db.execute("SELECT * FROM dn_line WHERE id = ? AND dn_id = ?", (line_id, dn_id)).fetchone()
@@ -653,6 +656,8 @@ def cancel_dn(dn_id):
         if dn is None:
             db.rollback()
             return jsonify(ok=False, error="DN 不存在"), 404
+        if locked_preparation(db, dn_id):
+            raise ValueError("请先撤销组波方案，再取消订单")
         if dn["status"] in (C.DN_REVIEWED, C.DN_SHIPPED, C.DN_CANCELLED):
             raise ValueError("已复核、已发货或已取消的单据不可取消")
         if db.execute("SELECT 1 FROM dn_review WHERE dn_id = ? AND status != ?",

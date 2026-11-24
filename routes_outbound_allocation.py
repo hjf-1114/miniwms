@@ -12,11 +12,14 @@
 """
 import sqlite3
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
 import constants as C
 import outbound_allocation as OA
 from main import get_db, request_payload
+from inventory_service import StockError
+import scope as S
+import wave_analysis as WA
 
 oa_bp = Blueprint("outbound_allocation", __name__, url_prefix="/api/outbound")
 
@@ -30,7 +33,7 @@ def _run(action, *args, **kwargs):
     except OA.AllocationError as e:
         db.rollback()
         return jsonify(ok=False, error=str(e), code="ALLOCATION_ERROR"), 400
-    except (ValueError, TypeError) as e:
+    except (ValueError, TypeError, StockError) as e:
         db.rollback()
         return jsonify(ok=False, error=str(e)), 400
     except sqlite3.IntegrityError as e:
@@ -48,6 +51,62 @@ def _operator():
 @oa_bp.route("/dict", methods=["GET"])
 def dictionary():
     return jsonify(**OA.dictionary())
+
+
+def _warehouse():
+    if not g.warehouse_id:
+        raise ValueError("请先选择当前仓库")
+    return g.warehouse_id
+
+
+def _owner(args):
+    owner = int(args.get("owner_id") or 0)
+    if not owner:
+        raise ValueError("请先选择货主")
+    S.assert_owner_allowed(S.current_scope(), owner)
+    return owner
+
+
+@oa_bp.get("/group-analysis")
+def group_analysis():
+    try:
+        db, warehouse = get_db(), _warehouse()
+        owner = _owner(request.args)
+        config = WA.settings(db, warehouse)
+        plans = [WA.detail(db, warehouse, row["id"]) for row in db.execute(
+            """SELECT id FROM wave_preparation WHERE warehouse_id=? AND owner_id=?
+               ORDER BY id DESC LIMIT 30""", (warehouse, owner))]
+        return jsonify(ok=True, result=WA.analyze(db, warehouse, owner, request.args),
+                       settings=config, locations=WA.pick_locations(db, warehouse), plans=plans)
+    except (ValueError, TypeError) as e:
+        return jsonify(ok=False, error=str(e)), 400
+
+
+@oa_bp.put("/group-analysis/settings")
+def group_analysis_settings():
+    def action(db):
+        warehouse = _warehouse()
+        WA.save_settings(db, warehouse, request_payload())
+        return jsonify(ok=True, settings=WA.settings(db, warehouse))
+    return _run(action)
+
+
+@oa_bp.post("/group-analysis")
+def create_preparation():
+    payload = request_payload()
+    return _run(lambda db: (jsonify(ok=True, plan=WA.prepare(
+        db, _warehouse(), _owner(payload), payload, _operator())), 201))
+
+
+@oa_bp.post("/group-analysis/<int:prep_id>/<step>")
+def update_preparation(prep_id, step):
+    if step == "finish":
+        return _run(lambda db: jsonify(ok=True, plan=WA.finish(
+            db, _warehouse(), prep_id, request_payload(), _operator())))
+    handlers = {"release": WA.release, "cancel": WA.cancel}
+    if step not in handlers:
+        return jsonify(ok=False, error="未知组波操作"), 404
+    return _run(lambda db: jsonify(ok=True, plan=handlers[step](db, _warehouse(), prep_id, _operator())))
 
 
 @oa_bp.route("/plan", methods=["POST"])

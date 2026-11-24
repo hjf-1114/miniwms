@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>组波分析 · MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .channels { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); }
+  .channel, .plan { border:1px solid #dbe3ec; padding:14px; border-radius:8px; min-width:0; }
+  .channel h3, .plan h3 { margin:0 0 8px; }
+  .channel p, .plan p { margin:6px 0 10px; }
+  .channel details, .plan details { margin:9px 0; font-size:13px; }
+  .channel select { max-width:100%; }
+  .plan { margin-bottom:12px; }
+  .statline { margin:10px 0 14px; font-weight:600; }
+  .actual { width:88px; }
+  .paper { display:none; }
+  @media print {
+    .app { display:none !important; }
+    .paper { display:block; padding:16px; background:white; color:black; }
+    .paper td,.paper th { border:1px solid #94a3b8; padding:6px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside id="sidebar" class="sidebar"></aside>
+  <main class="main">
+    <header class="topbar"><div><h1>组波分析</h1><div class="crumb">MiniWMS / 出库作业</div></div></header>
+    <div class="content">
+      <div id="msg" class="msg" role="status"></div>
+      <section class="card">
+        <h2>待分析订单</h2>
+        <form id="filters" class="toolbar">
+          <label>货主 <select name="owner_id" required><option value="">请选择</option></select></label>
+          <label>客户 <select name="customer_id"><option value="">全部</option></select></label>
+          <label>订单号 <input name="keyword" placeholder="单号或外部单号"></label>
+          <label>单据类型 <input name="doc_type" size="8" placeholder="全部"></label>
+          <label>创建自 <input type="date" name="date_from"></label>
+          <label>至 <input type="date" name="date_to"></label>
+          <label>单品门槛 <input type="number" name="activity_min" min="1" max="10000" value="10" style="width:70px"></label>
+          <label>SKU 上限 <input type="number" name="sku_limit" min="1" max="50" value="20" style="width:65px"></label>
+          <label>目标覆盖 % <input type="number" name="coverage" min="1" max="100" value="85" style="width:65px"></label>
+          <button class="btn">分析未分配订单</button>
+        </form>
+        <details>
+          <summary>全量组和特殊单据设置</summary>
+          <form id="settings" class="toolbar">
+            <label>默认全量组 <select name="full_group_id" required></select></label>
+            <label>备用拣货组 <select name="pool_group_id"></select></label>
+            <label>冷链货位 <input name="cold_locations" placeholder="多个货位码用逗号分隔"></label>
+            <label>危险品货位 <input name="hazard_locations" placeholder="多个货位码用逗号分隔"></label>
+            <label>特殊外部单据类型 <input name="special_types" placeholder="多个类型用逗号分隔"></label>
+            <button class="btn secondary">保存设置</button>
+            <button class="btn secondary" type="button" onclick="openWorkTab('货位组','/location_groups.html')">管理货位组</button>
+          </form>
+        </details>
+      </section>
+      <section class="card">
+        <h2>建议分流</h2>
+        <p id="stats" class="statline">选择货主后分析订单。试算期间不会占用出库库存。</p>
+        <div id="channels" class="channels"></div>
+      </section>
+      <section class="card">
+        <h2>已确认方案与补货</h2>
+        <div id="plans"><p class="muted">请选择货主。</p></div>
+      </section>
+    </div>
+  </main>
+</div>
+<section class="paper" id="paper"></section>
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script src="/js/wave_analysis.js"></script>
+</body>
+</html>

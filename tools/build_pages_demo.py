@@ -17,6 +17,7 @@ def seed_browser_database():
     from seed_putaway_demo import seed as seed_putaway
     from seed_module_demo import get, post
     from seed_outbound_rules import seed as seed_outbound
+    from seed_wave_demo import seed as seed_wave
     from contextlib import closing
     import main
 
@@ -83,6 +84,7 @@ def seed_browser_database():
         "customer_id": customer["id"], "source_warehouse": source["id"],
         "lines": [{"product_id": basic_product["id"], "ordered_qty": 6}],
     })
+    seed_wave(initialize=False)
 
 
 def build(output, prefix):

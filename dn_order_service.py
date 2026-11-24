@@ -27,6 +27,7 @@ import math
 import constants as C
 import scope as S
 from main import gen_doc_no
+from wave_analysis import locked_preparation
 
 
 class DNOrderError(Exception):
@@ -64,6 +65,8 @@ def _load_lines(db, dn_id):
 
 def _assert_splittable(db, dn):
     """未拣货 open 单才可拆/合：已发货/已取消/已拣货/有分配明细一律拒绝。"""
+    if locked_preparation(db, dn["id"]):
+        raise DNOrderError("请先撤销组波方案，再拆合订单", "WAVE_LOCKED")
     if dn["status"] not in C.SPLIT_ALLOWED_STATUS:
         raise DNOrderError(
             f"出库单 {dn['code']} 状态为 {dn['status']}，仅 open 且未拣货的单据可拆合",

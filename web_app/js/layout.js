@@ -39,6 +39,7 @@
       { label: "出库单据", ico: "📤", children: [
         { href: "/dns.html", label: "出库", ico: "📤" },
         { href: "/outbound_allocation.html", label: "波次分配", ico: "🧭" },
+        { href: "/wave_analysis.html", label: "组波分析", ico: "↗" },
         { href: "/dn_review.html", label: "出库复核", ico: "🔎" },
         { href: "/dn_order.html", label: "拆单合单", ico: "✂️" },
       ]},

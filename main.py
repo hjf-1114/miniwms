@@ -2234,6 +2234,8 @@ def init_db(path=None):
         _migrate_m32(conn)
         _migrate_m33(conn)
         _migrate_m34(conn)
+        from wave_analysis import migrate as migrate_wave_analysis
+        migrate_wave_analysis(conn)
         _migrate_abc(conn)
         _migrate_asn_counts(conn)
         _ensure_columns(conn, "dn", (

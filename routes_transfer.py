@@ -18,6 +18,7 @@ from flask import Blueprint, jsonify, request
 import constants as C
 from inventory_service import StockError, stock_move
 from main import get_db, request_payload
+from wave_analysis import generated_transfer
 
 transfer_bp = Blueprint("transfer", __name__, url_prefix="/api/transfers")
 
@@ -194,6 +195,8 @@ def move(transfer_id):
         return jsonify({"ok": False, "error": f"状态为 {tf['status']}，不可移库"}), 409
     try:
         db.execute("BEGIN IMMEDIATE")
+        if generated_transfer(db, transfer_id):
+            raise ValueError("波次补货单请到组波分析按实到批次确认")
         tf = _load_transfer(db, transfer_id)
         if tf["status"] in (C.TRANSFER_DONE, C.TRANSFER_CANCELLED):
             raise ValueError(f"状态为 {tf['status']}，不可移库")
@@ -236,6 +239,8 @@ def cancel_transfer(transfer_id):
     tf = _load_transfer(db, transfer_id)
     if tf is None:
         return jsonify({"ok": False, "error": "移库单不存在"}), 404
+    if generated_transfer(db, transfer_id):
+        return jsonify(ok=False, error="波次补货单请到组波分析撤销"), 409
     if tf["status"] != C.TRANSFER_OPEN:
         return jsonify({"ok": False, "error": f"状态为 {tf['status']}，仅未执行单可取消"}), 409
     db.execute("UPDATE transfer SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
