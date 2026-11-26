@@ -206,9 +206,10 @@ def _sort_key(row, customer_id, strategy, prefer_picking=False):
 def _candidates(db, info, scope, pick_group=""):
     """读取可用批次明细快照（可写 dict，供试算在本地递减，不写库）。"""
     sql = """SELECT sb.*, l.code AS location_code, l.status AS loc_status,
-                    l.loc_type, l.zone_id, l.location_group,
+                    l.loc_type, l.zone_id, l.location_group, lg.status AS group_status,
                     (sb.qty - sb.allocated_qty) AS available
              FROM stock_batch sb JOIN location l ON l.id = sb.location_id
+             LEFT JOIN location_group lg ON lg.code=l.location_group
              WHERE sb.owner_id = ? AND sb.product_id = ?
                AND (sb.qty - sb.allocated_qty) > ?"""
     params = [info["owner_id"], info["product_id"], EPS]

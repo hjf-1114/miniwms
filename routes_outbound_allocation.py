@@ -109,6 +109,14 @@ def update_preparation(prep_id, step):
     return _run(lambda db: jsonify(ok=True, plan=handlers[step](db, _warehouse(), prep_id, _operator())))
 
 
+@oa_bp.get("/group-analysis/<int:prep_id>/picking-list")
+def preparation_picking_list(prep_id):
+    try:
+        return jsonify(ok=True, **WA.picking_list(get_db(), _warehouse(), prep_id))
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
 @oa_bp.route("/plan", methods=["POST"])
 def plan():
     """只读试算：不开启写事务、不写日志，前端可反复点「试算」对比策略。"""

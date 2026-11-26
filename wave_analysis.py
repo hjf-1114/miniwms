@@ -60,6 +60,8 @@ def migrate(db):
             UNIQUE (preparation_id, stock_batch_id, target_id)
         );
     """)
+    if "receipt_round" not in {row[1] for row in db.execute("PRAGMA table_info(wave_preparation)")}:
+        db.execute("ALTER TABLE wave_preparation ADD COLUMN receipt_round INTEGER NOT NULL DEFAULT 0")
 
 
 def settings(db, warehouse):
@@ -78,6 +80,8 @@ def generated_transfer(db, transfer_id):
 
 
 def permit_location(db, order, row, preparation_id=None):
+    if row.get("group_status") == "inactive":
+        return False
     config = settings(db, order["source_warehouse"])
     if config and special_order(order, config):
         full = db.execute("SELECT code FROM location_group WHERE id=? AND status='active'",
@@ -88,7 +92,7 @@ def permit_location(db, order, row, preparation_id=None):
             if order[flag] and row["location_code"] not in split_codes(config[field]):
                 return False
     temp = db.execute("""SELECT w.id,g.status FROM location_group g JOIN wave_preparation w ON w.group_id=g.id
-                         WHERE g.code=? AND w.kind<>'full' AND w.status IN ('pending','ready')""",
+                         WHERE g.code=? AND w.kind<>'full' AND w.status IN ('pending','short','ready')""",
                       (row["location_group"],)).fetchone()
     return not temp or (temp["id"] == preparation_id and temp["status"] == "active")
 
@@ -273,7 +277,38 @@ def detail(db, warehouse, prep_id):
     prep["faces"] = [dict(row) for row in db.execute("""
         SELECT p.sku,p.name,l.code FROM wave_pick_face f JOIN product p ON p.id=f.product_id
         JOIN location l ON l.id=f.location_id WHERE f.preparation_id=? ORDER BY l.code""", (prep_id,))]
+    if prep["status"] == "short":
+        import outbound_allocation as OA
+        try:
+            prep["shortages"] = OA.plan(
+                db, [row["id"] for row in prep["orders"]], pick_group=prep["group_code"],
+                dry_run=True, preparation_id=prep_id)["shortages"]
+        except OA.AllocationError as exc:
+            prep["shortage_error"] = str(exc)
     return prep
+
+
+def picking_list(db, warehouse, prep_id):
+    prep = prep_record(db, warehouse, prep_id)
+    if prep["status"] != "allocated":
+        raise ValueError("请先完成波次分配")
+    rows = db.execute("""
+        SELECT d.id AS dn_id,d.code AS order_code,p.sku,p.name,l.code AS location,
+               k.batch_no,k.batch_key,k.expiry_date,k.id,k.qty,k.confirmed_qty
+        FROM wave_preparation_order w JOIN dn d ON d.id=w.dn_id
+        JOIN dn_pick k ON k.dn_id=d.id AND k.wave_no=?
+        JOIN dn_line dl ON dl.id=k.line_id JOIN product p ON p.id=dl.product_id
+        JOIN location l ON l.id=k.location_id
+        WHERE w.preparation_id=?
+        ORDER BY l.code,p.sku,k.batch_no,d.code,k.id""", (prep["wave_no"], prep_id))
+    grouped = {}
+    for row in rows:
+        key = (row["location"], row["sku"], row["batch_key"], row["batch_no"], row["expiry_date"])
+        item = grouped.setdefault(key, {field: row[field] for field in
+            ("location", "sku", "name", "batch_no", "expiry_date")})
+        item.setdefault("orders", []).append({field: row[field] for field in
+            ("dn_id", "order_code", "qty", "confirmed_qty")})
+    return {"wave_no": prep["wave_no"], "rows": list(grouped.values())}
 
 
 def reserve(db, stock, qty, transfer_id, operator):
@@ -297,11 +332,13 @@ def plan_moves(db, orders, warehouse, owner, faces, locations):
             stocks = db.execute("""
                 SELECT s.*,l.code AS location_code,l.status AS loc_status,l.loc_type
                 FROM stock_batch s JOIN location l ON l.id=s.location_id
+                LEFT JOIN location_group src ON src.code=l.location_group
                 WHERE s.owner_id=? AND s.product_id=? AND l.warehouse_id=?
                   AND l.id<>? AND s.qty-s.allocated_qty>?
+                  AND COALESCE(src.status,'active')='active'
                   AND NOT EXISTS (
                     SELECT 1 FROM wave_preparation w JOIN location_group g ON g.id=w.group_id
-                    WHERE g.code=l.location_group AND w.kind<>'full' AND w.status IN ('pending','ready'))
+                    WHERE g.code=l.location_group AND w.kind<>'full' AND w.status IN ('pending','short','ready'))
                 ORDER BY s.expiry_date='',s.expiry_date,s.id""", (owner, product, warehouse, target, EPS))
             for row in stocks:
                 stock = dict(row)
@@ -398,46 +435,63 @@ def check_capacity(db, location, product_id, qty):
 def finish(db, warehouse, prep_id, payload, operator):
     import outbound_allocation as OA
     prep = prep_record(db, warehouse, prep_id)
+    round_no = payload.get("receipt_round")
+    if round_no is not None and int(round_no) < prep["receipt_round"]:
+        return detail(db, warehouse, prep_id)
     if prep["status"] in ("ready", "allocated"):
         return detail(db, warehouse, prep_id)
-    if prep["status"] != "pending":
+    if prep["status"] not in ("pending", "short"):
         raise ValueError("此方案不可完成补货")
+    if round_no is None and prep["receipt_round"]:
+        raise ValueError("请刷新补货明细后再确认本次实到")
+    if round_no is not None and int(round_no) != prep["receipt_round"]:
+        raise ValueError("补货轮次已变更，请刷新")
     target_group = group(db, warehouse, prep["group_id"])
     rows = db.execute("SELECT * FROM wave_replenishment_line WHERE preparation_id=? ORDER BY id", (prep_id,)).fetchall()
     actuals = payload.get("actuals")
-    if actuals is not None and (not isinstance(actuals, dict) or set(actuals) != {str(r["id"]) for r in rows}):
-        raise ValueError("请填写每条补货明细的实到量")
+    expected = {str(r["id"]) for r in rows if r["qty"] - (r["actual_qty"] or 0) > EPS}
+    if actuals is not None and (not isinstance(actuals, dict) or set(actuals) != expected):
+        raise ValueError("请填写每条待补明细的本次实到量")
     totals = defaultdict(float)
+    has_shortage = False
     for row in rows:
-        actual = row["qty"] if actuals is None else float(actuals[str(row["id"])])
-        if not math.isfinite(actual) or not 0 <= actual <= row["qty"]:
-            raise ValueError("实到量必须介于零与计划量之间")
+        previous = row["actual_qty"] or 0.0
+        remaining = max(0, row["qty"] - previous)
+        actual = 0.0 if str(row["id"]) not in expected else (
+            remaining if actuals is None else float(actuals[str(row["id"])]))
+        if not math.isfinite(actual) or not 0 <= actual <= remaining + EPS:
+            raise ValueError("本次实到量必须介于零与待补量之间")
+        actual = min(actual, remaining)
         stock = dict(db.execute("SELECT * FROM stock_batch WHERE id=?", (row["stock_batch_id"],)).fetchone())
         source = db.execute("SELECT * FROM location WHERE id=?", (stock["location_id"],)).fetchone()
         target = db.execute("SELECT * FROM location WHERE id=?", (row["target_id"],)).fetchone()
-        if (source["warehouse_id"] != warehouse or target["warehouse_id"] != warehouse
-                or source["status"] != "active" or target["status"] != "active"
-                or target["location_group"] != target_group["code"]):
-            raise ValueError("补货货位已变更或停用，请核查")
         if actual > EPS:
+            disabled = db.execute("SELECT 1 FROM location_group WHERE code=? AND status='inactive'",
+                                  (source["location_group"],)).fetchone()
+            if (disabled or source["warehouse_id"] != warehouse or target["warehouse_id"] != warehouse
+                    or source["status"] != "active" or target["status"] != "active"
+                    or target["location_group"] != target_group["code"]):
+                raise ValueError("补货货位已变更或停用，请核查")
             for present in db.execute("SELECT * FROM stock_batch WHERE location_id=? AND qty>?", (target["id"], EPS)):
                 if (present["owner_id"] != stock["owner_id"] or present["product_id"] != stock["product_id"]
                         or (not target["allow_mix_batch"] and present["batch_no"] != stock["batch_no"])):
                     raise ValueError(f"货位 {target['code']} 内库存不符合当前商品或批号")
             check_capacity(db, target, stock["product_id"], actual)
-        reserve(db, stock, -row["qty"], prep["transfer_id"], operator)
-        if actual > EPS:
+            reserve(db, stock, -actual, prep["transfer_id"], operator)
             stock_move(db, stock["owner_id"], stock["product_id"], stock["location_id"], target["id"],
                        actual, C.MOVEMENT_MOVE_OUT, C.MOVEMENT_MOVE_IN, prep["transfer_id"],
                        note=f"波次 {prep_id} 补货实到", batches=[dict(OA._batch_dims(stock), qty=actual)], operator=operator)
-        totals[stock["product_id"], stock["location_id"], target["id"]] += actual
-        db.execute("UPDATE wave_replenishment_line SET actual_qty=? WHERE id=?", (actual, row["id"]))
+        total = previous + actual
+        has_shortage |= row["qty"] - total > EPS
+        totals[stock["product_id"], stock["location_id"], target["id"]] += total
+        db.execute("UPDATE wave_replenishment_line SET actual_qty=? WHERE id=?", (total, row["id"]))
     db.executemany("""UPDATE transfer_line SET qty=? WHERE transfer_id=? AND product_id=?
                       AND from_location_id=? AND to_location_id=?""",
                    [(qty, prep["transfer_id"], *key) for key, qty in totals.items()])
-    db.execute("UPDATE transfer SET status='done',updated_at=datetime('now','localtime') WHERE id=?",
-               (prep["transfer_id"],))
-    set_status(db, prep_id, "ready", operator)
+    db.execute("UPDATE transfer SET status=?,updated_at=datetime('now','localtime') WHERE id=?",
+               ("open" if has_shortage else "done", prep["transfer_id"]))
+    db.execute("UPDATE wave_preparation SET receipt_round=receipt_round+1 WHERE id=?", (prep_id,))
+    set_status(db, prep_id, "short" if has_shortage else "ready", operator)
     return detail(db, warehouse, prep_id)
 
 
@@ -453,12 +507,16 @@ def cancel(db, warehouse, prep_id, operator):
             WHERE w.preparation_id=? AND d.status NOT IN ('open','cancelled','shipped')""", (prep_id,)).fetchone()
         if still_working:
             raise ValueError("请先通过现有出库流程释放分配，或完成本波拣货发货")
-    if prep["status"] == "pending":
+    if prep["status"] in ("pending", "short"):
         for row in db.execute("SELECT * FROM wave_replenishment_line WHERE preparation_id=?", (prep_id,)):
             stock = dict(db.execute("SELECT * FROM stock_batch WHERE id=?", (row["stock_batch_id"],)).fetchone())
-            reserve(db, stock, -row["qty"], prep["transfer_id"], operator)
-        db.execute("UPDATE transfer SET status='cancelled',updated_at=datetime('now','localtime') WHERE id=?",
-                   (prep["transfer_id"],))
+            remaining = row["qty"] - (row["actual_qty"] or 0)
+            if remaining > EPS:
+                reserve(db, stock, -remaining, prep["transfer_id"], operator)
+        db.execute("UPDATE transfer SET status=?,updated_at=datetime('now','localtime') WHERE id=?",
+                   ("done" if prep["status"] == "short" and db.execute(
+                       "SELECT 1 FROM wave_replenishment_line WHERE preparation_id=? AND actual_qty>?", (prep_id, EPS)
+                   ).fetchone() else "cancelled", prep["transfer_id"]))
     db.execute("UPDATE wave_preparation_order SET locked=0 WHERE preparation_id=?", (prep_id,))
     if prep["kind"] != "full":
         db.execute("""UPDATE location SET location_group=(SELECT f.previous_group FROM wave_pick_face f
@@ -484,8 +542,10 @@ def release(db, warehouse, prep_id, operator):
         raise ValueError("订单含特殊标识，请撤销方案后人工处理")
     result = OA.plan(db, ids, operator=operator, pick_group=target["code"], apply=True, preparation_id=prep_id)
     if result["shortages"]:
-        missing = result["shortages"][0]
-        raise ValueError(f"{missing.get('sku','')} 在目标组不足，未分配。请检查实到量或重新分析")
+        shortages = result["shortages"]
+        missing = "、".join(f"{row['dn_code']} / {row['sku']} 缺 {row['short_qty']:g}" for row in shortages[:10])
+        suffix = f"（共 {len(shortages)} 行）" if len(shortages) > 10 else ""
+        raise ValueError(f"整波未分配。{missing}{suffix}")
     db.execute("UPDATE wave_preparation_order SET locked=0 WHERE preparation_id=?", (prep_id,))
     set_status(db, prep_id, "allocated", operator, result["wave_no"])
     return detail(db, warehouse, prep_id)

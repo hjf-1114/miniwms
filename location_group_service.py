@@ -277,7 +277,7 @@ def update(db, rid, payload):
             or data.get("warehouse_id", row["warehouse_id"]) != row["warehouse_id"]):
         if db.execute("SELECT 1 FROM wave_settings WHERE full_group_id=? OR pool_group_id=?", (rid, rid)).fetchone():
             raise LocationGroupError("请先更换默认全量组或备用拣货组", "LOC_GROUP_IN_USE")
-        if db.execute("SELECT 1 FROM wave_preparation WHERE group_id=? AND status IN ('pending','ready')",
+        if db.execute("SELECT 1 FROM wave_preparation WHERE group_id=? AND status IN ('pending','short','ready')",
                       (rid,)).fetchone():
             raise LocationGroupError("货位组有待处理的组波方案，请先完成或撤销", "LOC_GROUP_IN_USE")
     if "code" in data and data["code"] != row["code"]:
