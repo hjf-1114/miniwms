@@ -18,6 +18,7 @@
 import argparse
 import os
 import sqlite3
+from contextlib import closing
 import sys
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -240,6 +241,11 @@ def seed(reset):
     for wh in WAREHOUSES:
         body = _post(c, "/api/warehouses", wh)
         wh_ids[wh["code"]] = body["warehouse"]["id"]
+    with closing(sqlite3.connect(db_path)) as binding_db, binding_db:
+        binding_db.executemany(
+            "INSERT OR IGNORE INTO owner_warehouse(warehouse_id,owner_id,status) VALUES (?,?,'active')",
+            [(warehouse_id, owner_id) for warehouse_id in wh_ids.values() for owner_id in owner_ids.values()],
+        )
     print(f"  仓库：{len(wh_ids)} 个（深圳/上海/北京）")
 
     # 4) 客户

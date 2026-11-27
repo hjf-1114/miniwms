@@ -38,8 +38,17 @@ def scope_context():
     control = get_control_db()
     s = S.current_scope()
     warehouses = S.visible_warehouses(s, control)
+    account_scope = S.resolve_scope(g.current_user, control) if s.get("mode") != "denied" else s
+    owners = {r["id"] for r in S.visible_owners(account_scope, control) if r["status"] == "active"}
+    warehouse_owner_ids = {}
+    for relation in control.execute("SELECT warehouse_id, owner_id FROM owner_warehouse WHERE status='active'"):
+        if relation["owner_id"] in owners:
+            warehouse_owner_ids.setdefault(relation["warehouse_id"], []).append(relation["owner_id"])
+    operational = [w for w in warehouses if w["status"] == "active" and w["id"] in warehouse_owner_ids]
     current_id = getattr(g, "warehouse_id", None)
     return jsonify(ok=True, **S.scope_summary(s), warehouses=warehouses,
+                   operational_warehouses=operational, warehouse_owner_ids={
+                       w["id"]: warehouse_owner_ids[w["id"]] for w in operational},
                    current_warehouse_id=current_id,
                    current_warehouse=_warehouse_row(control, current_id) if current_id else None,
                    header=WAREHOUSE_HEADER)

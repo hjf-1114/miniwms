@@ -544,16 +544,21 @@ function cancelLine(id, received) {
 
 async function openCreate() {
   await loadOptions();
-  const { current_warehouse: warehouse } = await api("GET", "/api/scope/context");
+  const { current_warehouse: warehouse, warehouse_owner_ids: bindings } = await api("GET", "/api/scope/context");
   if (!warehouse) {
     showMsg(document.getElementById("msg"), "请先在顶部选择当前仓库", "error");
+    return;
+  }
+  const boundOwners = ownerOptions.filter(option => (bindings[warehouse.id] || []).includes(+option.value));
+  if (!boundOwners.length) {
+    showMsg(document.getElementById("msg"), "当前仓库没有已绑定且可用的委托方", "error");
     return;
   }
   const fields = [
     { type: "section", label: "① 单据信息" },
     { name: "code", label: "单号（留空自动生成 ASN-日期-流水）", autocode: true, autocodePrefix: "ASN" },
     { name: "owner_id", label: "货主 *", type: "select", required: true,
-      placeholder: "请选择货主", options: ownerOptions,
+      placeholder: "请选择货主", options: boundOwners,
       help: "先选择委托方，再选择该委托方的供应商、客户和商品" },
     { name: "doc_type", label: "单据类型", type: "select", default: "采购", options: [
       { value: "采购", label: "采购" }, { value: "调拨", label: "调拨" },

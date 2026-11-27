@@ -90,6 +90,15 @@ def admin_headers():
     return {"Authorization": "Bearer " + body["token"]}
 
 
+def bind_demo_owner(warehouse_id, owner_id):
+    """Add a known demo relationship without replacing the warehouse's existing bindings."""
+    with sqlite3.connect(DB) as db:
+        db.execute(
+            """INSERT OR IGNORE INTO owner_warehouse(warehouse_id,owner_id,status)
+               VALUES (?,?,'active')""", (warehouse_id, owner_id),
+        )
+
+
 def fixtures():
     """从现有演示库取真实 id，不硬编码主键。"""
     owners = {r["code"]: r["id"] for r in raw("SELECT id, code FROM owner")}

@@ -73,9 +73,11 @@ def group_analysis():
         db, warehouse = get_db(), _warehouse()
         owner = _owner(request.args)
         config = WA.settings(db, warehouse)
-        plans = [WA.detail(db, warehouse, row["id"]) for row in db.execute(
-            """SELECT id FROM wave_preparation WHERE warehouse_id=? AND owner_id=?
-               ORDER BY id DESC LIMIT 30""", (warehouse, owner))]
+        plans = []
+        if request.args.get("include_plans") != "0":
+            plans = [WA.detail(db, warehouse, row["id"]) for row in db.execute(
+                """SELECT id FROM wave_preparation WHERE warehouse_id=? AND owner_id=?
+                   ORDER BY id DESC LIMIT 30""", (warehouse, owner))]
         return jsonify(ok=True, result=WA.analyze(db, warehouse, owner, request.args),
                        settings=config, locations=WA.pick_locations(db, warehouse), plans=plans)
     except (ValueError, TypeError) as e:
@@ -89,6 +91,30 @@ def group_analysis_settings():
         WA.save_settings(db, warehouse, request_payload())
         return jsonify(ok=True, settings=WA.settings(db, warehouse))
     return _run(action)
+
+
+@oa_bp.post("/group-analysis/compare")
+def compare_wave_layouts():
+    payload = request_payload()
+    try:
+        return jsonify(ok=True, comparisons=WA.compare_layouts(get_db(), _warehouse(), _owner(payload), payload))
+    except (ValueError, TypeError) as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+@oa_bp.get("/preparations")
+def warehouse_preparations():
+    try:
+        db, warehouse = get_db(), _warehouse()
+        owner = _owner(request.args)
+        status = request.args.get("status")
+        source = request.args.get("source") or None
+        rows = db.execute("""SELECT id FROM wave_preparation WHERE warehouse_id=? AND owner_id=?
+                             AND (? IS NULL OR status=?) AND (? IS NULL OR planning_source=?)
+                             ORDER BY id DESC LIMIT 100""", (warehouse, owner, status, status, source, source))
+        return jsonify(ok=True, plans=[WA.detail(db, warehouse, row["id"]) for row in rows])
+    except (ValueError, TypeError) as exc:
+        return jsonify(ok=False, error=str(exc)), 400
 
 
 @oa_bp.post("/group-analysis")

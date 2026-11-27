@@ -353,6 +353,11 @@ def plan(db, dn_ids, *, line_ids=None, strategy=None, operator="", pick_group=""
             scope = _step_scope(db, rule)
             rows = [row for row in _candidates(db, info, scope, pick_group)
                     if WA.permit_location(db, dn, row, preparation_id)]
+            if preparation_id:
+                face = db.execute("SELECT location_id FROM wave_pick_face WHERE preparation_id=? AND product_id=?",
+                                  (preparation_id, info["product_id"])).fetchone()
+                if face:
+                    rows = [row for row in rows if row["location_id"] == face["location_id"]]
             if dry_run:
                 for row in rows:
                     row["available"] -= consumed.get(row["id"], 0)

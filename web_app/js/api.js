@@ -52,15 +52,18 @@ async function mountWarehousePicker(el, onChange) {
       return;
     }
   }
-  const list = ctx.warehouses || [];
+  const list = ctx.operational_warehouses || ctx.warehouses || [];
   if (!list.length) {
     el.innerHTML = '<span class="wh-pick-label">当前仓库</span>' +
-      '<span class="wh-pick-err">暂无可用仓库</span>';
+      '<span class="wh-pick-err">暂无已绑定委托方的仓库</span>';
     setCurrentWarehouseId("");
     return;
   }
   let cur = ctx.current_warehouse_id;
-  if (!cur || !list.some((w) => String(w.id) === String(cur))) cur = list[0].id;
+  if (!cur || !list.some((w) => String(w.id) === String(cur))) {
+    cur = list[0].id;
+    firstPick = true;
+  }
   setCurrentWarehouseId(cur);
   el.innerHTML = '<span class="wh-pick-label">当前仓库</span>' +
     '<select class="wh-pick-select" title="切换仓库后刷新页面数据">' +

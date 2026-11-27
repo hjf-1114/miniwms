@@ -15,6 +15,11 @@
   .plan { margin-bottom:12px; }
   .statline { margin:10px 0 14px; font-weight:600; }
   .actual { width:88px; }
+  .help-tip { position:relative; display:inline-grid; place-items:center; width:1.15rem; height:1.15rem;
+    border:1px solid #94a3b8; border-radius:50%; color:#334155; font-size:.75rem; cursor:help; background:#fff; }
+  .help-tip:hover::after, .help-tip:focus::after { content:attr(data-tip); position:absolute; z-index:8; top:1.4rem;
+    right:0; width:min(235px,70vw); padding:9px 11px; border-radius:6px; background:#172554; color:white;
+    font-size:.8rem; line-height:1.5; text-align:left; white-space:normal; font-weight:normal; pointer-events:none; }
   .paper { display:none; }
   @media print {
     .app { display:none !important; }
@@ -31,18 +36,26 @@
     <div class="content">
       <div id="msg" class="msg" role="status"></div>
       <section class="card">
-        <h2>待分析订单</h2>
+        <div class="card-head"><h2>分析订单</h2><div class="toolbar">
+          <button class="btn secondary sm" type="button" onclick="openWorkTab('货位组','/location_groups.html')">查看货位组</button>
+          <a class="btn secondary sm" href="#comparisonGroups">选择对比货位组</a>
+          <button class="btn secondary sm" id="openWaveJobs" type="button">备货与补货作业</button>
+        </div></div>
         <form id="filters" class="toolbar">
+          <label>订单范围 <select name="order_status"><option value="open">待分配订单</option><option value="shipped">历史已发货</option></select></label>
+          <button type="button" class="help-tip" data-tip="待分配订单可以生成方案。历史已发货按发货日期统计，适合复盘近期常见的 SKU 组合。" aria-label="待分配订单可以生成方案。历史已发货按发货日期统计，适合复盘近期常见的 SKU 组合。">?</button>
           <label>货主 <select name="owner_id" required><option value="">请选择</option></select></label>
           <label>客户 <select name="customer_id"><option value="">全部</option></select></label>
           <label>订单号 <input name="keyword" placeholder="单号或外部单号"></label>
           <label>单据类型 <input name="doc_type" size="8" placeholder="全部"></label>
-          <label>创建自 <input type="date" name="date_from"></label>
+          <label><span id="date-label">创建自</span> <input type="date" name="date_from"></label>
           <label>至 <input type="date" name="date_to"></label>
           <label>单品门槛 <input type="number" name="activity_min" min="1" max="10000" value="10" style="width:70px"></label>
+          <button type="button" class="help-tip" data-tip="例如门槛 10，至少 10 张订单都只有同一个 SKU 时，推荐单品活动组。一单可以买多件。" aria-label="例如门槛 10，至少 10 张订单都只有同一个 SKU 时，推荐单品活动组。一单可以买多件。">?</button>
           <label>SKU 上限 <input type="number" name="sku_limit" min="1" max="50" value="20" style="width:65px"></label>
           <label>目标覆盖 % <input type="number" name="coverage" min="1" max="100" value="85" style="width:65px"></label>
-          <button class="btn">分析未分配订单</button>
+          <button type="button" class="help-tip" data-tip="例如 A 和 B 两个 SKU 能拣齐剩余 100 单中的 85 单，覆盖率就是 85%。SKU 上限限制可用的商品种数。" aria-label="例如 A 和 B 两个 SKU 能拣齐剩余 100 单中的 85 单，覆盖率就是 85%。SKU 上限限制可用的商品种数。">?</button>
+          <button class="btn" type="submit">分析订单</button>
         </form>
         <details>
           <summary>全量组和特殊单据设置</summary>
@@ -58,13 +71,16 @@
         </details>
       </section>
       <section class="card">
-        <h2>建议分流</h2>
+        <h2>建议分流 <button type="button" class="help-tip" data-tip="从单品活动组或短通道发起试算，可比较固定货位组和 SKU 布置。确认后会保存方案版本并生成所需作业。" aria-label="从单品活动组或短通道发起试算，可比较固定货位组和 SKU 布置。确认后会保存方案版本并生成所需作业。">?</button></h2>
         <p id="stats" class="statline">选择货主后分析订单。试算期间不会占用出库库存。</p>
+        <p class="muted">勾选最多 3 个固定货位组，再从下方的单品活动组或短通道发起对比。</p>
+        <div class="toolbar" id="comparisonGroups"></div>
         <div id="channels" class="channels"></div>
       </section>
-      <section class="card">
-        <h2>已确认方案与补货</h2>
-        <div id="plans"><p class="muted">请选择货主。</p></div>
+      <section class="card" id="comparison">
+        <h2>短通道方案对比</h2>
+        <p class="muted">选中方案后可在备货与补货作业页面继续处理。</p>
+        <div id="comparisonResults" class="table-wrap"></div>
       </section>
     </div>
   </main>

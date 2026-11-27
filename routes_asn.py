@@ -23,7 +23,7 @@ from batch_service import ASN_RECEIPTS_SQL, get_asn_receipt, record_receipt, val
 from inventory_service import EPS, StockError, spread_batches, stock_move, stock_up
 from reservation_rules import stock_status_allowed
 from putaway_rules import record_putaway_choice, validate_location
-from main import get_db, gen_doc_no, request_payload
+from main import get_control_db, get_db, gen_doc_no, request_payload
 
 asn_bp = Blueprint("asn", __name__, url_prefix="/api/asns")
 
@@ -267,6 +267,8 @@ def create_asn():
             return jsonify({"ok": False, "errors": [f"来源仓库不存在: id={source_warehouse}"]}), 400
         if wh["status"] != "active":
             return jsonify({"ok": False, "errors": [f"来源仓库已停用: {wh['code']}"]}), 400
+        S.assert_document_warehouse(S.current_scope(), get_control_db(), source_warehouse, owner_id,
+                                    require_binding=bool(g.warehouse_id or g.current_user))
         wh_code = wh["code"]
 
     # 供应商（多货主隔离：必须属本货主）；同时快照名称/联系人/电话/地址

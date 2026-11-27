@@ -255,6 +255,15 @@ def check_warehouse_access(scope, warehouse_id, control_db):
     return row
 
 
+def assert_document_warehouse(scope, control_db, warehouse_id, owner_id, *, require_binding=True):
+    check_warehouse_access(scope, warehouse_id, control_db)
+    bound = owner_warehouse_grid(control_db, warehouse_id)
+    if (require_binding or bound) and owner_id not in bound:
+        raise ScopeError("该委托方未绑定此仓库，请先在「货主×仓库」配置启用关系", 403)
+    if control_db.execute("SELECT 1 FROM owner WHERE id=? AND status='active'", (owner_id,)).fetchone() is None:
+        raise ScopeError("该委托方已停用或不存在", 403)
+
+
 def visible_warehouses(scope, control_db):
     """A 作业视角：账号可切换的仓库清单（一次只操作一个仓）。"""
     s = scope or current_scope()

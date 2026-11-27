@@ -653,10 +653,17 @@ class AsnApiTest(unittest.TestCase):
         owner = self._mk_owner()
         item = self._mk_product(owner)
         other = self._mk_warehouse("WH-OTHER")
-        response = self.client.post("/api/asns", headers={"X-WMS-Warehouse": str(self.wh_id)}, json={
+        headers = {"X-WMS-Warehouse": str(self.wh_id)}
+        payload = {
             "owner_id": owner, "source_warehouse": other,
             "lines": [{"product_id": item, "expected_qty": 10}],
-        })
+        }
+        self.assertEqual(self.client.post("/api/asns", headers=headers, json=payload).status_code, 403)
+        with main.app.app_context():
+            db = main.get_control_db()
+            db.execute("INSERT INTO owner_warehouse(owner_id, warehouse_id) VALUES (?, ?)", (owner, self.wh_id))
+            db.commit()
+        response = self.client.post("/api/asns", headers=headers, json=payload)
         self.assertEqual(response.status_code, 201, response.get_json())
         self.assertEqual(response.get_json()["asn"]["source_warehouse"], self.wh_id)
 

@@ -15,7 +15,7 @@ def seed_browser_database():
     from datetime import date, timedelta
     from seed_demo import seed as seed_basic
     from seed_putaway_demo import seed as seed_putaway
-    from seed_module_demo import get, post
+    from seed_module_demo import bind_demo_owner, get, post
     from seed_outbound_rules import seed as seed_outbound
     from seed_wave_demo import seed as seed_wave
     from contextlib import closing
@@ -36,6 +36,8 @@ def seed_browser_database():
     post(f"/api/asns/{pending['asn']['id']}/count", {"line_id": pending["lines"][0]["id"], "qty": 6})
     source = next(row for row in warehouses if row["code"] == "WH-SZ")
     basic_owner = next(row for row in get("/api/owners?page_size=100")["owners"] if row["code"] == "OW-TMALL")
+    bind_demo_owner(source["id"], basic_owner["id"])
+    bind_demo_owner(preferred["id"], basic_owner["id"])
     basic_product = next(row for row in get("/api/products?page_size=100")["products"] if row["sku"] == "SKU-001")
     level = post(f"/api/products/{basic_product['id']}/packages", {
         "pkg_level": "2级", "qty_per_package": 2,

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>备货与补货作业 · MiniWMS</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .plan { border:1px solid #dbe3ec; padding:14px; margin-bottom:12px; border-radius:8px; }
+  .plan h3 { margin:0 0 8px; }
+  .plan[data-selected] { border-color:#2563eb; box-shadow:0 0 0 2px #dbeafe; }
+  .actual { width:88px; }
+  .paper { display:none; }
+  @media print {
+    .app { display:none !important; }
+    .paper { display:block; padding:16px; background:white; color:black; }
+    .paper td,.paper th { border:1px solid #94a3b8; padding:6px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside id="sidebar" class="sidebar"></aside>
+  <main class="main">
+    <header class="topbar"><div><h1>备货与补货作业</h1><div class="crumb">MiniWMS / 出库作业</div></div></header>
+    <div class="content">
+      <div id="msg" class="msg" role="status"></div>
+      <section class="card">
+        <form id="jobFilters" class="toolbar">
+          <label>货主 <select name="owner_id" required><option value="">请选择</option></select></label>
+          <label>作业来源 <select name="source"><option value="">全部</option><option value="history">历史备货</option><option value="orders">实单补货</option></select></label>
+          <label>状态 <select name="status"><option value="">全部</option><option value="pending">待备货或补货</option>
+            <option value="short">补货差异</option><option value="ready">待分配</option><option value="stocked">备货完成</option>
+            <option value="allocated">已分配</option><option value="cancelled">已关闭</option></select></label>
+          <button class="btn" type="submit">查询作业</button>
+        </form>
+        <p id="jobStats" class="muted">选择货主查看作业。</p>
+        <div id="plans"></div>
+      </section>
+    </div>
+  </main>
+</div>
+<section class="paper" id="paper"></section>
+<script src="/js/api.js"></script>
+<script src="/js/layout.js"></script>
+<script src="/js/wave_jobs.js"></script>
+</body>
+</html>

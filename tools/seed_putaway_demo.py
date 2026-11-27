@@ -1,5 +1,5 @@
 """补齐专用测试仓的上架样例，通过业务 API 写入，可重复运行。"""
-from seed_module_demo import admin_headers, get, main, post, raw
+from seed_module_demo import admin_headers, bind_demo_owner, get, main, post, raw
 
 
 WAREHOUSE = "DEMO-PA-WH"
@@ -21,6 +21,7 @@ def seed():
                        {"name": "上架规则测试仓"}, auth, "warehouse")
     owner = ensure("owner", "code", "DEMO-PA-OWNER", "/api/owners",
                    {"name": "上架演示货主"}, auth, "owner")
+    bind_demo_owner(warehouse, owner)
     headers = {**auth, "X-WMS-Warehouse": str(warehouse)}
     zones = {}
     for code, name, temperature in (

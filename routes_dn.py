@@ -190,6 +190,8 @@ def create_dn():
         wh_code = wh["code"]
         if g.warehouse_id and source_warehouse != g.warehouse_id:
             return jsonify(ok=False, errors=["来源仓库必须为当前仓库"]), 400
+        S.assert_document_warehouse(current_scope(), get_control_db(), source_warehouse, owner_id,
+                                    require_binding=bool(g.warehouse_id or g.current_user))
     if doc_type == "调拨":
         try:
             target_warehouse = int(payload.get("target_warehouse"))
@@ -201,9 +203,8 @@ def create_dn():
         target = S.check_warehouse_access(current_scope(), target_warehouse, control)
         if target["status"] != "active":
             return jsonify(ok=False, errors=["调入仓库已停用"]), 400
-        designated_owners = S.owner_warehouse_grid(control, target_warehouse)
-        if designated_owners and owner_id not in designated_owners:
-            return jsonify(ok=False, errors=["该货主未配置到调入仓库"]), 400
+        S.assert_document_warehouse(current_scope(), control, target_warehouse, owner_id,
+                                    require_binding=bool(g.warehouse_id or g.current_user))
 
     # 单号：留空则自动生成 DN-YYYYMMDD-NNN（英文开头 + 日期流水）
     if not code:

@@ -389,12 +389,17 @@ async function openCreate() {
     showMsg(document.getElementById("msg"), "请先选择当前仓库", "error");
     return;
   }
+  const boundOwners = ownerOptions.filter(option => (context.warehouse_owner_ids[warehouse.id] || []).includes(+option.value));
+  if (!boundOwners.length) {
+    showMsg(document.getElementById("msg"), "当前仓库没有已绑定且可用的委托方", "error");
+    return;
+  }
   const overlay = openForm({
     title: "新建出库单（DN）", submitText: "创建", width: 1000,
     fields: [
       { name: "code", label: "单号 *（留空自动生成 DN-日期-流水）", required: false, autocode: true, autocodePrefix: "DN" },
       { name: "owner_id", label: "货主 *", type: "select", required: true,
-        placeholder: "请选择货主", options: ownerOptions },
+        placeholder: "请选择货主", options: boundOwners },
       { name: "customer_id", label: "客户", type: "select", placeholder: "请先选择委托方", options: [] },
       { name: "doc_type", label: "单据类型", type: "select", options: [
         { value: "销售", label: "销售" }, { value: "调拨", label: "调拨" },
@@ -414,8 +419,7 @@ async function openCreate() {
         options: [{ value: 0, label: "否" }, { value: 1, label: "是" }] },
       { name: "warehouse_display", label: "调出仓库（当前仓）", readonly: true, default: `${warehouse.code} · ${warehouse.name}` },
       { name: "target_warehouse", label: "调入仓库", type: "select", placeholder: "请选择调入仓库",
-        options: warehouseOptions.filter(option =>
-          option.value !== warehouse.id && context.warehouses.some(w => w.id === option.value)) },
+        options: [] },
       { name: "customer_name", label: "客户名称（可覆盖）" },
       { name: "customer_contact", label: "客户联系人" },
       { name: "customer_phone", label: "客户电话" },
@@ -453,6 +457,11 @@ async function openCreate() {
   const field = name => overlay.querySelector(`[name="${name}"]`);
   const owner = field("owner_id"), customer = field("customer_id"), docType = field("doc_type"), target = field("target_warehouse");
   function syncOwner() {
+    const selectedWarehouse = target.value;
+    const destinations = warehouseOptions.filter(option =>
+      +option.value !== warehouse.id && (context.warehouse_owner_ids[option.value] || []).includes(+owner.value));
+    target.replaceChildren(new Option("请选择调入仓库", ""), ...destinations.map(option => new Option(option.label, option.value)));
+    if (destinations.some(option => String(option.value) === selectedWarehouse)) target.value = selectedWarehouse;
     const previous = customer.value;
     filterOwnerOptions(customer, allCustomerOptions, owner.value);
     if (previous !== customer.value) customer.dispatchEvent(new Event("change"));
